@@ -7,7 +7,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const BUSINESSES_PATH = path.resolve(__dirname, "..", "businesses.json");
 
-const DEFAULT_CONTACT = "us at our salon phone number (425) 643-9327";
+const DEFAULT_CONTACT = "us using the contact details on our Google Business listing";
 
 async function readBusinesses() {
   if (db.useDb()) {

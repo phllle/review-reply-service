@@ -162,71 +162,79 @@ app.get("/admin", (req, res) => {
   <p class="refresh"><a href="/admin">Refresh</a> · <a href="/businesses">JSON</a></p>
   <div id="loading">Loading businesses…</div>
   <div id="content" style="display: none;"></div>
-  <script>
-    async function load() {
-      const loading = document.getElementById("loading");
-      const content = document.getElementById("content");
-      try {
-        const r = await fetch("/businesses");
-        const list = await r.json();
-        if (!Array.isArray(list) || list.length === 0) {
-          content.innerHTML = "<p class=\"empty\">No businesses yet. Have them connect via the auth link.</p>";
-        } else {
-          content.innerHTML = "<table><thead><tr><th>Name</th><th>Contact (for 1–2 star replies)</th><th>Auto-reply</th><th>Interval (min)</th><th></th></tr></thead><tbody></tbody></table>";
-          const tbody = content.querySelector("tbody");
-          list.forEach(b => {
-            const tr = document.createElement("tr");
-            tr.dataset.accountId = b.accountId;
-            tr.innerHTML = "<td>" + escapeHtml(b.name || "—") + "</td>" +
-              "<td><input type=\"text\" value=\"" + escapeAttr(b.contact || "") + "\" data-field=\"contact\"></td>" +
-              "<td><input type=\"checkbox\" " + (b.autoReplyEnabled ? "checked" : "") + " data-field=\"autoReplyEnabled\"></td>" +
-              "<td><input type=\"number\" min=\"1\" value=\"" + (b.intervalMinutes ?? 30) + "\" data-field=\"intervalMinutes\" style=\"width:4rem\"></td>" +
-              "<td><button type=\"button\" data-save>Save</button><span class=\"msg\" data-msg></span></td>";
-            tbody.appendChild(tr);
-          });
-          content.querySelectorAll("[data-save]").forEach(btn => {
-            btn.addEventListener("click", saveRow);
-          });
-        }
-      } catch (e) {
-        content.innerHTML = "<p class=\"msg err\">Failed to load: " + escapeHtml(e.message) + "</p>";
-      }
-      loading.style.display = "none";
-      content.style.display = "block";
-    }
-    function escapeHtml(s) { const d = document.createElement("div"); d.textContent = s; return d.innerHTML; }
-    function escapeAttr(s) { return escapeHtml(s).replace(/"/g, "&quot;"); }
-    async function saveRow(e) {
-      const btn = e.target;
-      const tr = btn.closest("tr");
-      const accountId = tr.dataset.accountId;
-      const contact = tr.querySelector("[data-field=contact]").value.trim();
-      const autoReplyEnabled = tr.querySelector("[data-field=autoReplyEnabled]").checked;
-      const intervalMinutes = parseInt(tr.querySelector("[data-field=intervalMinutes]").value, 10) || 30;
-      const msgEl = tr.querySelector("[data-msg]");
-      msgEl.textContent = "";
-      msgEl.className = "msg";
-      btn.disabled = true;
-      try {
-        const r = await fetch("/businesses/" + encodeURIComponent(accountId), {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ contact, autoReplyEnabled, intervalMinutes })
-        });
-        const data = await r.json();
-        if (!r.ok) throw new Error(data.error || r.statusText);
-        msgEl.textContent = "Saved.";
-        msgEl.className = "msg ok";
-      } catch (err) {
-        msgEl.textContent = err.message || "Error";
-        msgEl.className = "msg err";
-      }
-      btn.disabled = false;
-    }
-    load();
-  </script>
+  <script src="/admin.js"></script>
 </body>
 </html>
+  `);
+});
+
+// Admin script (separate so CSP allows it)
+app.get("/admin.js", (req, res) => {
+  res.set("Content-Type", "application/javascript; charset=utf-8");
+  res.send(`
+function escapeHtml(s) { const d = document.createElement("div"); d.textContent = s; return d.innerHTML; }
+function escapeAttr(s) { return escapeHtml(s).replace(/"/g, "&quot;"); }
+async function load() {
+  const loading = document.getElementById("loading");
+  const content = document.getElementById("content");
+  try {
+    const r = await fetch("/businesses");
+    const list = await r.json();
+    if (!Array.isArray(list) || list.length === 0) {
+      content.innerHTML = "<p class=\\"empty\\">No businesses yet. Have them connect via the auth link.</p>";
+    } else {
+      content.innerHTML = "<table><thead><tr><th>Name</th><th>Contact (for 1–2 star replies)</th><th>Auto-reply</th><th>Interval (min)</th><th></th></tr></thead><tbody></tbody></table>";
+      const tbody = content.querySelector("tbody");
+      list.forEach(b => {
+        const tr = document.createElement("tr");
+        tr.dataset.accountId = b.accountId;
+        tr.innerHTML = "<td>" + escapeHtml(b.name || "—") + "</td>" +
+          "<td><input type=\\"text\\" value=\\"" + escapeAttr(b.contact || "") + "\\" data-field=\\"contact\\"></td>" +
+          "<td><input type=\\"checkbox\\" " + (b.autoReplyEnabled ? "checked" : "") + " data-field=\\"autoReplyEnabled\\"></td>" +
+          "<td><input type=\\"number\\" min=\\"1\\" value=\\""
+          + (b.intervalMinutes ?? 30)
+          + "\\" data-field=\\"intervalMinutes\\" style=\\"width:4rem\\"></td>" +
+          "<td><button type=\\"button\\" data-save>Save</button><span class=\\"msg\\" data-msg></span></td>";
+        tbody.appendChild(tr);
+      });
+      content.querySelectorAll("[data-save]").forEach(btn => {
+        btn.addEventListener("click", saveRow);
+      });
+    }
+  } catch (e) {
+    content.innerHTML = "<p class=\\"msg err\\">Failed to load: " + escapeHtml(e.message) + "</p>";
+  }
+  loading.style.display = "none";
+  content.style.display = "block";
+}
+async function saveRow(e) {
+  const btn = e.target;
+  const tr = btn.closest("tr");
+  const accountId = tr.dataset.accountId;
+  const contact = tr.querySelector("[data-field=contact]").value.trim();
+  const autoReplyEnabled = tr.querySelector("[data-field=autoReplyEnabled]").checked;
+  const intervalMinutes = parseInt(tr.querySelector("[data-field=intervalMinutes]").value, 10) || 30;
+  const msgEl = tr.querySelector("[data-msg]");
+  msgEl.textContent = "";
+  msgEl.className = "msg";
+  btn.disabled = true;
+  try {
+    const r = await fetch("/businesses/" + encodeURIComponent(accountId), {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ contact, autoReplyEnabled, intervalMinutes })
+    });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.error || r.statusText);
+    msgEl.textContent = "Saved.";
+    msgEl.className = "msg ok";
+  } catch (err) {
+    msgEl.textContent = err.message || "Error";
+    msgEl.className = "msg err";
+  }
+  btn.disabled = false;
+}
+load();
   `);
 });
 
