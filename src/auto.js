@@ -1,23 +1,48 @@
 import fs from "fs/promises";
 import path from "path";
 import { fileURLToPath } from "url";
+import * as db from "./db.js";
 import { listReviews, replyToReview } from "./google.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const STATE_PATH = path.resolve(__dirname, "..", "auto-state.json");
 
-async function readState() {
+function stateKey(accountId, locationId) {
+  return `${accountId}_${locationId}`;
+}
+
+async function readAllState() {
+  if (db.useDb()) {
+    return {};
+  }
   try {
     const data = await fs.readFile(STATE_PATH, "utf8");
     return JSON.parse(data);
   } catch {
-    return { repliedReviewIds: [] };
+    return {};
   }
 }
 
-async function writeState(state) {
-  await fs.writeFile(STATE_PATH, JSON.stringify(state, null, 2), "utf8");
+async function readState(accountId, locationId) {
+  if (db.useDb()) {
+    return await db.getAutoState(accountId, locationId);
+  }
+  const all = await readAllState();
+  const key = stateKey(accountId, locationId);
+  const state = all[key] || { repliedReviewIds: [] };
+  return state;
+}
+
+async function writeState(accountId, locationId, state) {
+  if (db.useDb()) {
+    await db.setAutoState(accountId, locationId, state);
+    return;
+  }
+  const all = await readAllState();
+  const key = stateKey(accountId, locationId);
+  all[key] = state;
+  await fs.writeFile(STATE_PATH, JSON.stringify(all, null, 2), "utf8");
 }
 
 function mapStarRatingToNumber(starRating) {
@@ -41,10 +66,13 @@ function getName(review) {
   return raw.split(" ")[0];
 }
 
-function buildReplyText(review) {
+function buildReplyText(review, contactOverride) {
   const rating = mapStarRatingToNumber(review?.starRating);
   const name = getName(review);
-  const contact = process.env.AUTO_REPLY_CONTACT || "us at our salon phone number (425) 643-9327";
+  const contact =
+    contactOverride ??
+    process.env.AUTO_REPLY_CONTACT ??
+    "us at our salon phone number (425) 643-9327";
 
   const personalize = (template) =>
     template
@@ -84,8 +112,9 @@ function buildReplyText(review) {
   return personalize(pickRandom(bucket));
 }
 
-export async function processPendingReviews(accountId, locationId, logger = console) {
-  const state = await readState();
+export async function processPendingReviews(accountId, locationId, options = {}) {
+  const { contact: contactOverride, logger = console } = options;
+  const state = await readState(accountId, locationId);
   const alreadyReplied = new Set(state.repliedReviewIds || []);
 
   const allowedRatingsEnv = (process.env.AUTO_REPLY_RATINGS || "1,2,3,4,5")
@@ -106,7 +135,7 @@ export async function processPendingReviews(accountId, locationId, logger = cons
   for (const review of toReply) {
     const reviewId = review.reviewId || review.name;
     const rating = mapStarRatingToNumber(review.starRating);
-    const comment = buildReplyText(review);
+    const comment = buildReplyText(review, contactOverride);
     results.attempted += 1;
     try {
       await replyToReview(accountId, locationId, reviewId, comment);
@@ -121,7 +150,7 @@ export async function processPendingReviews(accountId, locationId, logger = cons
   }
 
   state.repliedReviewIds = Array.from(alreadyReplied);
-  await writeState(state);
+  await writeState(accountId, locationId, state);
   return results;
 }
 
@@ -130,21 +159,35 @@ export function startScheduler(appLogger = console) {
     appLogger.info?.("Auto-reply scheduler disabled (set AUTO_REPLY_ENABLED=true to enable)");
     return null;
   }
-  const accountId = process.env.AUTO_REPLY_ACCOUNT_ID;
-  const locationId = process.env.AUTO_REPLY_LOCATION_ID;
+
   const intervalMinutes = Number(process.env.AUTO_REPLY_INTERVAL_MINUTES || 30);
   const intervalMs = Math.max(1, intervalMinutes) * 60 * 1000;
 
-  if (!accountId || !locationId) {
-    appLogger.warn?.("Auto-reply not started: missing AUTO_REPLY_ACCOUNT_ID or AUTO_REPLY_LOCATION_ID");
-    return null;
-  }
-
-  appLogger.info?.({ intervalMinutes }, "Starting auto-reply scheduler");
-  const handle = setInterval(() => {
-    processPendingReviews(accountId, locationId, appLogger).catch((err) => {
-      appLogger.error?.(err, "Auto-reply tick failed");
-    });
+  appLogger.info?.({ intervalMinutes }, "Starting auto-reply scheduler (multi-tenant)");
+  const handle = setInterval(async () => {
+    const { getEnabledBusinesses, DEFAULT_CONTACT } = await import("./businesses.js");
+    let businesses = await getEnabledBusinesses();
+    if (!businesses.length && process.env.AUTO_REPLY_ACCOUNT_ID && process.env.AUTO_REPLY_LOCATION_ID) {
+      businesses = [
+        {
+          accountId: process.env.AUTO_REPLY_ACCOUNT_ID,
+          locationId: process.env.AUTO_REPLY_LOCATION_ID,
+          contact: process.env.AUTO_REPLY_CONTACT || DEFAULT_CONTACT
+        }
+      ];
+    }
+    if (!businesses.length) {
+      appLogger.warn?.("Auto-reply: no enabled businesses in config (and no env fallback)");
+      return;
+    }
+    for (const biz of businesses) {
+      processPendingReviews(biz.accountId, biz.locationId, {
+        contact: biz.contact,
+        logger: appLogger
+      }).catch((err) => {
+        appLogger.error?.(err, { accountId: biz.accountId }, "Auto-reply tick failed");
+      });
+    }
   }, intervalMs);
   return handle;
 }

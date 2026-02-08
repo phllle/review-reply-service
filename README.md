@@ -10,3 +10,9 @@ Minimal Node/Express service that authenticates with Google and replies to Googl
 
 ### Reply example
 POST /google/reviews/{ACCOUNT_ID}/{LOCATION_ID}/{REVIEW_ID}/reply with { "comment": "Thank you!" }.
+
+### Database (production)
+On Railway (or any host with ephemeral filesystem), set **DATABASE_URL** to a PostgreSQL connection string so tokens, businesses, and auto-reply state persist across redeploys. Without it, the app uses JSON files (`tokens.json`, `businesses.json`, `auto-state.json`).
+
+- **Railway:** Add the Postgres plugin to your project; it sets `DATABASE_URL` automatically. Tables (`tokens`, `businesses`, `auto_state`) are created on first startup.
+- **Local:** Omit `DATABASE_URL` to keep using the file-based store.
