@@ -127,6 +127,109 @@ app.patch("/businesses/:accountId", async (req, res, next) => {
   }
 });
 
+// Admin page: list businesses, edit contact and auto-reply
+app.get("/admin", (req, res) => {
+  res.set("Content-Type", "text/html; charset=utf-8");
+  res.send(`
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Review Reply – Admin</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { font-family: system-ui, sans-serif; max-width: 900px; margin: 0 auto; padding: 1.5rem; background: #f5f5f5; }
+    h1 { margin: 0 0 1rem; font-size: 1.25rem; color: #333; }
+    table { width: 100%; border-collapse: collapse; background: #fff; border-radius: 8px; overflow: hidden; box-shadow: 0 1px 3px rgba(0,0,0,0.08); }
+    th, td { padding: 0.75rem 1rem; text-align: left; border-bottom: 1px solid #eee; }
+    th { background: #fafafa; font-weight: 600; color: #555; font-size: 0.8rem; text-transform: uppercase; }
+    tr:last-child td { border-bottom: none; }
+    input[type="text"], input[type="number"] { width: 100%; padding: 0.5rem; border: 1px solid #ddd; border-radius: 4px; font-size: 0.9rem; }
+    input[type="checkbox"] { width: 1.1rem; height: 1.1rem; }
+    button { padding: 0.5rem 1rem; background: #333; color: #fff; border: none; border-radius: 4px; cursor: pointer; font-size: 0.85rem; }
+    button:hover { background: #555; }
+    button:disabled { opacity: 0.6; cursor: not-allowed; }
+    .msg { margin-top: 0.5rem; font-size: 0.85rem; }
+    .msg.ok { color: #0a0; }
+    .msg.err { color: #c00; }
+    .empty { color: #888; padding: 2rem; text-align: center; }
+    .refresh { margin-bottom: 1rem; }
+  </style>
+</head>
+<body>
+  <h1>Review Reply – Admin</h1>
+  <p class="refresh"><a href="/admin">Refresh</a> · <a href="/businesses">JSON</a></p>
+  <div id="loading">Loading businesses…</div>
+  <div id="content" style="display: none;"></div>
+  <script>
+    async function load() {
+      const loading = document.getElementById("loading");
+      const content = document.getElementById("content");
+      try {
+        const r = await fetch("/businesses");
+        const list = await r.json();
+        if (!Array.isArray(list) || list.length === 0) {
+          content.innerHTML = "<p class=\"empty\">No businesses yet. Have them connect via the auth link.</p>";
+        } else {
+          content.innerHTML = "<table><thead><tr><th>Name</th><th>Contact (for 1–2 star replies)</th><th>Auto-reply</th><th>Interval (min)</th><th></th></tr></thead><tbody></tbody></table>";
+          const tbody = content.querySelector("tbody");
+          list.forEach(b => {
+            const tr = document.createElement("tr");
+            tr.dataset.accountId = b.accountId;
+            tr.innerHTML = "<td>" + escapeHtml(b.name || "—") + "</td>" +
+              "<td><input type=\"text\" value=\"" + escapeAttr(b.contact || "") + "\" data-field=\"contact\"></td>" +
+              "<td><input type=\"checkbox\" " + (b.autoReplyEnabled ? "checked" : "") + " data-field=\"autoReplyEnabled\"></td>" +
+              "<td><input type=\"number\" min=\"1\" value=\"" + (b.intervalMinutes ?? 30) + "\" data-field=\"intervalMinutes\" style=\"width:4rem\"></td>" +
+              "<td><button type=\"button\" data-save>Save</button><span class=\"msg\" data-msg></span></td>";
+            tbody.appendChild(tr);
+          });
+          content.querySelectorAll("[data-save]").forEach(btn => {
+            btn.addEventListener("click", saveRow);
+          });
+        }
+      } catch (e) {
+        content.innerHTML = "<p class=\"msg err\">Failed to load: " + escapeHtml(e.message) + "</p>";
+      }
+      loading.style.display = "none";
+      content.style.display = "block";
+    }
+    function escapeHtml(s) { const d = document.createElement("div"); d.textContent = s; return d.innerHTML; }
+    function escapeAttr(s) { return escapeHtml(s).replace(/"/g, "&quot;"); }
+    async function saveRow(e) {
+      const btn = e.target;
+      const tr = btn.closest("tr");
+      const accountId = tr.dataset.accountId;
+      const contact = tr.querySelector("[data-field=contact]").value.trim();
+      const autoReplyEnabled = tr.querySelector("[data-field=autoReplyEnabled]").checked;
+      const intervalMinutes = parseInt(tr.querySelector("[data-field=intervalMinutes]").value, 10) || 30;
+      const msgEl = tr.querySelector("[data-msg]");
+      msgEl.textContent = "";
+      msgEl.className = "msg";
+      btn.disabled = true;
+      try {
+        const r = await fetch("/businesses/" + encodeURIComponent(accountId), {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ contact, autoReplyEnabled, intervalMinutes })
+        });
+        const data = await r.json();
+        if (!r.ok) throw new Error(data.error || r.statusText);
+        msgEl.textContent = "Saved.";
+        msgEl.className = "msg ok";
+      } catch (err) {
+        msgEl.textContent = err.message || "Error";
+        msgEl.className = "msg err";
+      }
+      btn.disabled = false;
+    }
+    load();
+  </script>
+</body>
+</html>
+  `);
+});
+
 app.post("/google/reviews/:accountId/:locationId/:reviewId/reply", async (req, res, next) => {
   try {
     const { accountId, locationId, reviewId } = req.params;
