@@ -453,54 +453,60 @@ app.get("/subscribe", (req, res) => {
     ${hasBillingPortal ? `<p class="back" style="margin-bottom:0.5rem;"><a href="${escapeHtml(billingPortalUrl)}" target="_blank" rel="noopener">Manage billing / subscription</a></p>` : ""}
     <p class="back"><a href="/">← Back to Replyr</a></p>
   </div>
-  <script>
-  (function() {
-    var btn = document.getElementById("subscribe-cta");
-    var msgEl = document.getElementById("subscribe-cta-msg");
-    var page = document.querySelector(".subscribe-page");
-    if (!btn || !page) return;
-    var accountId = (page.getAttribute("data-account-id") || "").trim();
-    var fallbackUrl = (page.getAttribute("data-fallback-url") || "").trim() || "#";
-    function go(url, openInNewTab) {
-      if (!url || url === "#" || url.indexOf("http") !== 0) {
-        if (msgEl) { msgEl.textContent = "Subscribe link not set up. Add SUBSCRIBE_URL, or STRIPE_SECRET_KEY + STRIPE_PRICE_ID for Checkout."; }
-        return;
-      }
-      if (openInNewTab) {
-        var w = window.open(url, "_blank", "noopener,noreferrer");
-        if (w) {
-          if (msgEl) msgEl.textContent = "Opened in a new tab. Complete payment there.";
-        } else {
-          if (msgEl) msgEl.textContent = "Redirecting… (allow popups if you prefer a new tab)";
-          window.location.href = url;
-        }
-      } else {
-        window.location.href = url;
-      }
-    }
-    btn.addEventListener("click", function() {
-      if (msgEl) msgEl.textContent = "";
-      if (!accountId) { go(fallbackUrl, true); return; }
-      btn.disabled = true;
-      if (msgEl) msgEl.textContent = "Opening checkout…";
-      fetch("/create-checkout-session", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ accountId: accountId })
-      }).then(function(r) { return r.json().then(function(data) { return { ok: r.ok, data: data }; }).catch(function() { return { ok: false, data: null }; }); }).then(function(result) {
-        if (result.data && result.data.url) { go(result.data.url, true); return; }
-        if (!result.ok && result.data && result.data.error && msgEl) msgEl.textContent = result.data.error;
-        go(fallbackUrl, true);
-      }).catch(function() {
-        if (msgEl) msgEl.textContent = "Request failed. Opening payment link in new tab…";
-        go(fallbackUrl, true);
-      }).finally(function() { btn.disabled = false; });
-    });
-  })();
-  </script>
+  <script src="/subscribe.js"></script>
 </body>
 </html>
   `);
+});
+
+// Subscribe page script (external so CSP allows it; inline script was blocked)
+app.get("/subscribe.js", (req, res) => {
+  res.set("Content-Type", "application/javascript; charset=utf-8");
+  res.send(`
+(function() {
+  var btn = document.getElementById("subscribe-cta");
+  var msgEl = document.getElementById("subscribe-cta-msg");
+  var page = document.querySelector(".subscribe-page");
+  if (!btn || !page) return;
+  var accountId = (page.getAttribute("data-account-id") || "").trim();
+  var fallbackUrl = (page.getAttribute("data-fallback-url") || "").trim() || "#";
+  function go(url, openInNewTab) {
+    if (!url || url === "#" || url.indexOf("http") !== 0) {
+      if (msgEl) { msgEl.textContent = "Subscribe link not set up. Add SUBSCRIBE_URL, or STRIPE_SECRET_KEY + STRIPE_PRICE_ID for Checkout."; }
+      return;
+    }
+    if (openInNewTab) {
+      var w = window.open(url, "_blank", "noopener,noreferrer");
+      if (w) {
+        if (msgEl) msgEl.textContent = "Opened in a new tab. Complete payment there.";
+      } else {
+        if (msgEl) msgEl.textContent = "Redirecting… (allow popups if you prefer a new tab)";
+        window.location.href = url;
+      }
+    } else {
+      window.location.href = url;
+    }
+  }
+  btn.addEventListener("click", function() {
+    if (msgEl) msgEl.textContent = "";
+    if (!accountId) { go(fallbackUrl, true); return; }
+    btn.disabled = true;
+    if (msgEl) msgEl.textContent = "Opening checkout…";
+    fetch("/create-checkout-session", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ accountId: accountId })
+    }).then(function(r) { return r.json().then(function(data) { return { ok: r.ok, data: data }; }).catch(function() { return { ok: false, data: null }; }); }).then(function(result) {
+      if (result.data && result.data.url) { go(result.data.url, true); return; }
+      if (!result.ok && result.data && result.data.error && msgEl) msgEl.textContent = result.data.error;
+      go(fallbackUrl, true);
+    }).catch(function() {
+      if (msgEl) msgEl.textContent = "Request failed. Opening payment link in new tab…";
+      go(fallbackUrl, true);
+    }).finally(function() { btn.disabled = false; });
+  });
+})();
+`);
 });
 
 app.get("/connected.js", (req, res) => {
