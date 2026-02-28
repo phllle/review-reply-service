@@ -6,7 +6,7 @@ import pino from "pino";
 import pinoHttp from "pino-http";
 import * as db from "./db.js";
 import { getAuthUrl, handleOAuthCallback, getTokenStatus, replyToReview, listAccounts, listLocations, listReviews } from "./google.js";
-import { processPendingReviews, startScheduler, buildReplyText, getReplyText, addRepliedReviewId } from "./auto.js";
+import { processPendingReviews, startScheduler, getReplyText, addRepliedReviewId } from "./auto.js";
 import { getAllBusinesses, getBusiness, upsertBusiness, getAccountIdByStripeCustomerId } from "./businesses.js";
 import Stripe from "stripe";
 
@@ -861,7 +861,7 @@ async function load() {
     if (!Array.isArray(list) || list.length === 0) {
       content.innerHTML = "<p class=\\"empty\\">No businesses yet. Have them connect via the auth link.</p>";
     } else {
-      const tableHtml = "<table><thead><tr><th>Name</th><th>Contact (for 1–2 star replies)</th><th>Trial ends</th><th>Status</th><th>Auto-reply</th><th>Interval (min)</th><th></th></tr></thead><tbody></tbody></table>";
+      const tableHtml = "<table><thead><tr><th>Name</th><th>Contact (for 1–2 star replies)</th><th>Trial ends</th><th>Status</th><th>Auto-reply</th><th>Interval (min)</th><th>Actions</th></tr></thead><tbody></tbody></table>";
       content.insertAdjacentHTML("beforeend", tableHtml);
       const table = content.querySelector("table");
       if (filterRow) { content.insertBefore(filterRow, table); filterRow.style.display = "flex"; }
@@ -871,6 +871,7 @@ async function load() {
         const trialEndStr = formatTrialEnd(b.trialEndsAt);
         const tr = document.createElement("tr");
         tr.dataset.accountId = b.accountId;
+        tr.dataset.locationId = b.locationId || "";
         tr.dataset.status = s.status;
         tr.innerHTML = "<td>" + escapeHtml(b.name || "—") + "</td>" +
           "<td><input type=\\"text\\" value=\\"" + escapeAttr(b.contact || "") + "\\" data-field=\\"contact\\"></td>" +
@@ -880,12 +881,11 @@ async function load() {
           "<td><input type=\\"number\\" min=\\"1\\" value=\\""
           + (b.intervalMinutes ?? 30)
           + "\\" data-field=\\"intervalMinutes\\" style=\\"width:4rem\\"></td>" +
-          "<td><button type=\\"button\\" data-save>Save</button><span class=\\"msg\\" data-msg></span></td>";
+          "<td><button type=\\"button\\" data-save>Save</button> <button type=\\"button\\" data-run-now title=\\"Run Claude auto-reply now\\">Run now</button><span class=\\"msg\\" data-msg></span></td>";
         tbody.appendChild(tr);
       });
-      content.querySelectorAll("[data-save]").forEach(btn => {
-        btn.addEventListener("click", saveRow);
-      });
+      content.querySelectorAll("[data-save]").forEach(btn => { btn.addEventListener("click", saveRow); });
+      content.querySelectorAll("[data-run-now]").forEach(btn => { btn.addEventListener("click", runNowRow); });
       var statusFilter = document.getElementById("status-filter");
       if (statusFilter) {
         statusFilter.addEventListener("change", function() {
@@ -923,6 +923,42 @@ async function saveRow(e) {
     if (!r.ok) throw new Error(data.error || r.statusText);
     msgEl.textContent = "Saved.";
     msgEl.className = "msg ok";
+  } catch (err) {
+    msgEl.textContent = err.message || "Error";
+    msgEl.className = "msg err";
+  }
+  btn.disabled = false;
+}
+async function runNowRow(e) {
+  const btn = e.target;
+  const tr = btn.closest("tr");
+  const accountId = tr.dataset.accountId;
+  const locationId = tr.dataset.locationId;
+  const msgEl = tr.querySelector("[data-msg]");
+  msgEl.textContent = "";
+  msgEl.className = "msg";
+  if (!locationId) {
+    msgEl.textContent = "No location";
+    msgEl.className = "msg err";
+    return;
+  }
+  btn.disabled = true;
+  try {
+    const r = await fetch("/auto/process", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ accountId, locationId })
+    });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.error || r.statusText);
+    const res = data.result || {};
+    var txt = "Done. Attempted: " + (res.attempted || 0) + ", succeeded: " + (res.succeeded || 0) + ", failed: " + (res.failed || 0);
+    if ((res.failed || 0) > 0 && Array.isArray(res.details)) {
+      var errDetail = res.details.find(function(d) { return d.status === "error" && d.message; });
+      if (errDetail) txt += " — " + errDetail.message;
+    }
+    msgEl.textContent = txt;
+    msgEl.className = (res.failed || 0) > 0 ? "msg err" : "msg ok";
   } catch (err) {
     msgEl.textContent = err.message || "Error";
     msgEl.className = "msg err";
@@ -983,7 +1019,6 @@ app.get("/google/accounts/:accountId/locations/:locationId/reviews", async (req,
 // Manual trigger for auto-replies (body: accountId, locationId — or env fallback)
 app.post("/auto/process", async (req, res, next) => {
   try {
-    const { getBusiness } = await import("./businesses.js");
     const { accountId, locationId } = req.body || {};
     const a = accountId || process.env.AUTO_REPLY_ACCOUNT_ID;
     const l = locationId || process.env.AUTO_REPLY_LOCATION_ID;
@@ -993,6 +1028,7 @@ app.post("/auto/process", async (req, res, next) => {
     const business = await getBusiness(a);
     const result = await processPendingReviews(a, l, {
       contact: business?.contact,
+      businessName: business?.name || "our business",
       logger: req.log
     });
     res.json({ ok: true, result });

@@ -3,7 +3,7 @@
  * Set ANTHROPIC_API_KEY to enable; falls back to template replies if unset or on error.
  */
 
-const MAX_REPLY_CHARS = 350; // Google review replies work best when concise
+const MAX_REPLY_CHARS = 500; // Google allows more; keep replies readable, truncate at word boundary
 
 /**
  * Generate a single review reply using Claude.
@@ -59,8 +59,12 @@ Write a single, short reply to this review. Output only the reply text, nothing 
     throw new Error("Claude returned no text");
   }
 
-  // Truncate if over limit (safety)
-  return text.length > MAX_REPLY_CHARS ? text.slice(0, MAX_REPLY_CHARS - 3) + "..." : text;
+  // Truncate at word boundary so we don't cut mid-word (e.g. "ba...")
+  if (text.length <= MAX_REPLY_CHARS) return text;
+  const cut = text.slice(0, MAX_REPLY_CHARS - 1);
+  const lastSpace = cut.lastIndexOf(" ");
+  const end = lastSpace > MAX_REPLY_CHARS * 0.7 ? lastSpace : cut.length;
+  return text.slice(0, end).trim() + (end < text.length ? "…" : "");
 }
 
 function mapStarRatingToNumber(starRating) {
