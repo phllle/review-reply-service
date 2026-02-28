@@ -64,7 +64,8 @@ export async function upsertBusiness(config) {
       freeReplyUsed: config.freeReplyUsed ?? existing.freeReplyUsed ?? false,
       trialEndsAt: config.trialEndsAt ?? existing.trialEndsAt ?? (isNew ? getTrialEndsAtForNewBusiness() : null),
       subscribedAt: config.subscribedAt ?? existing.subscribedAt ?? null,
-      stripeCustomerId: config.stripeCustomerId ?? existing.stripeCustomerId ?? null
+      stripeCustomerId: config.stripeCustomerId ?? existing.stripeCustomerId ?? null,
+      isPro: config.isPro ?? existing.isPro ?? false
     };
     return await db.upsertBusinessInDb(merged);
   }
@@ -82,6 +83,7 @@ export async function upsertBusiness(config) {
     trialEndsAt: config.trialEndsAt ?? existing.trialEndsAt ?? (isNew ? getTrialEndsAtForNewBusiness() : null),
     subscribedAt: config.subscribedAt ?? existing.subscribedAt ?? null,
     stripeCustomerId: config.stripeCustomerId ?? existing.stripeCustomerId ?? null,
+    isPro: config.isPro ?? existing.isPro ?? false,
     updatedAt: new Date().toISOString()
   };
   await writeBusinesses(all);

@@ -71,3 +71,41 @@ function mapStarRatingToNumber(starRating) {
   const mapping = { ONE: 1, TWO: 2, THREE: 3, FOUR: 4, FIVE: 5 };
   return mapping[starRating] || null;
 }
+
+/**
+ * Generate a short campaign message (birthday or event) for Replyr Pro.
+ * @param {object} opts - { type: 'birthday'|'event', businessName?, eventName? }
+ * @returns {Promise<string>} - Plain text message; use {{first_name}} and {{offer}} in template.
+ */
+export async function generateCampaignMessageWithClaude(opts = {}) {
+  const apiKey = process.env.ANTHROPIC_API_KEY?.trim();
+  if (!apiKey) throw new Error("ANTHROPIC_API_KEY is not set");
+  const { type = "birthday", businessName = "our business", eventName } = opts;
+  const Anthropic = (await import("@anthropic-ai/sdk")).default;
+  const client = new Anthropic({ apiKey });
+  const model = process.env.ANTHROPIC_MODEL?.trim() || "claude-sonnet-4-20250514";
+
+  const systemPrompt = `You write short, friendly marketing messages for a small business. Rules:
+- Output plain text only. No markdown, bullets, or hashtags.
+- Include placeholders: {{first_name}} for the customer's name, {{offer}} for the discount/offer (e.g. "20% off").
+- Keep it under 150 words. Warm and professional.`;
+
+  const userPrompt =
+    type === "birthday"
+      ? `Business: ${businessName}. Write a birthday email message. Use {{first_name}} and {{offer}}. Example tone: "Happy birthday, {{first_name}}! As a thank you, {{offer}}. We hope to see you soon."`
+      : `Business: ${businessName}. Write a short promotional email for the event: ${eventName || "holiday"}. Use {{first_name}} and {{offer}}. Keep it brief and inviting.`;
+
+  const message = await client.messages.create({
+    model,
+    max_tokens: 256,
+    system: systemPrompt,
+    messages: [{ role: "user", content: userPrompt }]
+  });
+
+  const text = message.content
+    ?.filter((block) => block.type === "text")
+    ?.map((block) => block.text)
+    ?.join("")
+    ?.trim();
+  return text || "Happy birthday, {{first_name}}! As a thank you, {{offer}}. We hope to see you soon.";
+}
