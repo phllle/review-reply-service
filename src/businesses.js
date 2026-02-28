@@ -9,6 +9,12 @@ const BUSINESSES_PATH = path.resolve(__dirname, "..", "businesses.json");
 
 const DEFAULT_CONTACT = "us using the contact details on our Google Business listing";
 
+function getTrialEndsAtForNewBusiness() {
+  const d = new Date();
+  d.setUTCDate(d.getUTCDate() + 30);
+  return d.toISOString();
+}
+
 async function readBusinesses() {
   if (db.useDb()) {
     return await db.getAllBusinessesFromDb();
@@ -47,18 +53,24 @@ export async function upsertBusiness(config) {
   if (db.useDb()) {
     const all = await readBusinesses();
     const existing = all[config.accountId] || {};
+    const isNew = !existing.accountId;
     const merged = {
       accountId: config.accountId,
       locationId: config.locationId,
       name: config.name ?? existing.name ?? null,
       contact: config.contact ?? existing.contact ?? DEFAULT_CONTACT,
       autoReplyEnabled: config.autoReplyEnabled ?? existing.autoReplyEnabled ?? false,
-      intervalMinutes: config.intervalMinutes ?? existing.intervalMinutes ?? 30
+      intervalMinutes: config.intervalMinutes ?? existing.intervalMinutes ?? 30,
+      freeReplyUsed: config.freeReplyUsed ?? existing.freeReplyUsed ?? false,
+      trialEndsAt: config.trialEndsAt ?? existing.trialEndsAt ?? (isNew ? getTrialEndsAtForNewBusiness() : null),
+      subscribedAt: config.subscribedAt ?? existing.subscribedAt ?? null,
+      stripeCustomerId: config.stripeCustomerId ?? existing.stripeCustomerId ?? null
     };
     return await db.upsertBusinessInDb(merged);
   }
   const all = await readBusinesses();
   const existing = all[config.accountId] || {};
+  const isNew = !existing.accountId;
   all[config.accountId] = {
     accountId: config.accountId,
     locationId: config.locationId,
@@ -66,16 +78,46 @@ export async function upsertBusiness(config) {
     contact: config.contact ?? existing.contact ?? DEFAULT_CONTACT,
     autoReplyEnabled: config.autoReplyEnabled ?? existing.autoReplyEnabled ?? false,
     intervalMinutes: config.intervalMinutes ?? existing.intervalMinutes ?? 30,
+    freeReplyUsed: config.freeReplyUsed ?? existing.freeReplyUsed ?? false,
+    trialEndsAt: config.trialEndsAt ?? existing.trialEndsAt ?? (isNew ? getTrialEndsAtForNewBusiness() : null),
+    subscribedAt: config.subscribedAt ?? existing.subscribedAt ?? null,
+    stripeCustomerId: config.stripeCustomerId ?? existing.stripeCustomerId ?? null,
     updatedAt: new Date().toISOString()
   };
   await writeBusinesses(all);
   return all[config.accountId];
 }
 
-/** Get all businesses that have auto-reply enabled */
+/** Get accountId for a business with this stripeCustomerId (for webhook). */
+export async function getAccountIdByStripeCustomerId(stripeCustomerId) {
+  if (!stripeCustomerId) return null;
+  if (db.useDb()) return await db.getAccountIdByStripeCustomerId(stripeCustomerId);
+  const all = await readBusinesses();
+  const found = Object.values(all).find((b) => b.stripeCustomerId === stripeCustomerId);
+  return found?.accountId ?? null;
+}
+
+/** True if trial is still active (no end date or end date in the future) */
+function isTrialActive(b) {
+  if (!b.trialEndsAt) return true;
+  return new Date(b.trialEndsAt) > new Date();
+}
+
+/** True if business has an active subscription */
+function isSubscribed(b) {
+  return !!(b.subscribedAt);
+}
+
+/** Get all businesses that have auto-reply enabled and are allowed to run (trial active or subscribed) */
 export async function getEnabledBusinesses() {
   const all = await readBusinesses();
-  return Object.values(all).filter((b) => b.autoReplyEnabled === true && b.accountId && b.locationId);
+  return Object.values(all).filter(
+    (b) =>
+      b.autoReplyEnabled === true &&
+      b.accountId &&
+      b.locationId &&
+      (isTrialActive(b) || isSubscribed(b))
+  );
 }
 
 export { DEFAULT_CONTACT };
