@@ -57,6 +57,63 @@ export async function init() {
   } catch (err) {
     if (err.code !== "42701") throw err;
   }
+  try {
+    await client.query("ALTER TABLE businesses ADD COLUMN is_pro BOOLEAN NOT NULL DEFAULT false");
+  } catch (err) {
+    if (err.code !== "42701") throw err;
+  }
+  // Replyr Pro: contacts per business (email required; first_name, birthday, phone optional)
+  await client.query(`
+    CREATE TABLE IF NOT EXISTS pro_contacts (
+      account_id TEXT NOT NULL,
+      email TEXT NOT NULL,
+      first_name TEXT,
+      birthday TEXT,
+      phone TEXT,
+      unsubscribed_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (account_id, email)
+    );
+    CREATE INDEX IF NOT EXISTS idx_pro_contacts_account ON pro_contacts(account_id);
+  `);
+  // Pro campaigns: birthday settings (one per business)
+  await client.query(`
+    CREATE TABLE IF NOT EXISTS pro_birthday_settings (
+      account_id TEXT PRIMARY KEY,
+      enabled BOOLEAN NOT NULL DEFAULT false,
+      message_text TEXT,
+      offer_text TEXT,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+  `);
+  // Pro event campaigns: opt-in per event per year (e.g. mothers_day_2026)
+  await client.query(`
+    CREATE TABLE IF NOT EXISTS pro_event_campaigns (
+      account_id TEXT NOT NULL,
+      event_key TEXT NOT NULL,
+      event_year INTEGER NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending',
+      message_text TEXT,
+      offer_text TEXT,
+      confirmed_at TIMESTAMPTZ,
+      sent_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (account_id, event_key, event_year)
+    );
+  `);
+  // Pro one-off campaigns (business picks date, subject, body)
+  await client.query(`
+    CREATE TABLE IF NOT EXISTS pro_one_off_campaigns (
+      id SERIAL PRIMARY KEY,
+      account_id TEXT NOT NULL,
+      send_date DATE NOT NULL,
+      subject TEXT NOT NULL,
+      body TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'scheduled',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS idx_pro_one_off_account_date ON pro_one_off_campaigns(account_id, send_date);
+  `);
 }
 
 // --- Tokens (keyed by accountId) ---
@@ -87,7 +144,7 @@ export async function writeTokens(data) {
 
 export async function getAllBusinessesFromDb() {
   const res = await getPool().query(
-    "SELECT account_id, location_id, name, contact, auto_reply_enabled, interval_minutes, updated_at, free_reply_used, trial_ends_at, subscribed_at, stripe_customer_id FROM businesses"
+    "SELECT account_id, location_id, name, contact, auto_reply_enabled, interval_minutes, updated_at, free_reply_used, trial_ends_at, subscribed_at, stripe_customer_id, is_pro FROM businesses"
   );
   const out = {};
   for (const row of res.rows) {
@@ -102,7 +159,8 @@ export async function getAllBusinessesFromDb() {
       freeReplyUsed: row.free_reply_used ?? false,
       trialEndsAt: row.trial_ends_at ? new Date(row.trial_ends_at).toISOString() : null,
       subscribedAt: row.subscribed_at ? new Date(row.subscribed_at).toISOString() : null,
-      stripeCustomerId: row.stripe_customer_id ?? null
+      stripeCustomerId: row.stripe_customer_id ?? null,
+      isPro: row.is_pro ?? false
     };
   }
   return out;
@@ -110,7 +168,7 @@ export async function getAllBusinessesFromDb() {
 
 export async function getBusinessFromDb(accountId) {
   const res = await getPool().query(
-    "SELECT account_id, location_id, name, contact, auto_reply_enabled, interval_minutes, updated_at, free_reply_used, trial_ends_at, subscribed_at, stripe_customer_id FROM businesses WHERE account_id = $1",
+    "SELECT account_id, location_id, name, contact, auto_reply_enabled, interval_minutes, updated_at, free_reply_used, trial_ends_at, subscribed_at, stripe_customer_id, is_pro FROM businesses WHERE account_id = $1",
     [accountId]
   );
   const row = res.rows[0];
@@ -126,7 +184,8 @@ export async function getBusinessFromDb(accountId) {
     freeReplyUsed: row.free_reply_used ?? false,
     trialEndsAt: row.trial_ends_at ? new Date(row.trial_ends_at).toISOString() : null,
     subscribedAt: row.subscribed_at ? new Date(row.subscribed_at).toISOString() : null,
-    stripeCustomerId: row.stripe_customer_id ?? null
+    stripeCustomerId: row.stripe_customer_id ?? null,
+    isPro: row.is_pro ?? false
   };
 }
 
@@ -136,6 +195,7 @@ export async function upsertBusinessInDb(config) {
   const trialEndsAt = config.trialEndsAt !== undefined ? config.trialEndsAt : existing?.trialEndsAt ?? null;
   const subscribedAt = config.subscribedAt !== undefined ? config.subscribedAt : existing?.subscribedAt ?? null;
   const stripeCustomerId = config.stripeCustomerId !== undefined ? config.stripeCustomerId : existing?.stripeCustomerId ?? null;
+  const isPro = config.isPro !== undefined ? config.isPro : existing?.isPro ?? false;
   const row = {
     account_id: config.accountId,
     location_id: config.locationId,
@@ -147,14 +207,15 @@ export async function upsertBusinessInDb(config) {
     free_reply_used: config.freeReplyUsed ?? existing?.freeReplyUsed ?? false,
     trial_ends_at: trialEndsAt,
     subscribed_at: subscribedAt,
-    stripe_customer_id: stripeCustomerId
+    stripe_customer_id: stripeCustomerId,
+    is_pro: isPro
   };
   await getPool().query(
-    `INSERT INTO businesses (account_id, location_id, name, contact, auto_reply_enabled, interval_minutes, updated_at, free_reply_used, trial_ends_at, subscribed_at, stripe_customer_id)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+    `INSERT INTO businesses (account_id, location_id, name, contact, auto_reply_enabled, interval_minutes, updated_at, free_reply_used, trial_ends_at, subscribed_at, stripe_customer_id, is_pro)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
      ON CONFLICT (account_id) DO UPDATE SET
-       location_id = $2, name = $3, contact = $4, auto_reply_enabled = $5, interval_minutes = $6, updated_at = $7, free_reply_used = $8, trial_ends_at = $9, subscribed_at = $10, stripe_customer_id = $11`,
-    [row.account_id, row.location_id, row.name, row.contact, row.auto_reply_enabled, row.interval_minutes, row.updated_at, row.free_reply_used, row.trial_ends_at, row.subscribed_at, row.stripe_customer_id]
+       location_id = $2, name = $3, contact = $4, auto_reply_enabled = $5, interval_minutes = $6, updated_at = $7, free_reply_used = $8, trial_ends_at = $9, subscribed_at = $10, stripe_customer_id = $11, is_pro = $12`,
+    [row.account_id, row.location_id, row.name, row.contact, row.auto_reply_enabled, row.interval_minutes, row.updated_at, row.free_reply_used, row.trial_ends_at, row.subscribed_at, row.stripe_customer_id, row.is_pro]
   );
   return {
     accountId: row.account_id,
@@ -167,7 +228,8 @@ export async function upsertBusinessInDb(config) {
     freeReplyUsed: row.free_reply_used,
     trialEndsAt: row.trial_ends_at ? new Date(row.trial_ends_at).toISOString() : null,
     subscribedAt: row.subscribed_at ? new Date(row.subscribed_at).toISOString() : null,
-    stripeCustomerId: row.stripe_customer_id ?? null
+    stripeCustomerId: row.stripe_customer_id ?? null,
+    isPro: row.is_pro ?? false
   };
 }
 
@@ -206,4 +268,163 @@ export async function setAutoState(accountId, locationId, state) {
 
 export function useDb() {
   return Boolean(process.env.DATABASE_URL);
+}
+
+// --- Pro contacts (Replyr Pro: CSV upload, per-account) ---
+
+/** Get set of emails that have unsubscribed for this account (so we preserve opt-out on replace). */
+export async function getProContactUnsubscribedEmails(accountId) {
+  const res = await getPool().query(
+    "SELECT email FROM pro_contacts WHERE account_id = $1 AND unsubscribed_at IS NOT NULL",
+    [accountId]
+  );
+  return new Set(res.rows.map((r) => (r.email || "").toLowerCase()));
+}
+
+export async function replaceProContacts(accountId, rows) {
+  const client = getPool();
+  const unsubscribedSet = await getProContactUnsubscribedEmails(accountId);
+  await client.query("DELETE FROM pro_contacts WHERE account_id = $1", [accountId]);
+  if (!rows.length) return;
+  const now = new Date().toISOString();
+  for (const r of rows) {
+    const email = (r.email || "").trim().toLowerCase();
+    if (!email) continue;
+    const unsub = unsubscribedSet.has(email);
+    await client.query(
+      `INSERT INTO pro_contacts (account_id, email, first_name, birthday, phone, unsubscribed_at, created_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+      [
+        accountId,
+        email,
+        (r.first_name || r.firstName || "").trim() || null,
+        (r.birthday || r.birth_date || "").trim() || null,
+        (r.phone || "").trim() || null,
+        unsub ? now : null,
+        now
+      ]
+    );
+  }
+}
+
+export async function getProContactsCount(accountId) {
+  const res = await getPool().query(
+    "SELECT COUNT(*) AS total, COUNT(*) FILTER (WHERE unsubscribed_at IS NOT NULL) AS unsubscribed FROM pro_contacts WHERE account_id = $1",
+    [accountId]
+  );
+  const row = res.rows[0];
+  return { total: Number(row?.total ?? 0), unsubscribed: Number(row?.unsubscribed ?? 0) };
+}
+
+export async function setProContactUnsubscribed(accountId, email) {
+  await getPool().query(
+    "UPDATE pro_contacts SET unsubscribed_at = NOW() WHERE account_id = $1 AND LOWER(TRIM(email)) = LOWER(TRIM($2))",
+    [accountId, email]
+  );
+}
+
+// --- Pro birthday settings ---
+export async function getProBirthdaySettings(accountId) {
+  const res = await getPool().query(
+    "SELECT enabled, message_text, offer_text, updated_at FROM pro_birthday_settings WHERE account_id = $1",
+    [accountId]
+  );
+  const row = res.rows[0];
+  if (!row) return null;
+  return {
+    enabled: row.enabled ?? false,
+    messageText: row.message_text ?? "",
+    offerText: row.offer_text ?? "",
+    updatedAt: row.updated_at ? new Date(row.updated_at).toISOString() : null
+  };
+}
+
+export async function setProBirthdaySettings(accountId, settings) {
+  const { enabled = false, messageText = "", offerText = "" } = settings;
+  await getPool().query(
+    `INSERT INTO pro_birthday_settings (account_id, enabled, message_text, offer_text, updated_at)
+     VALUES ($1, $2, $3, $4, NOW())
+     ON CONFLICT (account_id) DO UPDATE SET enabled = $2, message_text = $3, offer_text = $4, updated_at = NOW()`,
+    [accountId, !!enabled, messageText, offerText]
+  );
+  return getProBirthdaySettings(accountId);
+}
+
+// --- Pro event campaigns ---
+export async function getProEventCampaign(accountId, eventKey, eventYear) {
+  const res = await getPool().query(
+    "SELECT status, message_text, offer_text, confirmed_at, sent_at FROM pro_event_campaigns WHERE account_id = $1 AND event_key = $2 AND event_year = $3",
+    [accountId, eventKey, eventYear]
+  );
+  const row = res.rows[0];
+  if (!row) return null;
+  return {
+    status: row.status,
+    messageText: row.message_text ?? "",
+    offerText: row.offer_text ?? "",
+    confirmedAt: row.confirmed_at ? new Date(row.confirmed_at).toISOString() : null,
+    sentAt: row.sent_at ? new Date(row.sent_at).toISOString() : null
+  };
+}
+
+export async function upsertProEventCampaign(accountId, eventKey, eventYear, data) {
+  const { status, messageText = "", offerText = "", confirmedAt, sentAt } = data;
+  await getPool().query(
+    `INSERT INTO pro_event_campaigns (account_id, event_key, event_year, status, message_text, offer_text, confirmed_at, sent_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+     ON CONFLICT (account_id, event_key, event_year) DO UPDATE SET status = $4, message_text = $5, offer_text = $6, confirmed_at = $7, sent_at = $8`,
+    [accountId, eventKey, eventYear, status || "pending", messageText, offerText, confirmedAt || null, sentAt || null]
+  );
+  return getProEventCampaign(accountId, eventKey, eventYear);
+}
+
+export async function getProEventCampaignsDueToSend() {
+  const res = await getPool().query(
+    `SELECT account_id, event_key, event_year FROM pro_event_campaigns
+     WHERE status = 'confirmed' AND sent_at IS NULL`
+  );
+  return res.rows.map((r) => ({ accountId: r.account_id, eventKey: r.event_key, eventYear: r.event_year }));
+}
+
+export async function markProEventCampaignSent(accountId, eventKey, eventYear) {
+  await getPool().query(
+    "UPDATE pro_event_campaigns SET sent_at = NOW(), status = 'sent' WHERE account_id = $1 AND event_key = $2 AND event_year = $3",
+    [accountId, eventKey, eventYear]
+  );
+}
+
+// --- Pro one-off campaigns ---
+export async function createProOneOffCampaign(accountId, sendDate, subject, body) {
+  const res = await getPool().query(
+    `INSERT INTO pro_one_off_campaigns (account_id, send_date, subject, body, status)
+     VALUES ($1, $2, $3, $4, 'scheduled') RETURNING id, account_id, send_date, subject, body, status, created_at`,
+    [accountId, sendDate, subject, body]
+  );
+  const row = res.rows[0];
+  return row ? { id: row.id, accountId: row.account_id, sendDate: row.send_date, subject: row.subject, body: row.body, status: row.status, createdAt: row.created_at } : null;
+}
+
+export async function getProOneOffCampaignsDueToSend() {
+  const res = await getPool().query(
+    `SELECT id, account_id, subject, body FROM pro_one_off_campaigns
+     WHERE status = 'scheduled' AND send_date <= CURRENT_DATE`
+  );
+  return res.rows;
+}
+
+export async function markProOneOffCampaignSent(id) {
+  await getPool().query("UPDATE pro_one_off_campaigns SET status = 'sent' WHERE id = $1", [id]);
+}
+
+// --- Pro contacts for sending (non-unsubscribed) ---
+export async function getProContactsForSending(accountId) {
+  const res = await getPool().query(
+    "SELECT email, first_name, birthday FROM pro_contacts WHERE account_id = $1 AND unsubscribed_at IS NULL",
+    [accountId]
+  );
+  return res.rows.map((r) => ({
+    email: r.email,
+    firstName: r.first_name ?? "",
+    birthday: r.birthday ?? ""
+  }));
 }
