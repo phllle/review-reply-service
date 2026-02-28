@@ -25,3 +25,11 @@ On Railway (or any host with ephemeral filesystem), set **DATABASE_URL** to a Po
 
 ### AI replies (Anthropic Claude)
 To use Claude for generating review replies instead of templates, set **ANTHROPIC_API_KEY** (from [Anthropic Console](https://console.anthropic.com)). Optional: **ANTHROPIC_MODEL** (default `claude-sonnet-4-20250514`). Replies are based on star rating; for 1–2 star reviews Claude is prompted to include the business’s contact info (from the connected page). Replies are Claude-only; if the key is unset or the API fails for a review, that review is skipped (no reply posted).
+
+### Failure alerts (email & SMS)
+When the scheduled auto-reply run throws or any reply fails, you can get notified:
+
+- **Email:** Set **ALERT_EMAIL** (e.g. `you@example.com`) and **RESEND_API_KEY** (from [Resend](https://resend.com)). Optional: **ALERT_FROM_EMAIL** (default `Replyr <onboarding@resend.dev>`; use a verified domain in production).
+- **SMS:** Set **ALERT_PHONE** (e.g. `+15551234567`), **TWILIO_ACCOUNT_SID**, **TWILIO_AUTH_TOKEN**, and **TWILIO_FROM_NUMBER** (from [Twilio](https://twilio.com)).
+
+You can set only one or both. Alerts are sent when the scheduler tick throws (e.g. API error) or when any reply in a run fails (e.g. Claude or Google API failure).

@@ -49,6 +49,27 @@ app.get("/healthz", (req, res) => {
   res.json({ ok: true });
 });
 
+// Test failure alert (sends a sample email/SMS). Set TEST_ALERT_SECRET in env, then: GET /test-alert?secret=YOUR_SECRET
+app.get("/test-alert", async (req, res, next) => {
+  try {
+    const secret = (req.query.secret || "").trim();
+    const expected = process.env.TEST_ALERT_SECRET?.trim();
+    if (!expected || secret !== expected) {
+      return res.status(400).json({ error: "Missing or invalid secret. Set TEST_ALERT_SECRET and use ?secret= that value." });
+    }
+    const { sendFailureAlert } = await import("./alert.js");
+    await sendFailureAlert({
+      businessName: "Test Business",
+      accountId: "test-account",
+      error: new Error("This is a test alert. If you got this, failure alerts are working.")
+    });
+    res.json({ ok: true, message: "Test alert sent. Check " + (process.env.ALERT_EMAIL || "ALERT_EMAIL") + " (and phone if configured)." });
+  } catch (err) {
+    req.log?.error(err, "Test alert failed");
+    next(err);
+  }
+});
+
 async function stripeWebhook(req, res) {
   const secret = process.env.STRIPE_WEBHOOK_SECRET;
   if (!secret) {
