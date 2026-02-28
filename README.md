@@ -22,3 +22,6 @@ On Railway (or any host with ephemeral filesystem), set **DATABASE_URL** to a Po
 - **STRIPE_SECRET_KEY** – Required for Checkout and webhook. **STRIPE_PRICE_ID** – Price ID (e.g. `price_xxx`) for `POST /create-checkout-session` so we can pass `accountId` and record subscription in the webhook.
 - **STRIPE_WEBHOOK_SECRET** – From Stripe Dashboard → Developers → Webhooks → Add endpoint: `https://your-app.up.railway.app/webhooks/stripe`, events `checkout.session.completed` and `customer.subscription.deleted`.
 - **STRIPE_CUSTOMER_PORTAL_URL** – Billing portal link (Settings → Billing → Customer portal). **BASE_URL** – Optional; e.g. `https://your-app.up.railway.app` for success/cancel URLs in Checkout.
+
+### AI replies (Anthropic Claude)
+To use Claude for generating review replies instead of templates, set **ANTHROPIC_API_KEY** (from [Anthropic Console](https://console.anthropic.com)). Optional: **ANTHROPIC_MODEL** (default `claude-sonnet-4-20250514`). Replies are based on star rating; for 1–2 star reviews Claude is prompted to include the business’s contact info (from the connected page). If the key is unset or the API fails, the app falls back to template replies.
