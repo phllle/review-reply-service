@@ -461,29 +461,34 @@ app.get("/subscribe", (req, res) => {
     if (!btn || !page) return;
     var accountId = (page.getAttribute("data-account-id") || "").trim();
     var fallbackUrl = (page.getAttribute("data-fallback-url") || "").trim() || "#";
-    function go(url) {
+    function go(url, openInNewTab) {
       if (!url || url === "#" || url.indexOf("http") !== 0) {
         if (msgEl) { msgEl.textContent = "Subscribe link not set up. Add SUBSCRIBE_URL, or STRIPE_SECRET_KEY + STRIPE_PRICE_ID for Checkout."; }
         return;
       }
-      window.location.href = url;
+      if (openInNewTab) {
+        window.open(url, "_blank", "noopener,noreferrer");
+        if (msgEl) msgEl.textContent = "Opened in a new tab. Complete payment there.";
+      } else {
+        window.location.href = url;
+      }
     }
     btn.addEventListener("click", function() {
       if (msgEl) msgEl.textContent = "";
-      if (!accountId) { go(fallbackUrl); return; }
+      if (!accountId) { go(fallbackUrl, true); return; }
       btn.disabled = true;
       if (msgEl) msgEl.textContent = "Opening checkout…";
       fetch("/create-checkout-session", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ accountId: accountId })
-      }).then(function(r) { return r.json().then(function(data) { return { ok: r.ok, data: data }; }); }).then(function(result) {
-        if (result.data && result.data.url) { go(result.data.url); return; }
+      }).then(function(r) { return r.json().then(function(data) { return { ok: r.ok, data: data }; }).catch(function() { return { ok: false, data: null }; }); }).then(function(result) {
+        if (result.data && result.data.url) { go(result.data.url, true); return; }
         if (!result.ok && result.data && result.data.error && msgEl) msgEl.textContent = result.data.error;
-        go(fallbackUrl);
+        go(fallbackUrl, true);
       }).catch(function() {
-        if (msgEl) msgEl.textContent = "Request failed. Opening payment link…";
-        go(fallbackUrl);
+        if (msgEl) msgEl.textContent = "Request failed. Opening payment link in new tab…";
+        go(fallbackUrl, true);
       }).finally(function() { btn.disabled = false; });
     });
   })();
