@@ -76,6 +76,23 @@ function getName(review) {
   return raw.split(" ")[0];
 }
 
+/** Build reply using Claude if ANTHROPIC_API_KEY is set, otherwise template. */
+export async function getReplyText(review, options = {}) {
+  const { contact: contactOverride, businessName } = options;
+  if (process.env.ANTHROPIC_API_KEY?.trim()) {
+    try {
+      const { generateReplyWithClaude } = await import("./ai.js");
+      return await generateReplyWithClaude(review, {
+        contact: contactOverride ?? process.env.AUTO_REPLY_CONTACT ?? "",
+        businessName: businessName || "our business"
+      });
+    } catch (err) {
+      if (options.logger) options.logger.warn?.(err, "Claude reply failed, using template");
+    }
+  }
+  return buildReplyText(review, contactOverride);
+}
+
 export function buildReplyText(review, contactOverride) {
   const rating = mapStarRatingToNumber(review?.starRating);
   const name = getName(review);
@@ -123,7 +140,7 @@ export function buildReplyText(review, contactOverride) {
 }
 
 export async function processPendingReviews(accountId, locationId, options = {}) {
-  const { contact: contactOverride, logger = console } = options;
+  const { contact: contactOverride, businessName, logger = console } = options;
   const state = await readState(accountId, locationId);
   const alreadyReplied = new Set(state.repliedReviewIds || []);
 
@@ -145,7 +162,11 @@ export async function processPendingReviews(accountId, locationId, options = {})
   for (const review of toReply) {
     const reviewId = review.reviewId || review.name;
     const rating = mapStarRatingToNumber(review.starRating);
-    const comment = buildReplyText(review, contactOverride);
+    const comment = await getReplyText(review, {
+      contact: contactOverride,
+      businessName,
+      logger
+    });
     results.attempted += 1;
     try {
       await replyToReview(accountId, locationId, reviewId, comment);
@@ -193,6 +214,7 @@ export function startScheduler(appLogger = console) {
     for (const biz of businesses) {
       processPendingReviews(biz.accountId, biz.locationId, {
         contact: biz.contact,
+        businessName: biz.name || "our business",
         logger: appLogger
       }).catch((err) => {
         appLogger.error?.(err, { accountId: biz.accountId }, "Auto-reply tick failed");

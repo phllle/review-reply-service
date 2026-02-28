@@ -6,7 +6,7 @@ import pino from "pino";
 import pinoHttp from "pino-http";
 import * as db from "./db.js";
 import { getAuthUrl, handleOAuthCallback, getTokenStatus, replyToReview, listAccounts, listLocations, listReviews } from "./google.js";
-import { processPendingReviews, startScheduler, buildReplyText, addRepliedReviewId } from "./auto.js";
+import { processPendingReviews, startScheduler, buildReplyText, getReplyText, addRepliedReviewId } from "./auto.js";
 import { getAllBusinesses, getBusiness, upsertBusiness, getAccountIdByStripeCustomerId } from "./businesses.js";
 import Stripe from "stripe";
 
@@ -713,7 +713,10 @@ app.post("/free-reply", async (req, res, next) => {
     if (!reviewId) {
       return res.status(500).json({ error: "Could not get review id" });
     }
-    const comment = buildReplyText(unreplied, contact);
+    const comment = await getReplyText(unreplied, {
+      contact,
+      businessName: business.name || "our business"
+    });
     await replyToReview(accountId, locationId, reviewId, comment);
     await addRepliedReviewId(accountId, locationId, reviewId);
     await upsertBusiness({ ...business, freeReplyUsed: true });
