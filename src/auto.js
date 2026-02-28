@@ -156,9 +156,26 @@ export function startScheduler(appLogger = console) {
         contact: biz.contact,
         businessName: biz.name || "our business",
         logger: appLogger
-      }).catch((err) => {
-        appLogger.error?.(err, { accountId: biz.accountId }, "Auto-reply tick failed");
-      });
+      })
+        .then(async (result) => {
+          if (result.failed > 0) {
+            const { sendFailureAlert } = await import("./alert.js");
+            await sendFailureAlert({
+              businessName: biz.name,
+              accountId: biz.accountId,
+              result
+            });
+          }
+        })
+        .catch(async (err) => {
+          appLogger.error?.(err, { accountId: biz.accountId }, "Auto-reply tick failed");
+          const { sendFailureAlert } = await import("./alert.js");
+          await sendFailureAlert({
+            businessName: biz.name,
+            accountId: biz.accountId,
+            error: err
+          });
+        });
     }
   }, intervalMs);
   return handle;
