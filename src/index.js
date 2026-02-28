@@ -467,8 +467,13 @@ app.get("/subscribe", (req, res) => {
         return;
       }
       if (openInNewTab) {
-        window.open(url, "_blank", "noopener,noreferrer");
-        if (msgEl) msgEl.textContent = "Opened in a new tab. Complete payment there.";
+        var w = window.open(url, "_blank", "noopener,noreferrer");
+        if (w) {
+          if (msgEl) msgEl.textContent = "Opened in a new tab. Complete payment there.";
+        } else {
+          if (msgEl) msgEl.textContent = "Redirecting… (allow popups if you prefer a new tab)";
+          window.location.href = url;
+        }
       } else {
         window.location.href = url;
       }
