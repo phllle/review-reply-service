@@ -45,6 +45,16 @@ async function writeState(accountId, locationId, state) {
   await fs.writeFile(STATE_PATH, JSON.stringify(all, null, 2), "utf8");
 }
 
+/** Add a review ID to the replied list (for free-reply or manual). Works with file or DB. */
+export async function addRepliedReviewId(accountId, locationId, reviewId) {
+  const state = await readState(accountId, locationId);
+  state.repliedReviewIds = state.repliedReviewIds || [];
+  if (!state.repliedReviewIds.includes(reviewId)) {
+    state.repliedReviewIds.push(reviewId);
+    await writeState(accountId, locationId, state);
+  }
+}
+
 function mapStarRatingToNumber(starRating) {
   const mapping = {
     ONE: 1,
@@ -66,7 +76,7 @@ function getName(review) {
   return raw.split(" ")[0];
 }
 
-function buildReplyText(review, contactOverride) {
+export function buildReplyText(review, contactOverride) {
   const rating = mapStarRatingToNumber(review?.starRating);
   const name = getName(review);
   const contact =
