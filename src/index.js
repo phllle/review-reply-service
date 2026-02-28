@@ -45,6 +45,77 @@ app.get("/healthz", (req, res) => {
   res.json({ ok: true });
 });
 
+// Signup/landing page – connect with Google
+function signupPageHtml() {
+  return `
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Review Reply – Get started</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { font-family: system-ui, sans-serif; margin: 0; min-height: 100vh; display: flex; align-items: center; justify-content: center; background: #f5f5f5; }
+    .card { background: #fff; padding: 2.5rem; border-radius: 12px; box-shadow: 0 2px 12px rgba(0,0,0,0.08); max-width: 420px; text-align: center; }
+    h1 { margin: 0 0 0.5rem; font-size: 1.5rem; color: #222; }
+    p { margin: 0 0 1.5rem; color: #555; line-height: 1.5; font-size: 0.95rem; }
+    a.btn { display: inline-block; padding: 0.75rem 1.5rem; background: #333; color: #fff; text-decoration: none; border-radius: 8px; font-weight: 500; }
+    a.btn:hover { background: #555; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>Reply to your Google reviews</h1>
+    <p>Connect your Google Business Profile to reply to reviews from one place, or turn on automatic replies.</p>
+    <a href="/auth/google" class="btn">Connect with Google</a>
+  </div>
+</body>
+</html>
+  `;
+}
+app.get("/", (req, res) => {
+  res.set("Content-Type", "text/html; charset=utf-8");
+  res.send(signupPageHtml());
+});
+app.get("/signup", (req, res) => {
+  res.set("Content-Type", "text/html; charset=utf-8");
+  res.send(signupPageHtml());
+});
+
+// Success page after OAuth (callback redirects here)
+app.get("/connected", (req, res) => {
+  const name = (req.query.name && String(req.query.name).trim()) || "your business";
+  res.set("Content-Type", "text/html; charset=utf-8");
+  res.send(`
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Connected – Review Reply</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { font-family: system-ui, sans-serif; margin: 0; min-height: 100vh; display: flex; align-items: center; justify-content: center; background: #f5f5f5; }
+    .card { background: #fff; padding: 2.5rem; border-radius: 12px; box-shadow: 0 2px 12px rgba(0,0,0,0.08); max-width: 420px; text-align: center; }
+    h1 { margin: 0 0 0.5rem; font-size: 1.5rem; color: #222; }
+    p { margin: 0; color: #555; line-height: 1.5; font-size: 0.95rem; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>You're connected</h1>
+    <p>${escapeHtml(name)} is set up. We'll help you reply to Google reviews from here.</p>
+  </div>
+</body>
+</html>
+  `);
+});
+function escapeHtml(s) {
+  const d = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" };
+  return String(s).replace(/[&<>"]/g, (c) => d[c]);
+}
+
 app.get("/auth/google", async (req, res, next) => {
   try {
     const url = await getAuthUrl();
@@ -73,13 +144,8 @@ app.get("/auth/google/callback", async (req, res, next) => {
       locationId: locationId || "",
       name
     });
-    res.json({
-      ok: true,
-      message: "Google connected",
-      accountId,
-      locationId,
-      businessName: name
-    });
+    const redirectName = name || "your business";
+    res.redirect("/connected?name=" + encodeURIComponent(redirectName));
   } catch (err) {
     req.log.error(err, "OAuth callback failed");
     next(err);
