@@ -418,8 +418,9 @@ app.get("/subscribe", (req, res) => {
     .plan-features li { position: relative; padding-left: 1.25rem; margin-bottom: 0.4rem; color: #444; font-size: 0.9rem; }
     .plan-features li::before { content: ""; position: absolute; left: 0; top: 0.45em; width: 6px; height: 6px; background: #2160F3; border-radius: 50%; }
     .cta-wrap { text-align: center; margin-top: 1.25rem; }
-    a.cta-btn { display: inline-block; padding: 0.75rem 1.5rem; background: #2160F3; color: #fff; text-decoration: none; border-radius: 8px; font-weight: 600; font-size: 1rem; }
-    a.cta-btn:hover { background: #1d4ed8; }
+    .cta-msg { word-break: break-word; }
+    a.cta-btn, button.cta-btn { display: inline-block; padding: 0.75rem 1.5rem; background: #2160F3; color: #fff; text-decoration: none; border-radius: 8px; font-weight: 600; font-size: 1rem; }
+    a.cta-btn:hover, button.cta-btn:hover { background: #1d4ed8; }
     .back { text-align: center; margin-top: 1rem; }
     .back a { color: #2160F3; text-decoration: none; font-size: 0.9rem; }
     .back a:hover { text-decoration: underline; }
@@ -446,6 +447,7 @@ app.get("/subscribe", (req, res) => {
       </ul>
       <div class="cta-wrap">
         <button type="button" id="subscribe-cta" class="cta-btn" style="border:none;cursor:pointer;font:inherit;">${escapeHtml(ctaText)}</button>
+        <p id="subscribe-cta-msg" class="cta-msg" style="margin-top:0.5rem;font-size:0.9rem;min-height:1.2em;color:#c62828;" aria-live="polite"></p>
       </div>
     </div>
     ${hasBillingPortal ? `<p class="back" style="margin-bottom:0.5rem;"><a href="${escapeHtml(billingPortalUrl)}" target="_blank" rel="noopener">Manage billing / subscription</a></p>` : ""}
@@ -454,21 +456,35 @@ app.get("/subscribe", (req, res) => {
   <script>
   (function() {
     var btn = document.getElementById("subscribe-cta");
+    var msgEl = document.getElementById("subscribe-cta-msg");
     var page = document.querySelector(".subscribe-page");
     if (!btn || !page) return;
     var accountId = (page.getAttribute("data-account-id") || "").trim();
-    var fallbackUrl = page.getAttribute("data-fallback-url") || "#";
+    var fallbackUrl = (page.getAttribute("data-fallback-url") || "").trim() || "#";
+    function go(url) {
+      if (!url || url === "#" || url.indexOf("http") !== 0) {
+        if (msgEl) { msgEl.textContent = "Subscribe link not set up. Add SUBSCRIBE_URL, or STRIPE_SECRET_KEY + STRIPE_PRICE_ID for Checkout."; }
+        return;
+      }
+      window.location.href = url;
+    }
     btn.addEventListener("click", function() {
-      if (!accountId) { window.location.href = fallbackUrl; return; }
+      if (msgEl) msgEl.textContent = "";
+      if (!accountId) { go(fallbackUrl); return; }
       btn.disabled = true;
+      if (msgEl) msgEl.textContent = "Opening checkout…";
       fetch("/create-checkout-session", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ accountId: accountId })
-      }).then(function(r) { return r.json(); }).then(function(data) {
-        if (data && data.url) { window.location.href = data.url; return; }
-        window.location.href = fallbackUrl;
-      }).catch(function() { window.location.href = fallbackUrl; }).finally(function() { btn.disabled = false; });
+      }).then(function(r) { return r.json().then(function(data) { return { ok: r.ok, data: data }; }); }).then(function(result) {
+        if (result.data && result.data.url) { go(result.data.url); return; }
+        if (!result.ok && result.data && result.data.error && msgEl) msgEl.textContent = result.data.error;
+        go(fallbackUrl);
+      }).catch(function() {
+        if (msgEl) msgEl.textContent = "Request failed. Opening payment link…";
+        go(fallbackUrl);
+      }).finally(function() { btn.disabled = false; });
     });
   })();
   </script>
