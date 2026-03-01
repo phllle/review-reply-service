@@ -1,9 +1,14 @@
 import "dotenv/config";
+import path from "path";
+import { fileURLToPath } from "url";
+import fs from "fs";
 import express from "express";
 import helmet from "helmet";
 import cors from "cors";
 import pino from "pino";
 import pinoHttp from "pino-http";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 import * as db from "./db.js";
 import { getAuthUrl, handleOAuthCallback, getTokenStatus, replyToReview, listAccounts, listLocations, listReviews } from "./google.js";
 import { processPendingReviews, startScheduler, getReplyText, addRepliedReviewId } from "./auto.js";
@@ -11,10 +16,11 @@ import { getAllBusinesses, getBusiness, upsertBusiness, getAccountIdByStripeCust
 import { replaceProContacts, getProContactsCount, setProContactUnsubscribed } from "./proContacts.js";
 import { parseProCsv, validateFile } from "./csvPro.js";
 import { verifyUnsubscribeToken } from "./campaignEmail.js";
-import { generateCampaignMessageWithClaude } from "./ai.js";
+import { generateCampaignMessageWithClaude, generateOneOffWithClaude } from "./ai.js";
 import {
   getUpcomingEvents,
   getEventSendDate,
+  getSendDateForEvent,
   sendBirthdayCampaignsForAccount,
   sendEventCampaignForAccount,
   sendOneOffCampaign
@@ -39,8 +45,10 @@ async function runCampaignScheduler() {
     }
     const today = new Date().toISOString().slice(0, 10);
     const eventDue = await db.getProEventCampaignsDueToSend();
-    for (const { accountId, eventKey, eventYear } of eventDue) {
-      if (getEventSendDate(eventKey, eventYear) !== today) continue;
+    for (const { accountId, eventKey, eventYear, sendDaysBefore } of eventDue) {
+      const eventDate = getEventSendDate(eventKey, eventYear);
+      const sendDate = getSendDateForEvent(eventDate, sendDaysBefore);
+      if (sendDate !== today) continue;
       try {
         await sendEventCampaignForAccount(accountId, eventKey, eventYear, logger);
       } catch (err) {
@@ -253,70 +261,9 @@ app.post("/create-checkout-session", async (req, res, next) => {
   }
 });
 
-// Signup/landing page – connect with Google
+// Signup/landing page – connect with Google (dark theme, blue accent; see src/views/signup.html)
 function signupPageHtml() {
-  return `
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Replyr – Get started</title>
-  <style>
-    * { box-sizing: border-box; }
-    body { font-family: system-ui, sans-serif; margin: 0; min-height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 2rem 1rem; background: #f5f5f5; gap: 2rem; }
-    .card { background: #fff; padding: 2.5rem; border-radius: 12px; box-shadow: 0 2px 12px rgba(0,0,0,0.08); max-width: 420px; text-align: center; }
-    .examples { max-width: 960px; width: 100%; }
-    .examples h2 { font-size: 1rem; color: #333; margin: 0 0 0.5rem; text-align: center; font-weight: 600; }
-    .examples p:first-of-type { text-align: center; color: #666; font-size: 0.9rem; margin: 0 0 1rem; }
-    .examples-row { display: flex; gap: 1rem; justify-content: center; align-items: stretch; flex-wrap: wrap; }
-    .examples-row img { width: 100%; max-width: 300px; height: 420px; object-fit: contain; object-position: top; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); display: block; background: #fafafa; }
-    .brand { display: flex; align-items: center; justify-content: center; gap: 0.5rem; margin-bottom: 0.25rem; }
-    .logo { width: 36px; height: 36px; flex-shrink: 0; }
-    .logo svg { width: 100%; height: 100%; display: block; }
-    .brand-name { font-size: 1.75rem; font-weight: 700; color: #2C2D32; letter-spacing: -0.02em; }
-    .tagline { margin: 0 0 1rem; color: #555; line-height: 1.5; font-size: 0.95rem; }
-    .features { text-align: left; margin: 0 0 1.5rem; padding: 0 0.5rem; }
-    .features ul { margin: 0; padding: 0; list-style: none; }
-    .features li { position: relative; padding-left: 1.25rem; margin-bottom: 0.5rem; color: #444; font-size: 0.9rem; line-height: 1.4; }
-    .features li::before { content: ""; position: absolute; left: 0; top: 0.4em; width: 6px; height: 6px; background: #2160F3; border-radius: 50%; }
-    a.btn { display: inline-block; padding: 0.75rem 1.5rem; background: #333; color: #fff; text-decoration: none; border-radius: 8px; font-weight: 500; }
-    a.btn:hover { background: #555; }
-    .manage-link { display: block; margin-top: 0.75rem; color: #2160F3; text-decoration: none; font-size: 0.9rem; }
-    .manage-link:hover { text-decoration: underline; }
-  </style>
-</head>
-<body>
-  <div class="card">
-    <div class="brand">
-      <div class="logo" aria-hidden="true"><svg viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg"><rect x="8" y="6" width="24" height="14" rx="4" fill="#2160F3"/><polygon points="12,20 20,20 16,27" fill="#2160F3"/><line x1="12" y1="12" x2="28" y2="12" stroke="#fff" stroke-width="2" stroke-linecap="round"/></svg></div>
-      <span class="brand-name">Replyr</span>
-    </div>
-    <p class="tagline">Your AI reply assistant for Google reviews</p>
-    <p style="margin:0 0 1rem;color:#555;line-height:1.5;font-size:0.9rem;">Connect your Google Business Profile to reply to reviews from one place, or turn on automatic replies.</p>
-    <div class="features">
-      <ul>
-        <li><strong>Auto-reply</strong> — We reply to new 1–5 star reviews on a schedule you set.</li>
-        <li><strong>Your voice</strong> — Add your contact (e.g. phone) for 1–2 star replies so customers can reach you.</li>
-        <li><strong>Shows as owner</strong> — Replies appear as “[Your business] (Owner)” on Google.</li>
-        <li><strong>One connection</strong> — Connect once; we keep replying until you turn it off.</li>
-      </ul>
-    </div>
-    <a href="/auth/google" class="btn">Connect with Google</a>
-    <a href="/dashboard" class="manage-link">Already connected? Manage your account</a>
-  </div>
-  <section class="examples" aria-label="Example reviews">
-    <h2>See it in action</h2>
-    <p style="text-align:center;color:#666;font-size:0.9rem;margin:0 0 1rem;">Real Google reviews and replies from Castle Nail Bar, powered by Replyr.</p>
-    <div class="examples-row">
-      <img src="/review-example-1.png" alt="Google review with 5 stars and owner reply from Castle Nail Bar" loading="lazy">
-      <img src="/review-example-2.png" alt="Google review with 5 stars and owner reply from Castle Nail Bar" loading="lazy">
-      <img src="/review-example-3.png" alt="Google review with 5 stars and owner reply from Castle Nail Bar" loading="lazy">
-    </div>
-  </section>
-</body>
-</html>
-  `;
+  return fs.readFileSync(path.join(__dirname, "views", "signup.html"), "utf8");
 }
 app.get("/", (req, res) => {
   res.set("Content-Type", "text/html; charset=utf-8");
@@ -425,155 +372,183 @@ app.get("/connected", async (req, res, next) => {
       trialDaysLeft != null &&
       trialDaysLeft >= 0 &&
       trialDaysLeft <= 7;
+    const trialBarPct = trialEndsAt != null && trialDaysLeft != null && trialDaysLeft >= 0 ? Math.min(100, (trialDaysLeft / 30) * 100) : 0;
     const trialCard =
       trialEndsAt != null
-        ? `<section class="free-reply trial-card ${trialEndedNoSubscription ? "trial-ended" : ""}">
-  <h2>${trialEndedNoSubscription ? "Trial ended" : "Your 30-day free trial"}</h2>
-  ${trialEndedNoSubscription ? `<p class="trial-ended-msg">Subscribe to re-enable auto-reply. <a href="/subscribe${accountId ? "?accountId=" + encodeURIComponent(accountId) : ""}" class="trial-link">View plans</a></p>` : `<p class="trial-countdown"><strong>${trialDaysLeft != null && trialDaysLeft >= 0 ? escapeHtml(String(trialDaysLeft)) : "0"} days left</strong></p>
-  <p class="trial-end">${trialDaysLeft != null && trialDaysLeft >= 0 ? "Ends " : "Ended "}${escapeHtml(trialEndDateFormatted)}</p>
-  ${trialEndingSoon ? `<p class="trial-ending-soon">Your trial ends in ${trialDaysLeft} day${trialDaysLeft === 1 ? "" : "s"}. <a href="/subscribe${accountId ? "?accountId=" + encodeURIComponent(accountId) : ""}" class="trial-link">Subscribe</a> to keep auto-reply.</p>` : `<p class="trial-upgrade">Upgrade to keep auto-reply after your trial. <a href="/subscribe${accountId ? "?accountId=" + encodeURIComponent(accountId) : ""}" class="trial-link">View plans</a></p>`}`}
-</section>`
+        ? `<div class="card trial-card">
+  <div class="card-label">Your 30-day free trial</div>
+  ${trialEndedNoSubscription ? `<div class="trial-days" style="color:var(--muted);font-size:24px">Trial ended</div><div class="trial-ends">Subscribe to re-enable auto-reply.</div><div class="upgrade-link"><a href="/subscribe${accountId ? "?accountId=" + encodeURIComponent(accountId) : ""}">View plans →</a></div>` : `<div class="trial-days">${trialDaysLeft != null && trialDaysLeft >= 0 ? escapeHtml(String(trialDaysLeft)) : "0"} <span>days left</span></div>
+  <div class="trial-ends">${trialDaysLeft != null && trialDaysLeft >= 0 ? "Ends " : "Ended "}${escapeHtml(trialEndDateFormatted)}</div>
+  ${trialEndingSoon ? `<div class="trial-ends" style="color:var(--accent);margin-bottom:8px">Ends in ${trialDaysLeft} day${trialDaysLeft === 1 ? "" : "s"}. <a href="/subscribe${accountId ? "?accountId=" + encodeURIComponent(accountId) : ""}" style="color:inherit;font-weight:600">Subscribe</a></div>` : ""}
+  <div class="trial-bar"><div class="trial-bar-fill" style="width:${trialBarPct}%"></div></div>
+  <div class="upgrade-link">Upgrade to keep auto-reply after your trial. <a href="/subscribe${accountId ? "?accountId=" + encodeURIComponent(accountId) : ""}">View plans →</a></div>
+</div>`}`
         : "";
-    const freeReplySection = accountId
-      ? `${trialCard}<section class="free-reply auto-reply-section" data-account-id="${escapeHtml(accountId)}" data-trial-ended="${trialEndedNoSubscription ? "1" : "0"}">
-  <h2>Auto-reply</h2>
-  <p class="toggle-row">
-    <label class="toggle-label">
+    const autoReplyCard = accountId
+      ? `<div class="card auto-reply-section" data-account-id="${escapeHtml(accountId)}" data-trial-ended="${trialEndedNoSubscription ? "1" : "0"}">
+  <div class="card-title">Auto-reply</div>
+  <div class="toggle-row">
+    <label class="toggle">
       <input type="checkbox" id="auto-reply-toggle" ${currentAutoReply ? "checked" : ""} ${trialEndedNoSubscription ? "disabled" : ""}>
-      <span class="toggle-text">Reply to new Google reviews automatically</span>
+      <div class="toggle-track"></div>
     </label>
-  </p>
-  ${trialEndedNoSubscription ? '<p class="trial-gate-msg">Subscribe to re-enable auto-reply.</p>' : ""}
-  <p id="auto-reply-msg" class="free-reply-msg" aria-live="polite"></p>
-</section>
-<section id="free-reply-section" class="free-reply" data-account-id="${escapeHtml(accountId)}">
-  <h2>Try it now</h2>
-  <p>We'll reply to your latest unreplied review once, free. You'll see it on your Google listing.</p>
-  <button type="button" id="free-reply-btn" class="btn">Send my 1 free reply</button>
-  <p id="free-reply-msg" class="free-reply-msg" aria-live="polite"></p>
-</section>
-<section class="free-reply contact-section" data-account-id="${escapeHtml(accountId)}">
-  <h2>Contact for 1–2 star replies</h2>
-  <p>If a customer leaves a low rating, we'll suggest they reach out. Add your phone or email so the reply uses your real contact.</p>
-  <input type="text" id="contact-input" class="contact-input" value="${escapeHtml(currentContact)}" placeholder="e.g. (425) 555-0123 or you@business.com">
-  <button type="button" id="contact-save-btn" class="btn btn-secondary">Save contact</button>
-  <p id="contact-msg" class="free-reply-msg" aria-live="polite"></p>
-</section>
-<section id="pro-contacts-section" class="free-reply pro-contacts-section" data-account-id="${escapeHtml(accountId)}" data-is-pro="${isPro ? "1" : "0"}">
-  <h2>Replyr Pro – Customer list</h2>
-  ${isPro
-    ? `<p class="pro-desc">Upload a CSV of customers for future promos and birthday messages. <strong>Required:</strong> <code>email</code>. <strong>Recommended:</strong> <code>first_name</code> or <code>name</code>, <code>birthday</code> or <code>birth_date</code> (e.g. YYYY-MM-DD or MM/DD). <strong>Optional:</strong> <code>phone</code>. Max 5MB. Uploading replaces your current list. By uploading and sending you confirm you have permission to email these contacts. <a href="/compliance">Compliance</a>.</p>
-  <div class="pro-upload-row">
-    <input type="file" id="pro-csv-input" accept=".csv,text/csv,text/plain" aria-label="Choose CSV file">
-    <button type="button" id="pro-upload-btn" class="btn">Upload CSV</button>
+    <span class="toggle-label">Reply to new Google reviews automatically</span>
   </div>
-  <div id="pro-mapping-wrap" class="pro-mapping-wrap" style="display:none;">
-    <p class="pro-mapping-label">Map your columns (we auto-detect common names):</p>
-    <div class="pro-mapping-row"><label>Email <span aria-hidden="true">*</span></label><select id="pro-map-email" data-field="email"></select></div>
-    <div class="pro-mapping-row"><label>First name</label><select id="pro-map-first_name" data-field="first_name"><option value="">— Don't use —</option></select></div>
-    <div class="pro-mapping-row"><label>Birthday</label><select id="pro-map-birthday" data-field="birthday"><option value="">— Don't use —</option></select></div>
-    <div class="pro-mapping-row"><label>Phone</label><select id="pro-map-phone" data-field="phone"><option value="">— Don't use —</option></select></div>
-  </div>
-  <p id="pro-upload-msg" class="free-reply-msg" aria-live="polite"></p>
-  <p id="pro-contacts-count" class="pro-count"></p>
-  <p><a href="/pro?accountId=${encodeURIComponent(accountId)}">Manage campaigns</a> (birthday, events, one-off)</p>`
-    : `<p class="pro-desc">Replyr Pro turns your customer list into automated, personal outreach. This is included in <strong>Replyr Pro</strong>.</p>
-  <ul class="pro-benefits">
-    <li><strong>Customer database</strong> — Upload a CSV (email, name, birthday, phone). We store it securely per business.</li>
-    <li><strong>Birthday messages</strong> — We automatically email customers on their birthday. Add a coupon (e.g. 20% off their next visit) or any offer you choose.</li>
-    <li><strong>Holiday & event campaigns</strong> — Mothers Day, Fathers Day, and more. Replyr sends your announcement in advance (e.g. a week before). You pick the discount or message.</li>
-    <li><strong>Your voice or ours</strong> — Curate the message yourself or let Replyr write it. Include any discount, coupon, or announcement.</li>
-    <li><strong>Sent on your behalf</strong> — Emails go out with your business name so customers see it as from you. Replies go to your contact email.</li>
-  </ul>
-  <p class="pro-compliance">By uploading and sending you confirm you have permission to email those contacts. <a href="/compliance">Compliance</a>.</p>
-  <p><a href="/subscribe?accountId=${encodeURIComponent(accountId)}" class="trial-link">Upgrade to Pro</a> to unlock the customer list and automated campaigns.</p>`}
-</section>`
+  ${trialEndedNoSubscription ? '<p class="trial-gate-msg" style="font-size:13px;color:var(--danger);margin-top:12px">Subscribe to re-enable auto-reply.</p>' : ""}
+  <p id="auto-reply-msg" class="connected-msg" aria-live="polite"></p>
+</div>`
       : "";
+    const tryItCard = accountId
+      ? `<div class="card" id="free-reply-section" data-account-id="${escapeHtml(accountId)}">
+  <div class="card-title">Try it now</div>
+  <div class="card-desc">We'll reply to your latest unreplied review once, free. You'll see it on your Google listing.</div>
+  <button type="button" id="free-reply-btn" class="btn btn-primary"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M13 2L3 6l4 3 3 4 3-11z"/></svg>Send my 1 free reply</button>
+  <p id="free-reply-msg" class="connected-msg" aria-live="polite"></p>
+</div>`
+      : "";
+    const contactCard = accountId
+      ? `<div class="card contact-section" data-account-id="${escapeHtml(accountId)}">
+  <div class="card-title">Contact for 1–2 star replies</div>
+  <div class="card-desc">If a customer leaves a low rating, we'll suggest they reach out. Add your phone or email so the reply uses your real contact.</div>
+  <div class="contact-input-row">
+    <input type="text" id="contact-input" value="${escapeHtml(currentContact)}" placeholder="Phone or email">
+    <button type="button" id="contact-save-btn" class="btn-save">Save</button>
+  </div>
+  <p id="contact-msg" class="connected-msg" aria-live="polite"></p>
+</div>`
+      : "";
+    const proCard = accountId
+      ? `<div class="card card-full" id="pro-contacts-section" data-account-id="${escapeHtml(accountId)}" data-is-pro="${isPro ? "1" : "0"}">
+  <div class="pro-card-header">
+    <div><div class="card-title" style="margin-bottom:4px">Replyr Pro – Customer list</div><div class="card-desc" style="margin-bottom:0">Upload a CSV of customers for future promos and birthday messages.</div></div>
+    <span class="contacts-badge" id="pro-contacts-count">0 contacts</span>
+  </div>
+  ${isPro
+    ? `<div class="field-specs"><strong>Required:</strong> <code>email</code> &nbsp;·&nbsp; <strong>Recommended:</strong> <code>first_name</code> or <code>name</code>, <code>birthday</code> or <code>birth_date</code> (YYYY-MM-DD or MM/DD) &nbsp;·&nbsp; <strong>Optional:</strong> <code>phone</code><br><span style="margin-top:6px;display:inline-block">Max 5MB. Uploading replaces your current list. <a href="/compliance" style="color:var(--accent2);text-decoration:none">Compliance →</a></span></div>
+  <label class="csv-zone"><input type="file" id="pro-csv-input" accept=".csv,text/csv,text/plain" aria-label="Choose CSV"> <div class="csv-icon">📂</div><div class="csv-zone-title">Drop your CSV here or click to browse</div><div class="csv-zone-sub">No file chosen · Max 5MB</div></label>
+  <div id="pro-mapping-wrap" class="pro-mapping-wrap" style="display:none;"><p class="pro-mapping-label">Map your columns:</p><div class="pro-mapping-row"><label>Email *</label><select id="pro-map-email" data-field="email"></select></div><div class="pro-mapping-row"><label>First name</label><select id="pro-map-first_name" data-field="first_name"><option value="">— Don't use —</option></select></div><div class="pro-mapping-row"><label>Birthday</label><select id="pro-map-birthday" data-field="birthday"><option value="">— Don't use —</option></select></div><div class="pro-mapping-row"><label>Phone</label><select id="pro-map-phone" data-field="phone"><option value="">— Don't use —</option></select></div></div>
+  <button type="button" id="pro-upload-btn" class="btn btn-ghost" style="max-width:180px"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M8 2v9M4 8l4 4 4-4"/><path d="M2 14h12"/></svg>Upload CSV</button>
+  <p id="pro-upload-msg" class="connected-msg" aria-live="polite"></p>
+  <div style="text-align:center"><a href="/pro?accountId=${encodeURIComponent(accountId)}" class="manage-link">🗓 Manage campaigns <span style="color:var(--muted);font-weight:400">(birthday, events, one-off)</span> →</a></div>`
+    : `<div class="card-desc" style="margin-bottom:12px">Replyr Pro turns your customer list into automated, personal outreach. This is included in <strong>Replyr Pro</strong>.</div>
+  <ul class="pro-benefits"><li><strong>Customer database</strong> — Upload a CSV (email, name, birthday, phone). We store it securely per business.</li><li><strong>Birthday messages</strong> — We automatically email customers on their birthday. Add a coupon or any offer you choose.</li><li><strong>Holiday & event campaigns</strong> — Mothers Day, Fathers Day, and more. You pick the discount or message.</li><li><strong>Your voice or ours</strong> — Curate the message yourself or let Replyr write it.</li><li><strong>Sent on your behalf</strong> — Emails go out with your business name; replies go to your contact email.</li></ul>
+  <p class="card-desc" style="margin-bottom:8px">By uploading and sending you confirm you have permission to email those contacts. <a href="/compliance" style="color:var(--accent2)">Compliance</a>.</p>
+  <p><a href="/subscribe?accountId=${encodeURIComponent(accountId)}" class="manage-link">Upgrade to Pro →</a> to unlock the customer list and automated campaigns.</p>`}
+</div>`
+      : "";
+    const freeReplySection = accountId ? `<div class="grid">${trialCard}${autoReplyCard}</div><div class="grid">${tryItCard}${contactCard}</div>${proCard}` : "";
     res.set("Content-Type", "text/html; charset=utf-8");
     res.send(`
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Connected – Replyr</title>
-  <style>
-    * { box-sizing: border-box; }
-    body { font-family: system-ui, sans-serif; margin: 0; min-height: 100vh; display: flex; flex-direction: column; align-items: center; padding: 2rem; background: #f5f5f5; gap: 1.25rem; }
-    .connected-grid { display: grid; grid-template-columns: 1fr; gap: 1rem; max-width: 880px; width: 100%; }
-    @media (min-width: 680px) {
-      .connected-grid { grid-template-columns: repeat(2, 1fr); }
-    }
-    .connected-grid .card-span-full { grid-column: 1 / -1; justify-self: center; }
-    .card { background: #fff; padding: 2.5rem; border-radius: 12px; box-shadow: 0 2px 12px rgba(0,0,0,0.08); max-width: 420px; width: 100%; text-align: center; }
-    .card .brand { display: flex; align-items: center; justify-content: center; gap: 0.5rem; margin-bottom: 1rem; }
-    .card .logo { width: 36px; height: 36px; flex-shrink: 0; }
-    .card .logo svg { width: 100%; height: 100%; display: block; }
-    .card .brand-name { font-size: 1.25rem; font-weight: 700; color: #2C2D32; letter-spacing: -0.02em; }
-    h1 { margin: 0 0 0.5rem; font-size: 1.5rem; color: #222; }
-    p { margin: 0; color: #555; line-height: 1.5; font-size: 0.95rem; }
-    .next-step { margin-top: 1rem; padding-top: 1rem; border-top: 1px solid #eee; font-size: 0.9rem; color: #555; }
-    .next-step a { color: #2160F3; text-decoration: none; }
-    .next-step a:hover { text-decoration: underline; }
-    .connected-grid .free-reply { max-width: none; }
-    .free-reply { background: #fff; padding: 1.5rem 2.5rem; border-radius: 12px; box-shadow: 0 2px 12px rgba(0,0,0,0.08); max-width: 420px; width: 100%; text-align: center; }
-    .free-reply h2 { margin: 0 0 0.5rem; font-size: 1.1rem; color: #222; }
-    .free-reply p { margin-bottom: 1rem; }
-    .free-reply .btn { padding: 0.6rem 1.2rem; background: #2160F3; color: #fff; border: none; border-radius: 8px; font-size: 0.95rem; font-weight: 500; cursor: pointer; }
-    .free-reply .btn:hover:not(:disabled) { background: #1d4ed8; }
-    .free-reply .btn:disabled { opacity: 0.7; cursor: not-allowed; }
-    .free-reply-msg { margin-top: 0.75rem; font-size: 0.9rem; min-height: 1.4em; }
-    .contact-section { margin-top: 0.5rem; }
-    .contact-input { width: 100%; max-width: 20rem; padding: 0.5rem 0.75rem; margin-bottom: 0.75rem; border: 1px solid #ddd; border-radius: 6px; font-size: 0.95rem; }
-    .btn-secondary { background: #555; margin-top: 0; }
-    .btn-secondary:hover:not(:disabled) { background: #333; }
-    .toggle-row { margin: 0.5rem 0 0; text-align: left; }
-    .toggle-label { display: inline-flex; align-items: center; gap: 0.5rem; cursor: pointer; }
-    .toggle-label input { width: 1.1rem; height: 1.1rem; accent-color: #2160F3; }
-    .toggle-text { font-size: 0.95rem; color: #333; }
-    .trial-card { background: linear-gradient(135deg, #f0f7ff 0%, #e8f0fe 100%); border: 1px solid #c2dbfe; }
-    .trial-countdown { font-size: 1.25rem; color: #1a73e8; margin: 0.25rem 0; }
-    .trial-end { font-size: 0.9rem; color: #555; margin: 0; }
-    .trial-upgrade { margin-top: 1rem; font-size: 0.9rem; color: #444; }
-    .trial-link { color: #1a73e8; font-weight: 600; text-decoration: none; }
-    .trial-link:hover { text-decoration: underline; }
-    .trial-card.trial-ended { background: linear-gradient(135deg, #fff3e0 0%, #ffe0b2 100%); border-color: #ffb74d; }
-    .trial-ended-msg { font-size: 0.95rem; color: #e65100; margin: 0.25rem 0 0; }
-    .trial-gate-msg { font-size: 0.85rem; color: #c62828; margin: 0.25rem 0 0; }
-    .trial-ending-soon { margin-top: 0.5rem; padding: 0.5rem 0.75rem; background: #fff8e1; border-radius: 6px; font-size: 0.9rem; color: #f57f17; }
-    .trial-ending-soon a { color: #1a73e8; font-weight: 600; text-decoration: none; }
-    .pro-contacts-section { text-align: left; }
-    .pro-contacts-section .pro-desc { font-size: 0.85rem; color: #555; margin-bottom: 1rem; }
-    .pro-contacts-section .pro-desc code { background: #eee; padding: 0.1em 0.35em; border-radius: 4px; font-size: 0.9em; }
-    .pro-upload-row { display: flex; flex-wrap: wrap; align-items: center; gap: 0.75rem; margin-bottom: 0.5rem; }
-    .pro-upload-row input[type="file"] { font-size: 0.9rem; }
-    .pro-mapping-wrap { margin-top: 1rem; padding: 0.75rem; background: #f9f9f9; border-radius: 8px; font-size: 0.9rem; }
-    .pro-mapping-label { margin: 0 0 0.5rem; color: #555; }
-    .pro-mapping-row { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.35rem; }
-    .pro-mapping-row label { min-width: 6rem; }
-    .pro-mapping-row select { flex: 1; max-width: 12rem; padding: 0.25rem 0.5rem; }
-    .pro-count { font-size: 0.9rem; color: #444; margin-top: 0.5rem; }
-    .pro-benefits { margin: 0.75rem 0 1rem; padding-left: 1.25rem; font-size: 0.9rem; color: #444; line-height: 1.5; }
-    .pro-benefits li { margin-bottom: 0.5rem; }
-  </style>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Replyr – Connected</title>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,wght@0,300;0,400;0,600;1,300&family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root { --bg: #0f0f11; --surface: #17171a; --surface2: #1e1e22; --border: rgba(255,255,255,0.07); --accent: #4a9eff; --accent2: #7c6af7; --text: #f0ede8; --muted: #7a7880; --danger: #ff6b6b; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--text); font-family: 'DM Sans', sans-serif; font-size: 15px; min-height: 100vh; overflow-x: hidden; }
+  body::before { content: ''; position: fixed; top: -200px; left: 50%; transform: translateX(-50%); width: 800px; height: 500px; background: radial-gradient(ellipse, rgba(124,106,247,0.12) 0%, transparent 70%); pointer-events: none; z-index: 0; }
+  .wrapper { width: 100%; max-width: 760px; margin: 0 auto; padding: 48px 24px 80px; position: relative; z-index: 1; }
+  .hero-card { background: var(--surface); border: 1px solid var(--border); border-radius: 24px; padding: 40px 32px; text-align: center; margin-bottom: 20px; animation: fadeUp 0.4s ease both; position: relative; overflow: hidden; }
+  .hero-card::after { content: ''; position: absolute; bottom: 0; left: 0; right: 0; height: 2px; background: linear-gradient(90deg, transparent, var(--accent2), var(--accent), transparent); opacity: 0.5; }
+  .logo-mark { display: inline-flex; align-items: center; gap: 8px; margin-bottom: 16px; font-size: 15px; font-weight: 600; color: var(--muted); letter-spacing: 0.02em; }
+  .logo-icon { width: 28px; height: 28px; background: linear-gradient(135deg, var(--accent2), var(--accent)); border-radius: 8px; display: flex; align-items: center; justify-content: center; font-size: 14px; }
+  .hero-title { font-family: 'Fraunces', serif; font-size: 32px; font-weight: 400; color: var(--text); margin-bottom: 10px; }
+  .hero-title span { color: var(--accent); font-style: italic; }
+  .hero-desc { color: var(--muted); font-size: 14px; line-height: 1.6; max-width: 380px; margin: 0 auto 6px; }
+  .hero-desc a { color: var(--accent2); text-decoration: none; }
+  .hero-desc a:hover { text-decoration: underline; }
+  .connected-badge { display: inline-flex; align-items: center; gap: 6px; background: rgba(74,158,255,0.12); border: 1px solid rgba(74,158,255,0.25); border-radius: 20px; padding: 5px 12px; font-size: 12px; font-weight: 600; color: var(--accent); letter-spacing: 0.06em; text-transform: uppercase; margin-bottom: 20px; }
+  .connected-badge::before { content: ''; width: 6px; height: 6px; background: var(--accent); border-radius: 50%; animation: pulse 2s infinite; }
+  @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 16px; }
+  @media (max-width: 540px) { .grid { grid-template-columns: 1fr; } }
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 20px; padding: 24px; animation: fadeUp 0.4s ease both; transition: border-color 0.2s; min-width: 0; }
+  .card:hover { border-color: rgba(255,255,255,0.12); }
+  .card:nth-child(1) { animation-delay: 0.05s; } .card:nth-child(2) { animation-delay: 0.10s; } .card:nth-child(3) { animation-delay: 0.15s; } .card:nth-child(4) { animation-delay: 0.20s; }
+  @keyframes fadeUp { from { opacity: 0; transform: translateY(16px); } to { opacity: 1; transform: translateY(0); } }
+  .trial-card { background: linear-gradient(135deg, rgba(124,106,247,0.12), rgba(74,158,255,0.08)); border-color: rgba(124,106,247,0.25); }
+  .card-label { font-size: 11px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); margin-bottom: 12px; }
+  .trial-days { font-family: 'Fraunces', serif; font-size: 48px; font-weight: 300; color: var(--accent); line-height: 1; margin-bottom: 4px; }
+  .trial-days span { font-size: 18px; color: var(--muted); font-family: 'DM Sans', sans-serif; font-weight: 400; }
+  .trial-ends { font-size: 13px; color: var(--muted); margin-bottom: 16px; }
+  .trial-bar { height: 4px; background: rgba(255,255,255,0.08); border-radius: 4px; margin-bottom: 16px; overflow: hidden; }
+  .trial-bar-fill { height: 100%; background: linear-gradient(90deg, var(--accent2), var(--accent)); border-radius: 4px; transition: width 0.3s; }
+  .upgrade-link { font-size: 13px; color: var(--muted); }
+  .upgrade-link a { color: var(--accent); text-decoration: none; font-weight: 600; }
+  .upgrade-link a:hover { text-decoration: underline; }
+  .card-title { font-family: 'Fraunces', serif; font-size: 17px; font-weight: 400; color: var(--text); margin-bottom: 16px; }
+  .card-desc { font-size: 13px; color: var(--muted); line-height: 1.6; margin-bottom: 18px; }
+  .toggle-row { display: flex; align-items: center; gap: 10px; padding: 12px 14px; background: var(--surface2); border-radius: 12px; border: 1px solid var(--border); }
+  .toggle { position: relative; width: 36px; height: 20px; flex-shrink: 0; cursor: pointer; }
+  .toggle input { opacity: 0; width: 0; height: 0; position: absolute; }
+  .toggle-track { position: absolute; inset: 0; background: #333; border-radius: 20px; transition: 0.3s; }
+  .toggle-track::before { content: ''; position: absolute; width: 14px; height: 14px; left: 3px; top: 3px; background: var(--text); border-radius: 50%; transition: 0.3s; }
+  .toggle input:not(:checked) + .toggle-track { background: #333; }
+  .toggle input:checked + .toggle-track { background: var(--accent); }
+  .toggle input:checked + .toggle-track::before { background: var(--bg); transform: translateX(16px); }
+  .toggle input:disabled + .toggle-track { opacity: 0.6; cursor: not-allowed; }
+  .toggle-label { font-size: 13px; color: var(--text); font-weight: 500; }
+  .btn { display: inline-flex; align-items: center; justify-content: center; gap: 7px; border: none; border-radius: 10px; font-family: 'DM Sans', sans-serif; font-size: 14px; font-weight: 600; cursor: pointer; padding: 11px 20px; transition: all 0.2s; letter-spacing: 0.01em; width: 100%; }
+  .btn-primary { background: var(--accent); color: #0f0f11; }
+  .btn-primary:hover:not(:disabled) { background: #6bafff; transform: translateY(-1px); box-shadow: 0 4px 20px rgba(74,158,255,0.25); }
+  .btn-primary:disabled { opacity: 0.7; cursor: not-allowed; }
+  .btn-ghost { background: var(--surface2); color: var(--text); border: 1px solid var(--border); width: auto; }
+  .btn-ghost:hover { background: rgba(124,106,247,0.15); border-color: rgba(124,106,247,0.4); }
+  .contact-input-row { display: flex; gap: 8px; margin-top: 14px; }
+  input[type="text"], input[type="tel"] { flex: 1; min-width: 0; background: var(--surface2); border: 1px solid var(--border); border-radius: 10px; color: var(--text); font-family: 'DM Sans', sans-serif; font-size: 14px; padding: 11px 14px; outline: none; transition: border-color 0.2s, box-shadow 0.2s; }
+  input:focus { border-color: rgba(74,158,255,0.4); box-shadow: 0 0 0 3px rgba(74,158,255,0.08); }
+  .btn-save { background: var(--accent2); color: #fff; border: none; border-radius: 10px; font-family: 'DM Sans', sans-serif; font-size: 14px; font-weight: 600; cursor: pointer; padding: 11px 18px; transition: all 0.2s; white-space: nowrap; }
+  .btn-save:hover:not(:disabled) { background: #9084f9; transform: translateY(-1px); box-shadow: 0 4px 16px rgba(124,106,247,0.3); }
+  .btn-save:disabled { opacity: 0.7; cursor: not-allowed; }
+  .card-full { animation-delay: 0.25s; min-width: 0; }
+  .pro-card-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin-bottom: 16px; }
+  .contacts-badge { font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); background: var(--surface2); padding: 5px 10px; border-radius: 8px; border: 1px solid var(--border); }
+  .field-specs { background: var(--surface2); border-radius: 12px; padding: 14px 16px; font-size: 13px; color: var(--muted); line-height: 1.7; margin-bottom: 16px; }
+  .field-specs strong { color: var(--text); }
+  .field-specs code { background: rgba(255,255,255,0.07); border-radius: 4px; padding: 1px 6px; font-size: 12px; color: var(--accent); }
+  .csv-zone { border: 1.5px dashed rgba(255,255,255,0.1); border-radius: 14px; padding: 24px; text-align: center; margin: 16px 0; cursor: pointer; transition: border-color 0.2s, background 0.2s; display: block; }
+  .csv-zone:hover { border-color: rgba(74,158,255,0.35); background: rgba(74,158,255,0.04); }
+  .csv-zone input[type="file"] { display: none; }
+  .csv-icon { font-size: 28px; margin-bottom: 8px; }
+  .csv-zone-title { font-size: 14px; font-weight: 600; color: var(--text); margin-bottom: 4px; }
+  .csv-zone-sub { font-size: 12px; color: var(--muted); }
+  .pro-mapping-wrap { margin-top: 12px; padding: 12px; background: var(--surface2); border-radius: 12px; border: 1px solid var(--border); font-size: 13px; }
+  .pro-mapping-label { margin: 0 0 8px; color: var(--muted); }
+  .pro-mapping-row { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+  .pro-mapping-row label { min-width: 80px; color: var(--text); }
+  .pro-mapping-row select { flex: 1; max-width: 180px; padding: 6px 10px; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; color: var(--text); }
+  .empty-state { text-align: center; padding: 20px 0 4px; color: var(--muted); font-size: 13px; }
+  .manage-link { display: inline-flex; align-items: center; gap: 6px; margin-top: 12px; color: var(--accent2); font-size: 13px; font-weight: 500; text-decoration: none; transition: color 0.2s; }
+  .manage-link:hover { color: #a099f7; }
+  .stars-row { display: flex; gap: 2px; margin-bottom: 6px; }
+  .star { color: #f59e0b; font-size: 13px; }
+  .connected-msg { margin-top: 8px; font-size: 13px; min-height: 1.4em; }
+  .connected-msg.ok { color: #6ee7a3; }
+  .connected-msg.err { color: var(--danger); }
+  .pro-benefits { margin: 12px 0; padding-left: 20px; font-size: 13px; color: var(--muted); line-height: 1.6; }
+  .pro-benefits li { margin-bottom: 6px; }
+  .thanks-msg { margin-bottom: 12px; padding: 10px 14px; background: rgba(74,158,255,0.12); border-radius: 10px; color: var(--accent); font-size: 14px; }
+</style>
 </head>
 <body>
-  <div class="connected-grid">
-    <div class="card card-span-full">
-      <div class="brand">
-        <div class="logo" aria-hidden="true"><svg viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg"><rect x="8" y="6" width="24" height="14" rx="4" fill="#2160F3"/><polygon points="12,20 20,20 16,27" fill="#2160F3"/><line x1="12" y1="12" x2="28" y2="12" stroke="#fff" stroke-width="2" stroke-linecap="round"/></svg></div>
-        <span class="brand-name">Replyr</span>
-      </div>
-      <h1>You're connected</h1>
-    ${justSubscribed ? '<p style="margin-bottom:0.75rem;padding:0.5rem 0.75rem;background:#e8f5e9;border-radius:8px;color:#2e7d32;font-size:0.95rem;">Thanks for subscribing. Auto-reply will continue after your trial.</p>' : ""}
-    <p>${escapeHtml(displayName)} is set up. We'll help you reply to Google reviews from here.</p>
-    <p style="margin-top:0.75rem;color:#666;line-height:1.5;font-size:0.9rem;">Come back anytime via <a href="/dashboard" style="color:#2160F3;text-decoration:none;">Dashboard</a> (we’ll have you sign in with Google again).</p>
-    ${hasBillingPortal ? `<p style="margin-top:0.5rem;font-size:0.9rem;"><a href="${escapeHtml(billingPortalUrl)}" style="color:#2160F3;text-decoration:none;" target="_blank" rel="noopener">Manage billing</a></p>` : ""}
-    ${nextStepLine ? `<p class="next-step">${nextStepLine}</p>` : ""}
-    </div>
-    ${freeReplySection}
+<div class="wrapper" ${accountId ? `data-account-id="${escapeHtml(accountId)}"` : ""}>
+  <div class="hero-card">
+    <div class="logo-mark"><div class="logo-icon">💬</div>Replyr</div>
+    <div class="connected-badge">Connected</div>
+    <h1 class="hero-title">You're <span>connected</span></h1>
+    ${justSubscribed ? '<p class="thanks-msg">Thanks for subscribing. Auto-reply will continue after your trial.</p>' : ""}
+    <p class="hero-desc">${escapeHtml(displayName)} is set up. We'll help you reply to Google reviews from here.</p>
+    <p class="hero-desc" style="margin-top:6px">Come back anytime via <a href="/dashboard">Dashboard</a> (we'll have you sign in with Google again).</p>
+    ${hasBillingPortal ? `<p class="hero-desc" style="margin-top:8px"><a href="${escapeHtml(billingPortalUrl)}" target="_blank" rel="noopener">Manage billing</a></p>` : ""}
+    ${nextStepLine ? `<p class="hero-desc" style="margin-top:8px">${nextStepLine}</p>` : ""}
   </div>
-  <script src="/connected.js"></script>
+  ${freeReplySection}
+</div>
+<script src="/connected.js"></script>
 </body>
 </html>
   `);
@@ -766,7 +741,7 @@ app.get("/connected.js", (req, res) => {
       toggle.addEventListener("change", function() {
         var enabled = toggle.checked;
         autoReplyMsg.textContent = "";
-        autoReplyMsg.style.color = "";
+        autoReplyMsg.classList.remove("ok", "err");
         fetch("/businesses/" + encodeURIComponent(autoReplyAccountId), {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
@@ -774,18 +749,19 @@ app.get("/connected.js", (req, res) => {
         })
         .then(function(r) { return r.json(); })
         .then(function(data) {
+          autoReplyMsg.classList.remove("ok", "err");
           if (data.error) {
             autoReplyMsg.textContent = data.error;
-            autoReplyMsg.style.color = "#c00";
+            autoReplyMsg.classList.add("err");
             toggle.checked = !enabled;
           } else {
             autoReplyMsg.textContent = enabled ? "Auto-reply is on." : "Auto-reply is off.";
-            autoReplyMsg.style.color = "#0a0";
+            autoReplyMsg.classList.add("ok");
           }
         })
         .catch(function() {
           autoReplyMsg.textContent = "Something went wrong.";
-          autoReplyMsg.style.color = "#c00";
+          autoReplyMsg.classList.remove("ok"); autoReplyMsg.classList.add("err");
           toggle.checked = !enabled;
         });
       });
@@ -799,25 +775,26 @@ app.get("/connected.js", (req, res) => {
     btn.addEventListener("click", function() {
       btn.disabled = true;
       msg.textContent = "";
-      msg.style.color = "";
+      msg.classList.remove("ok", "err");
       fetch("/free-reply", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ accountId: accountId })
       })
       .then(function(r) { return r.json(); })
-      .then(function(data) {
+        .then(function(data) {
+        msg.classList.remove("ok", "err");
         if (data.ok) {
           msg.textContent = data.message || "Done! Check your Google listing.";
-          msg.style.color = "#0a0";
+          msg.classList.add("ok");
         } else {
           msg.textContent = data.error || "Something went wrong.";
-          msg.style.color = "#c00";
+          msg.classList.add("err");
         }
       })
       .catch(function() {
         msg.textContent = "Something went wrong. Try again.";
-        msg.style.color = "#c00";
+        msg.classList.remove("ok"); msg.classList.add("err");
       })
       .finally(function() { btn.disabled = false; });
     });
@@ -834,7 +811,7 @@ app.get("/connected.js", (req, res) => {
         var contact = contactInput.value.trim();
         contactSaveBtn.disabled = true;
         contactMsg.textContent = "";
-        contactMsg.style.color = "";
+        contactMsg.classList.remove("ok", "err");
         fetch("/businesses/" + encodeURIComponent(aid), {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
@@ -842,17 +819,18 @@ app.get("/connected.js", (req, res) => {
         })
         .then(function(r) { return r.json(); })
         .then(function(data) {
-          if (data.error) {
-            contactMsg.textContent = data.error;
-            contactMsg.style.color = "#c00";
-          } else {
-            contactMsg.textContent = "Saved. We'll use this for 1–2 star replies.";
-            contactMsg.style.color = "#0a0";
-          }
-        })
+            contactMsg.classList.remove("ok", "err");
+            if (data.error) {
+              contactMsg.textContent = data.error;
+              contactMsg.classList.add("err");
+            } else {
+              contactMsg.textContent = "Saved. We'll use this for 1–2 star replies.";
+              contactMsg.classList.add("ok");
+            }
+          })
         .catch(function() {
           contactMsg.textContent = "Something went wrong.";
-          contactMsg.style.color = "#c00";
+          contactMsg.classList.remove("ok"); contactMsg.classList.add("err");
         })
         .finally(function() { contactSaveBtn.disabled = false; });
       });
@@ -929,7 +907,7 @@ app.get("/connected.js", (req, res) => {
               if (proMappingWrap) proMappingWrap.style.display = "block";
             } else if (data.error) {
               proUploadMsg.textContent = data.error;
-              proUploadMsg.style.color = "#c00";
+              proUploadMsg.classList.remove("ok"); proUploadMsg.classList.add("err");
             }
           })
           .catch(function() {});
@@ -940,18 +918,18 @@ app.get("/connected.js", (req, res) => {
         var file = proCsvInput.files && proCsvInput.files[0];
         if (!file) {
           proUploadMsg.textContent = "Please choose a CSV file first.";
-          proUploadMsg.style.color = "#c00";
+          proUploadMsg.classList.remove("ok"); proUploadMsg.classList.add("err");
           return;
         }
         var emailCol = proMapEmail && proMapEmail.value ? proMapEmail.value : null;
         if (proMappingWrap && proMappingWrap.style.display === "block" && !emailCol) {
           proUploadMsg.textContent = "Please select the email column.";
-          proUploadMsg.style.color = "#c00";
+          proUploadMsg.classList.remove("ok"); proUploadMsg.classList.add("err");
           return;
         }
         proUploadBtn.disabled = true;
         proUploadMsg.textContent = "";
-        proUploadMsg.style.color = "";
+        proUploadMsg.classList.remove("ok", "err");
         var mapping = {};
         if (emailCol) mapping.email = emailCol;
         var selFirst = document.getElementById("pro-map-first_name");
@@ -969,7 +947,7 @@ app.get("/connected.js", (req, res) => {
           .then(function(data) {
             if (data.ok) {
               proUploadMsg.textContent = data.message || "Upload complete.";
-              proUploadMsg.style.color = "#0a0";
+              proUploadMsg.classList.remove("err"); proUploadMsg.classList.add("ok");
               proCsvInput.value = "";
               if (proMappingWrap) proMappingWrap.style.display = "none";
               fetch("/pro/contacts?accountId=" + encodeURIComponent(accountId))
@@ -978,12 +956,12 @@ app.get("/connected.js", (req, res) => {
                 .catch(function() { showProCount(data.total || data.imported || 0, 0); });
             } else {
               proUploadMsg.textContent = data.error || "Upload failed.";
-              proUploadMsg.style.color = "#c00";
+              proUploadMsg.classList.remove("ok"); proUploadMsg.classList.add("err");
             }
           })
           .catch(function() {
             proUploadMsg.textContent = "Upload failed. Try again.";
-            proUploadMsg.style.color = "#c00";
+            proUploadMsg.classList.remove("ok"); proUploadMsg.classList.add("err");
           })
           .finally(function() { proUploadBtn.disabled = false; });
       });
@@ -1129,7 +1107,7 @@ app.patch("/businesses/:accountId", async (req, res, next) => {
     if (!existing) {
       return res.status(404).json({ error: "Business not found. Connect via /auth/google first." });
     }
-    const { autoReplyEnabled, contact, intervalMinutes } = req.body || {};
+    const { autoReplyEnabled, contact, intervalMinutes, isPro } = req.body || {};
     if (autoReplyEnabled === true) {
       const trialEnded =
         existing.trialEndsAt && new Date(existing.trialEndsAt) < new Date();
@@ -1144,7 +1122,8 @@ app.patch("/businesses/:accountId", async (req, res, next) => {
       ...existing,
       ...(typeof autoReplyEnabled === "boolean" && { autoReplyEnabled }),
       ...(contact !== undefined && { contact: String(contact) }),
-      ...(intervalMinutes !== undefined && { intervalMinutes: Number(intervalMinutes) })
+      ...(intervalMinutes !== undefined && { intervalMinutes: Number(intervalMinutes) }),
+      ...(typeof isPro === "boolean" && { isPro })
     });
     const updated = await getBusiness(accountId);
     res.json(updated);
@@ -1285,16 +1264,18 @@ app.patch("/pro/events/:key/:year", async (req, res, next) => {
   try {
     const accountId = (req.body?.accountId || req.query.accountId || "").trim();
     const { key, year } = req.params;
-    const { status, messageText, offerText } = req.body || {};
+    const { status, messageText, offerText, sendDaysBefore } = req.body || {};
     if (!accountId) return res.status(400).json({ error: "accountId required" });
     const business = await getBusiness(accountId);
     if (!business?.isPro) return res.status(403).json({ error: "Replyr Pro required" });
     if (!db.useDb()) return res.status(503).json({ error: "Database required for campaigns" });
     const eventYear = parseInt(year, 10);
+    const days = sendDaysBefore !== undefined ? Number(sendDaysBefore) : 14;
     await db.upsertProEventCampaign(accountId, key, eventYear, {
       status: status || "pending",
       messageText,
       offerText,
+      sendDaysBefore: [0, 1, 3, 7, 14].includes(days) ? days : 14,
       confirmedAt: status === "confirmed" ? new Date().toISOString() : null
     });
     const updated = await db.getProEventCampaign(accountId, key, eventYear);
@@ -1320,15 +1301,26 @@ app.post("/pro/one-off", async (req, res, next) => {
 
 app.post("/pro/generate-message", async (req, res, next) => {
   try {
-    const { accountId, type, eventName } = req.body || {};
+    const { accountId, type, eventName, offerText, prompt } = req.body || {};
     if (!accountId) return res.status(400).json({ error: "accountId required" });
     const business = await getBusiness(accountId);
     if (!business?.isPro) return res.status(403).json({ error: "Replyr Pro required" });
-    const messageText = await generateCampaignMessageWithClaude({
+    if (type === "one_off") {
+      const { subject, body } = await generateOneOffWithClaude({
+        prompt: prompt ? String(prompt).trim() : "",
+        businessName: business?.name || "Our business"
+      });
+      return res.json({ subject, body });
+    }
+    let messageText = await generateCampaignMessageWithClaude({
       type: type || "birthday",
       businessName: business?.name || "Our business",
-      eventName
+      eventName,
+      offerText: offerText ? String(offerText).trim() : ""
     });
+    if (offerText && typeof messageText === "string") {
+      messageText = messageText.replace(/\{\{offer\}\}/gi, String(offerText).trim());
+    }
     res.json({ messageText });
   } catch (err) {
     next(err);
@@ -1362,60 +1354,238 @@ app.get("/pro", async (req, res, next) => {
     res.set("Content-Type", "text/html; charset=utf-8");
     res.send(`
 <!DOCTYPE html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Replyr Pro – Campaigns</title>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,wght@0,300;0,400;0,600;1,300&family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
 <style>
-  * { box-sizing: border-box; }
-  body { font-family: system-ui, sans-serif; margin: 0; padding: 1.5rem; max-width: 640px; margin-left: auto; margin-right: auto; background: #f5f5f5; }
-  h1 { font-size: 1.35rem; margin: 0 0 1rem; }
-  h2 { font-size: 1.1rem; margin: 1.5rem 0 0.5rem; }
-  .card { background: #fff; padding: 1.25rem; border-radius: 10px; margin-bottom: 1rem; box-shadow: 0 1px 3px rgba(0,0,0,0.08); }
-  label { display: block; margin-top: 0.5rem; font-weight: 500; }
-  input[type="text"], input[type="date"], textarea { width: 100%; padding: 0.5rem; margin-top: 0.25rem; border: 1px solid #ddd; border-radius: 6px; }
-  textarea { min-height: 80px; }
-  button, .btn { padding: 0.5rem 1rem; background: #2160F3; color: #fff; border: none; border-radius: 6px; cursor: pointer; font-size: 0.95rem; }
-  button.secondary { background: #666; }
-  .msg { margin-top: 0.5rem; font-size: 0.9rem; }
-  .compliance { font-size: 0.85rem; color: #666; margin-bottom: 1rem; }
-  .event-row { display: flex; align-items: center; gap: 0.75rem; margin-bottom: 0.5rem; }
-  .event-row span { flex: 1; }
+  :root {
+    --bg: #0f0f11;
+    --surface: #17171a;
+    --surface2: #1e1e22;
+    --border: rgba(255,255,255,0.07);
+    --accent: #4a9eff;
+    --accent2: #7c6af7;
+    --text: #f0ede8;
+    --muted: #7a7880;
+    --soft: rgba(74,158,255,0.1);
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--text); font-family: 'DM Sans', sans-serif; font-size: 15px; min-height: 100vh; padding: 0; }
+  body::before {
+    content: ''; position: fixed; top: -200px; left: 50%; transform: translateX(-50%);
+    width: 800px; height: 500px;
+    background: radial-gradient(ellipse, rgba(124,106,247,0.12) 0%, transparent 70%);
+    pointer-events: none; z-index: 0;
+  }
+  .wrapper { max-width: 720px; margin: 0 auto; padding: 48px 24px 80px; position: relative; z-index: 1; }
+  .page-header { margin-bottom: 48px; }
+  .back-link {
+    display: inline-flex; align-items: center; gap: 6px;
+    color: var(--muted); text-decoration: none; font-size: 13px; font-weight: 500; letter-spacing: 0.02em;
+    margin-bottom: 24px; transition: color 0.2s;
+  }
+  .back-link:hover { color: var(--text); }
+  .back-link svg { width: 14px; height: 14px; }
+  .page-title { font-family: 'Fraunces', serif; font-size: 36px; font-weight: 300; letter-spacing: -0.02em; color: var(--text); line-height: 1.1; }
+  .page-title span { color: var(--accent); font-style: italic; }
+  .compliance-note { margin-top: 10px; color: var(--muted); font-size: 13px; line-height: 1.5; }
+  .compliance-note a { color: var(--accent2); text-decoration: none; }
+  .compliance-note a:hover { text-decoration: underline; }
+  .card {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 20px;
+    padding: 32px; margin-bottom: 20px; animation: fadeUp 0.4s ease both;
+  }
+  .card:nth-child(2) { animation-delay: 0.05s; }
+  .card:nth-child(3) { animation-delay: 0.1s; }
+  .card:nth-child(4) { animation-delay: 0.15s; }
+  @keyframes fadeUp { from { opacity: 0; transform: translateY(16px); } to { opacity: 1; transform: translateY(0); } }
+  .card-header { display: flex; align-items: flex-start; gap: 14px; margin-bottom: 20px; }
+  .card-icon {
+    width: 40px; height: 40px; border-radius: 12px; display: flex; align-items: center; justify-content: center;
+    flex-shrink: 0; font-size: 18px;
+  }
+  .card-icon.blue { background: rgba(74,158,255,0.15); }
+  .card-icon.purple { background: rgba(124,106,247,0.15); }
+  .card-icon.pink { background: rgba(255,130,130,0.12); }
+  .card-title { font-family: 'Fraunces', serif; font-size: 20px; font-weight: 400; color: var(--text); line-height: 1.2; }
+  .card-desc { font-size: 13px; color: var(--muted); margin-top: 4px; line-height: 1.55; }
+  .toggle-row {
+    display: flex; align-items: center; gap: 10px; margin-bottom: 20px;
+    padding: 12px 16px; background: var(--surface2); border-radius: 12px; border: 1px solid var(--border);
+  }
+  .toggle { position: relative; width: 36px; height: 20px; flex-shrink: 0; cursor: pointer; }
+  .toggle input { opacity: 0; width: 0; height: 0; position: absolute; }
+  .toggle-track {
+    position: absolute; cursor: pointer; inset: 0;
+    background: #333; border-radius: 20px; transition: 0.3s;
+  }
+  .toggle-track::before {
+    content: ''; position: absolute; width: 14px; height: 14px; left: 3px; top: 3px;
+    background: #0f0f11; border-radius: 50%; transition: 0.3s; background: var(--text);
+  }
+  .toggle input:checked + .toggle-track { background: var(--accent); }
+  .toggle input:checked + .toggle-track::before { transform: translateX(16px); background: var(--bg); }
+  .toggle-label { font-size: 14px; font-weight: 500; color: var(--text); }
+  .toggle-status {
+    margin-left: auto; font-size: 11px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase;
+    color: var(--accent); background: var(--soft); padding: 3px 8px; border-radius: 20px;
+  }
+  .toggle-status.off { color: var(--muted); background: rgba(255,255,255,0.05); }
+  label.field-label {
+    display: block; font-size: 12px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase;
+    color: var(--muted); margin-bottom: 8px;
+  }
+  textarea, input[type="text"], input[type="date"] {
+    width: 100%; background: var(--surface2); border: 1px solid var(--border); border-radius: 12px;
+    color: var(--text); font-family: 'DM Sans', sans-serif; font-size: 14px; padding: 14px 16px;
+    resize: vertical; transition: border-color 0.2s, box-shadow 0.2s; outline: none; line-height: 1.6;
+  }
+  textarea:focus, input[type="text"]:focus, input[type="date"]:focus {
+    border-color: rgba(74,158,255,0.4); box-shadow: 0 0 0 3px rgba(74,158,255,0.08);
+  }
+  textarea { min-height: 180px; }
+  #birthday-message { min-height: 220px; }
+  #oneoff-body { min-height: 180px; }
+  #oneoff-prompt { min-height: 90px; }
+  .field-group { margin-bottom: 20px; }
+  .btn {
+    display: inline-flex; align-items: center; gap: 7px; border: none; border-radius: 10px;
+    font-family: 'DM Sans', sans-serif; font-size: 14px; font-weight: 600; cursor: pointer;
+    padding: 11px 20px; transition: all 0.2s; letter-spacing: 0.01em;
+  }
+  .btn-generate {
+    background: var(--surface2); color: var(--muted); border: 1px solid var(--border); margin-bottom: 20px;
+  }
+  .btn-generate:hover { background: rgba(124,106,247,0.15); color: var(--text); border-color: rgba(124,106,247,0.4); }
+  .btn-generate svg { width: 15px; height: 15px; }
+  .btn-generate:disabled { opacity: 0.6; cursor: not-allowed; }
+  .btn-primary { background: var(--accent); color: #0f0f11; }
+  .btn-primary:hover { background: #6bafff; transform: translateY(-1px); box-shadow: 0 4px 20px rgba(74,158,255,0.25); }
+  .btn-primary:active { transform: translateY(0); }
+  .btn-primary:disabled { opacity: 0.7; cursor: not-allowed; transform: none; }
+  .btn-confirm {
+    background: rgba(124,106,247,0.18); color: #a099f7; border: 1px solid rgba(124,106,247,0.25);
+    font-size: 13px; padding: 8px 16px;
+  }
+  .btn-confirm:hover { background: rgba(124,106,247,0.28); color: #c4beff; border-color: rgba(124,106,247,0.45); }
+  .btn-confirm:disabled { opacity: 0.7; cursor: default; }
+  .btn-skip {
+    background: transparent; color: var(--muted); border: 1px solid var(--border); font-size: 13px; padding: 8px 16px;
+  }
+  .btn-skip:hover { background: rgba(255,255,255,0.04); color: var(--text); }
+  .btn-skip:disabled { opacity: 0.7; cursor: default; }
+  .events-list { display: flex; flex-direction: column; gap: 8px; }
+  .event-row {
+    display: flex; align-items: center; padding: 14px 16px; background: var(--surface2);
+    border: 1px solid var(--border); border-radius: 12px; transition: border-color 0.2s, background 0.2s;
+  }
+  .event-row:hover { border-color: rgba(255,255,255,0.12); background: rgba(255,255,255,0.03); }
+  .event-emoji { width: 32px; height: 32px; display: flex; align-items: center; justify-content: center; font-size: 18px; flex-shrink: 0; margin-right: 12px; }
+  .event-info { flex: 1; }
+  .event-name { font-size: 14px; font-weight: 600; color: var(--text); }
+  .event-date { font-size: 12px; color: var(--muted); margin-top: 2px; }
+  .event-actions { display: flex; gap: 8px; flex-shrink: 0; }
+  .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 20px; }
+  .pro-msg { margin-top: 8px; font-size: 13px; color: var(--muted); }
+  .pro-msg.ok { color: #6ee7a3; }
+  .pro-msg.err { color: #f87171; }
+  @media (max-width: 500px) { .form-row { grid-template-columns: 1fr; } }
 </style>
 </head>
 <body>
-  <div id="pro-app" data-account-id="${escapeHtml(accountId)}">
-    <h1>Replyr Pro – Campaigns</h1>
-    <p class="compliance">By uploading and sending you confirm you have permission to email those contacts. <a href="/compliance">Compliance</a>.</p>
-    <p><a href="/connected?accountId=${encodeURIComponent(accountId)}">← Back to Connected</a></p>
-
-    <div class="card">
-      <h2>Birthday messages</h2>
-      <p>One message and offer used for all birthday emails. Use {{first_name}} and {{offer}} in the message.</p>
-      <label><input type="checkbox" id="birthday-enabled" ${birthday?.enabled ? "checked" : ""}> Enable birthday emails</label>
-      <label>Message <textarea id="birthday-message" placeholder="Happy birthday, {{first_name}}! As a thank you, {{offer}}">${escapeHtml(birthday?.messageText || "")}</textarea></label>
-      <button type="button" id="birthday-generate" class="secondary">Generate with Replyr</button>
-      <label>Offer (e.g. 20% off next visit) <input type="text" id="birthday-offer" value="${escapeHtml(birthday?.offerText || "")}" placeholder="20% off your next service"></label>
-      <button type="button" id="birthday-save">Save</button>
-      <span id="birthday-msg" class="msg"></span>
-    </div>
-
-    <div class="card">
-      <h2>Upcoming events</h2>
-      <p>Opt in per event (~2 weeks before send). Set message and offer, then Confirm. Skip if you don't want to send.</p>
-      <div id="events-list"></div>
-    </div>
-
-    <div class="card">
-      <h2>One-off promo</h2>
-      <p>Schedule a single campaign for a date. Use {{first_name}} in the body.</p>
-      <label>Send date <input type="date" id="oneoff-date"></label>
-      <label>Subject <input type="text" id="oneoff-subject" placeholder="Subject line"></label>
-      <label>Body <textarea id="oneoff-body" placeholder="Email body..."></textarea></label>
-      <button type="button" id="oneoff-schedule">Schedule</button>
-      <span id="oneoff-msg" class="msg"></span>
-    </div>
+<div class="wrapper" id="pro-app" data-account-id="${escapeHtml(accountId)}">
+  <div class="page-header">
+    <a href="/connected?accountId=${encodeURIComponent(accountId)}" class="back-link">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M10 3L5 8l5 5"/></svg>
+      Back to Connected
+    </a>
+    <h1 class="page-title">Replyr Pro <span>Campaigns</span></h1>
+    <p class="compliance-note">By uploading and sending you confirm you have permission to email those contacts. <a href="/compliance">Compliance →</a></p>
   </div>
-  <script src="/pro.js"></script>
-</body></html>`);
+
+  <div class="card">
+    <div class="card-header">
+      <div class="card-icon blue">🎂</div>
+      <div>
+        <div class="card-title">Birthday messages</div>
+        <div class="card-desc">One message used for all birthday emails. Use <code style="color:var(--accent);font-size:12px">{{first_name}}</code> and <code style="color:var(--accent);font-size:12px">{{offer}}</code> — filled automatically from your customer list.</div>
+      </div>
+    </div>
+    <div class="toggle-row">
+      <label class="toggle">
+        <input type="checkbox" id="birthday-enabled" ${birthday?.enabled ? "checked" : ""}>
+        <span class="toggle-track"></span>
+      </label>
+      <span class="toggle-label">Enable birthday emails</span>
+      <span class="toggle-status ${birthday?.enabled ? "" : "off"}" id="toggle-status">${birthday?.enabled ? "Active" : "Off"}</span>
+    </div>
+    <div class="field-group">
+      <label class="field-label">Message</label>
+      <textarea id="birthday-message" placeholder="Happy birthday, {{first_name}}! As a thank you, {{offer}}...">${escapeHtml(birthday?.messageText || "")}</textarea>
+    </div>
+    <button type="button" class="btn btn-generate" id="birthday-generate">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M13 2L3 6l4 3 3 4 3-11z"/></svg>
+      Generate with Replyr
+    </button>
+    <div class="field-group">
+      <label class="field-label">Offer</label>
+      <input type="text" id="birthday-offer" value="${escapeHtml(birthday?.offerText || "")}" placeholder="e.g. 20% off next visit">
+    </div>
+    <button type="button" class="btn btn-primary" id="birthday-save">Save changes</button>
+    <span id="birthday-msg" class="pro-msg" aria-live="polite"></span>
+  </div>
+
+  <div class="card">
+    <div class="card-header">
+      <div class="card-icon purple">📅</div>
+      <div>
+        <div class="card-title">Upcoming events</div>
+        <div class="card-desc">Opt in per event. We show the <strong style="color:var(--text)">event date</strong> (the holiday); you choose <strong style="color:var(--text)">when to send</strong> — 2 weeks before, 1 week before, or on the day. Set message and offer, then Confirm.</div>
+      </div>
+    </div>
+    <div class="events-list" id="events-list"></div>
+  </div>
+
+  <div class="card">
+    <div class="card-header">
+      <div class="card-icon pink">⚡</div>
+      <div>
+        <div class="card-title">One-off promo</div>
+        <div class="card-desc">Schedule a single campaign for any date. Use <code style="color:var(--accent);font-size:12px">{{first_name}}</code> in the body — filled automatically from your customer list.</div>
+      </div>
+    </div>
+    <div class="field-group">
+      <label class="field-label">Describe your promo</label>
+      <textarea id="oneoff-prompt" placeholder="e.g. Mother's Day 20% off manicures, or Summer sale – free nail art with any service"></textarea>
+    </div>
+    <button type="button" class="btn btn-generate" id="oneoff-generate">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M13 2L3 6l4 3 3 4 3-11z"/></svg>
+      Generate with Replyr
+    </button>
+    <div class="form-row">
+      <div class="field-group" style="margin-bottom:0">
+        <label class="field-label">Send date</label>
+        <input type="date" id="oneoff-date">
+      </div>
+      <div class="field-group" style="margin-bottom:0">
+        <label class="field-label">Subject line</label>
+        <input type="text" id="oneoff-subject" placeholder="Subject line">
+      </div>
+    </div>
+    <div class="field-group">
+      <label class="field-label">Body</label>
+      <textarea id="oneoff-body" placeholder="Email body..."></textarea>
+    </div>
+    <button type="button" class="btn btn-primary" id="oneoff-schedule">Schedule campaign</button>
+    <span id="oneoff-msg" class="pro-msg" aria-live="polite"></span>
+  </div>
+</div>
+<script src="/pro.js"></script>
+</body>
+</html>`);
   } catch (err) {
     next(err);
   }
@@ -1430,16 +1600,27 @@ app.get("/pro.js", (req, res) => {
   var accountId = (app.getAttribute("data-account-id") || "").trim();
   if (!accountId) return;
 
+  var eventEmoji = { valentines_day: "❤️", presidents_day: "🎩", lunar_new_year: "🧧", easter: "🐣", mothers_day: "🌷", memorial_day: "🎖️", fathers_day: "👔", independence_day: "🇺🇸", labor_day: "📋", halloween: "🎃", thanksgiving: "🦃", black_friday: "🛒", christmas: "🎄", new_year: "⭐" };
   function loadEvents() {
     fetch("/pro/events").then(function(r) { return r.json(); }).then(function(events) {
       var el = document.getElementById("events-list");
       if (!el) return;
+      function fmtDate(iso) {
+        try {
+          var d = new Date(iso + "T12:00:00");
+          return d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+        } catch (_) { return iso; }
+      }
       el.innerHTML = events.slice(0, 14).map(function(ev) {
+        var eventDateStr = fmtDate(ev.sendDate);
+        var emoji = eventEmoji[ev.key] || "📅";
         return '<div class="event-row" data-key="' + ev.key + '" data-year="' + ev.sendDate.slice(0,4) + '">' +
-          '<span><strong>' + ev.name + '</strong> – send ' + ev.sendDate + '</span>' +
-          '<button type="button" class="event-confirm" data-key="' + ev.key + '" data-year="' + ev.sendDate.slice(0,4) + '">Confirm</button>' +
-          '<button type="button" class="secondary event-skip" data-key="' + ev.key + '" data-year="' + ev.sendDate.slice(0,4) + '">Skip</button>' +
-          '</div>';
+          '<div class="event-emoji">' + emoji + '</div>' +
+          '<div class="event-info"><div class="event-name">' + ev.name + '</div><div class="event-date">' + eventDateStr + '</div></div>' +
+          '<div class="event-actions">' +
+          '<button type="button" class="btn btn-confirm event-confirm" data-key="' + ev.key + '" data-year="' + ev.sendDate.slice(0,4) + '">Confirm</button>' +
+          '<button type="button" class="btn btn-skip event-skip" data-key="' + ev.key + '" data-year="' + ev.sendDate.slice(0,4) + '">Skip</button>' +
+          '</div></div>';
       }).join("");
       el.querySelectorAll(".event-confirm").forEach(function(btn) {
         btn.onclick = function() {
@@ -1447,10 +1628,17 @@ app.get("/pro.js", (req, res) => {
           var year = btn.getAttribute("data-year");
           var msg = prompt("Message (optional; use {{offer}} for the offer):") || "";
           var offer = prompt("Offer (e.g. 20% off):") || "";
+          var whenMsg = "When to send the email?\\n0 = On the event day\\n1 = 1 day before\\n3 = 3 days before\\n7 = 1 week before\\n14 = 2 weeks before\\nEnter number (default 14):";
+          var whenStr = prompt(whenMsg, "14");
+          var sendDaysBefore = 14;
+          if (whenStr !== null && whenStr !== "") {
+            var n = parseInt(whenStr, 10);
+            if ([0, 1, 3, 7, 14].indexOf(n) !== -1) sendDaysBefore = n;
+          }
           fetch("/pro/events/" + key + "/" + year + "?accountId=" + encodeURIComponent(accountId), {
             method: "PATCH",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ accountId: accountId, status: "confirmed", messageText: msg, offerText: offer })
+            body: JSON.stringify({ accountId: accountId, status: "confirmed", messageText: msg, offerText: offer, sendDaysBefore: sendDaysBefore })
           }).then(function(r) { return r.json(); }).then(function() { btn.textContent = "Confirmed"; btn.disabled = true; }).catch(function() { alert("Failed"); });
         };
       });
@@ -1469,14 +1657,22 @@ app.get("/pro.js", (req, res) => {
   }
   loadEvents();
 
+  var birthdayCheck = document.getElementById("birthday-enabled");
+  var toggleStatus = document.getElementById("toggle-status");
+  if (birthdayCheck && toggleStatus) {
+    birthdayCheck.addEventListener("change", function() { toggleStatus.textContent = birthdayCheck.checked ? "Active" : "Off"; toggleStatus.classList.toggle("off", !birthdayCheck.checked); });
+  }
+
   var birthdayGenerate = document.getElementById("birthday-generate");
   if (birthdayGenerate) {
     birthdayGenerate.onclick = function() {
+      var offerInput = document.getElementById("birthday-offer");
+      var offerText = (offerInput && offerInput.value) ? offerInput.value.trim() : "";
       birthdayGenerate.disabled = true;
       fetch("/pro/generate-message", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ accountId: accountId, type: "birthday" })
+        body: JSON.stringify({ accountId: accountId, type: "birthday", offerText: offerText })
       }).then(function(r) { return r.json(); }).then(function(data) {
         var ta = document.getElementById("birthday-message");
         if (ta && data.messageText) ta.value = data.messageText;
@@ -1495,15 +1691,32 @@ app.get("/pro.js", (req, res) => {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ accountId: accountId, enabled: enabled, messageText: message, offerText: offer })
       }).then(function(r) { return r.json(); }).then(function() {
-        document.getElementById("birthday-msg").textContent = "Saved.";
-        document.getElementById("birthday-msg").style.color = "#2e7d32";
+        var m = document.getElementById("birthday-msg"); m.textContent = "Saved."; m.className = "pro-msg ok";
       }).catch(function() {
-        document.getElementById("birthday-msg").textContent = "Save failed.";
-        document.getElementById("birthday-msg").style.color = "#c00";
+        var m = document.getElementById("birthday-msg"); m.textContent = "Save failed."; m.className = "pro-msg err";
       }).finally(function() { birthdaySave.disabled = false; });
     };
   }
 
+  var oneoffGenerate = document.getElementById("oneoff-generate");
+  if (oneoffGenerate) {
+    oneoffGenerate.onclick = function() {
+      var promptEl = document.getElementById("oneoff-prompt");
+      var promptText = (promptEl && promptEl.value) ? promptEl.value.trim() : "";
+      if (!promptText) { alert("Describe your promo first (e.g. Mother's Day 20% off)."); return; }
+      oneoffGenerate.disabled = true;
+      fetch("/pro/generate-message", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ accountId: accountId, type: "one_off", prompt: promptText })
+      }).then(function(r) { return r.json(); }).then(function(data) {
+        var sub = document.getElementById("oneoff-subject");
+        var bod = document.getElementById("oneoff-body");
+        if (sub && data.subject) sub.value = data.subject;
+        if (bod && data.body) bod.value = data.body;
+      }).catch(function() { alert("Generate failed."); }).finally(function() { oneoffGenerate.disabled = false; });
+    };
+  }
   var oneoffSchedule = document.getElementById("oneoff-schedule");
   if (oneoffSchedule) {
     oneoffSchedule.onclick = function() {
@@ -1517,14 +1730,12 @@ app.get("/pro.js", (req, res) => {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ accountId: accountId, sendDate: date, subject: subject, body: body })
       }).then(function(r) { return r.json(); }).then(function() {
-        document.getElementById("oneoff-msg").textContent = "Scheduled for " + date;
-        document.getElementById("oneoff-msg").style.color = "#2e7d32";
+        var m = document.getElementById("oneoff-msg"); m.textContent = "Scheduled for " + date + "."; m.className = "pro-msg ok";
         document.getElementById("oneoff-date").value = "";
         document.getElementById("oneoff-subject").value = "";
         document.getElementById("oneoff-body").value = "";
       }).catch(function() {
-        document.getElementById("oneoff-msg").textContent = "Failed.";
-        document.getElementById("oneoff-msg").style.color = "#c00";
+        var m = document.getElementById("oneoff-msg"); m.textContent = "Failed."; m.className = "pro-msg err";
       }).finally(function() { oneoffSchedule.disabled = false; });
     };
   }
@@ -1654,7 +1865,7 @@ async function load() {
     if (!Array.isArray(list) || list.length === 0) {
       content.innerHTML = "<p class=\\"empty\\">No businesses yet. Have them connect via the auth link.</p>";
     } else {
-      const tableHtml = "<table><thead><tr><th>Name</th><th>Contact (for 1–2 star replies)</th><th>Trial ends</th><th>Status</th><th>Auto-reply</th><th>Interval (min)</th><th>Actions</th></tr></thead><tbody></tbody></table>";
+      const tableHtml = "<table><thead><tr><th>Name</th><th>Contact (for 1–2 star replies)</th><th>Trial ends</th><th>Status</th><th>Pro</th><th>Auto-reply</th><th>Interval (min)</th><th>Actions</th></tr></thead><tbody></tbody></table>";
       content.insertAdjacentHTML("beforeend", tableHtml);
       const table = content.querySelector("table");
       if (filterRow) { content.insertBefore(filterRow, table); filterRow.style.display = "flex"; }
@@ -1670,15 +1881,19 @@ async function load() {
           "<td><input type=\\"text\\" value=\\"" + escapeAttr(b.contact || "") + "\\" data-field=\\"contact\\"></td>" +
           "<td>" + escapeHtml(trialEndStr) + "</td>" +
           "<td><span class=\\"" + s.className + "\\">" + escapeHtml(s.label) + "</span></td>" +
+          "<td><input type=\\"checkbox\\" " + (b.isPro ? "checked" : "") + " data-field=\\"isPro\\" title=\\"Pro (campaigns, CSV)\\"></td>" +
           "<td><input type=\\"checkbox\\" " + (b.autoReplyEnabled ? "checked" : "") + " data-field=\\"autoReplyEnabled\\"></td>" +
           "<td><input type=\\"number\\" min=\\"1\\" value=\\""
           + (b.intervalMinutes ?? 30)
           + "\\" data-field=\\"intervalMinutes\\" style=\\"width:4rem\\"></td>" +
-          "<td><button type=\\"button\\" data-save>Save</button> <button type=\\"button\\" data-run-now title=\\"Run Claude auto-reply now\\">Run now</button><span class=\\"msg\\" data-msg></span></td>";
+          "<td><button type=\\"button\\" data-save>Save</button> <button type=\\"button\\" data-run-now title=\\"Run Claude auto-reply now\\">Run now</button> <a href=\\"#\\" data-pro-link title=\\"Open Pro campaigns page\\">Pro</a><span class=\\"msg\\" data-msg></span></td>";
         tbody.appendChild(tr);
       });
       content.querySelectorAll("[data-save]").forEach(btn => { btn.addEventListener("click", saveRow); });
       content.querySelectorAll("[data-run-now]").forEach(btn => { btn.addEventListener("click", runNowRow); });
+      content.querySelectorAll("[data-pro-link]").forEach(function(a) {
+        a.addEventListener("click", function(e) { e.preventDefault(); var tr = a.closest("tr"); if (tr && tr.dataset.accountId) window.open("/pro?accountId=" + encodeURIComponent(tr.dataset.accountId), "_blank"); });
+      });
       var statusFilter = document.getElementById("status-filter");
       if (statusFilter) {
         statusFilter.addEventListener("change", function() {
@@ -1700,6 +1915,7 @@ async function saveRow(e) {
   const tr = btn.closest("tr");
   const accountId = tr.dataset.accountId;
   const contact = tr.querySelector("[data-field=contact]").value.trim();
+  const isPro = tr.querySelector("[data-field=isPro]").checked;
   const autoReplyEnabled = tr.querySelector("[data-field=autoReplyEnabled]").checked;
   const intervalMinutes = parseInt(tr.querySelector("[data-field=intervalMinutes]").value, 10) || 30;
   const msgEl = tr.querySelector("[data-msg]");
@@ -1710,7 +1926,7 @@ async function saveRow(e) {
     const r = await fetch("/businesses/" + encodeURIComponent(accountId), {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ contact, autoReplyEnabled, intervalMinutes })
+      body: JSON.stringify({ contact, isPro, autoReplyEnabled, intervalMinutes })
     });
     const data = await r.json();
     if (!r.ok) throw new Error(data.error || r.statusText);

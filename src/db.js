@@ -95,12 +95,18 @@ export async function init() {
       status TEXT NOT NULL DEFAULT 'pending',
       message_text TEXT,
       offer_text TEXT,
+      send_days_before INTEGER NOT NULL DEFAULT 14,
       confirmed_at TIMESTAMPTZ,
       sent_at TIMESTAMPTZ,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       PRIMARY KEY (account_id, event_key, event_year)
     );
   `);
+  try {
+    await client.query("ALTER TABLE pro_event_campaigns ADD COLUMN send_days_before INTEGER NOT NULL DEFAULT 14");
+  } catch (err) {
+    if (err.code !== "42701") throw err;
+  }
   // Pro one-off campaigns (business picks date, subject, body)
   await client.query(`
     CREATE TABLE IF NOT EXISTS pro_one_off_campaigns (
@@ -353,7 +359,7 @@ export async function setProBirthdaySettings(accountId, settings) {
 // --- Pro event campaigns ---
 export async function getProEventCampaign(accountId, eventKey, eventYear) {
   const res = await getPool().query(
-    "SELECT status, message_text, offer_text, confirmed_at, sent_at FROM pro_event_campaigns WHERE account_id = $1 AND event_key = $2 AND event_year = $3",
+    "SELECT status, message_text, offer_text, send_days_before, confirmed_at, sent_at FROM pro_event_campaigns WHERE account_id = $1 AND event_key = $2 AND event_year = $3",
     [accountId, eventKey, eventYear]
   );
   const row = res.rows[0];
@@ -362,28 +368,35 @@ export async function getProEventCampaign(accountId, eventKey, eventYear) {
     status: row.status,
     messageText: row.message_text ?? "",
     offerText: row.offer_text ?? "",
+    sendDaysBefore: row.send_days_before ?? 14,
     confirmedAt: row.confirmed_at ? new Date(row.confirmed_at).toISOString() : null,
     sentAt: row.sent_at ? new Date(row.sent_at).toISOString() : null
   };
 }
 
 export async function upsertProEventCampaign(accountId, eventKey, eventYear, data) {
-  const { status, messageText = "", offerText = "", confirmedAt, sentAt } = data;
+  const { status, messageText = "", offerText = "", sendDaysBefore, confirmedAt, sentAt } = data;
+  const days = sendDaysBefore !== undefined ? Number(sendDaysBefore) : 14;
   await getPool().query(
-    `INSERT INTO pro_event_campaigns (account_id, event_key, event_year, status, message_text, offer_text, confirmed_at, sent_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-     ON CONFLICT (account_id, event_key, event_year) DO UPDATE SET status = $4, message_text = $5, offer_text = $6, confirmed_at = $7, sent_at = $8`,
-    [accountId, eventKey, eventYear, status || "pending", messageText, offerText, confirmedAt || null, sentAt || null]
+    `INSERT INTO pro_event_campaigns (account_id, event_key, event_year, status, message_text, offer_text, send_days_before, confirmed_at, sent_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+     ON CONFLICT (account_id, event_key, event_year) DO UPDATE SET status = $4, message_text = $5, offer_text = $6, send_days_before = $7, confirmed_at = $8, sent_at = $9`,
+    [accountId, eventKey, eventYear, status || "pending", messageText, offerText, days, confirmedAt || null, sentAt || null]
   );
   return getProEventCampaign(accountId, eventKey, eventYear);
 }
 
 export async function getProEventCampaignsDueToSend() {
   const res = await getPool().query(
-    `SELECT account_id, event_key, event_year FROM pro_event_campaigns
+    `SELECT account_id, event_key, event_year, send_days_before FROM pro_event_campaigns
      WHERE status = 'confirmed' AND sent_at IS NULL`
   );
-  return res.rows.map((r) => ({ accountId: r.account_id, eventKey: r.event_key, eventYear: r.event_year }));
+  return res.rows.map((r) => ({
+    accountId: r.account_id,
+    eventKey: r.event_key,
+    eventYear: r.event_year,
+    sendDaysBefore: r.send_days_before ?? 14
+  }));
 }
 
 export async function markProEventCampaignSent(accountId, eventKey, eventYear) {
