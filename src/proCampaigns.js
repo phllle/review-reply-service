@@ -114,6 +114,11 @@ function addDays(isoDate, days) {
   return d.toISOString().slice(0, 10);
 }
 
+/** Given event date (YYYY-MM-DD) and send_days_before, return the date we should send (event date minus days). */
+export function getSendDateForEvent(eventDateIso, sendDaysBefore = 14) {
+  return addDays(eventDateIso, -Number(sendDaysBefore));
+}
+
 /** Parse birthday string (YYYY-MM-DD or MM-DD or MM/DD) to { month, day }. */
 function parseBirthday(birthday) {
   if (!birthday || typeof birthday !== "string") return null;

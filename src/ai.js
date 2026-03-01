@@ -80,20 +80,21 @@ function mapStarRatingToNumber(starRating) {
 export async function generateCampaignMessageWithClaude(opts = {}) {
   const apiKey = process.env.ANTHROPIC_API_KEY?.trim();
   if (!apiKey) throw new Error("ANTHROPIC_API_KEY is not set");
-  const { type = "birthday", businessName = "our business", eventName } = opts;
+  const { type = "birthday", businessName = "our business", eventName, offerText } = opts;
   const Anthropic = (await import("@anthropic-ai/sdk")).default;
   const client = new Anthropic({ apiKey });
   const model = process.env.ANTHROPIC_MODEL?.trim() || "claude-sonnet-4-20250514";
 
   const systemPrompt = `You write short, friendly marketing messages for a small business. Rules:
 - Output plain text only. No markdown, bullets, or hashtags.
-- Include placeholders: {{first_name}} for the customer's name, {{offer}} for the discount/offer (e.g. "20% off").
+- Include {{first_name}} for the customer's name. Include the exact offer/discount in the message (use {{offer}} as placeholder if the offer will be inserted later).
 - Keep it under 150 words. Warm and professional.`;
 
+  const offerHint = offerText ? ` The offer to include (use {{offer}} or weave in naturally): "${offerText}".` : "";
   const userPrompt =
     type === "birthday"
-      ? `Business: ${businessName}. Write a birthday email message. Use {{first_name}} and {{offer}}. Example tone: "Happy birthday, {{first_name}}! As a thank you, {{offer}}. We hope to see you soon."`
-      : `Business: ${businessName}. Write a short promotional email for the event: ${eventName || "holiday"}. Use {{first_name}} and {{offer}}. Keep it brief and inviting.`;
+      ? `Business: ${businessName}. Write a birthday email message. Use {{first_name}}.${offerHint} Example: "Happy birthday, {{first_name}}! As a thank you, {{offer}}. We hope to see you soon."`
+      : `Business: ${businessName}. Write a short promotional email for the event: ${eventName || "holiday"}. Use {{first_name}} and the offer.${offerHint} Keep it brief and inviting.`;
 
   const message = await client.messages.create({
     model,
@@ -108,4 +109,58 @@ export async function generateCampaignMessageWithClaude(opts = {}) {
     ?.join("")
     ?.trim();
   return text || "Happy birthday, {{first_name}}! As a thank you, {{offer}}. We hope to see you soon.";
+}
+
+/**
+ * Generate subject and body for a one-off promo from the business's description.
+ * @param {object} opts - { prompt: string, businessName?: string }
+ * @returns {Promise<{ subject: string, body: string }>}
+ */
+export async function generateOneOffWithClaude(opts = {}) {
+  const apiKey = process.env.ANTHROPIC_API_KEY?.trim();
+  if (!apiKey) throw new Error("ANTHROPIC_API_KEY is not set");
+  const { prompt = "", businessName = "our business" } = opts;
+  const Anthropic = (await import("@anthropic-ai/sdk")).default;
+  const client = new Anthropic({ apiKey });
+  const model = process.env.ANTHROPIC_MODEL?.trim() || "claude-sonnet-4-20250514";
+
+  const systemPrompt = `You write short marketing emails for a small business. Rules:
+- Output plain text only. No markdown, bullets, or hashtags.
+- Use {{first_name}} in the body for the customer's name (filled automatically from their list).
+- Keep subject under 60 characters. Body under 150 words. Warm and professional.`;
+
+  const userPrompt = `Business: ${businessName}. They want to send this one-off announcement: "${prompt}"
+
+Reply with exactly two lines:
+LINE 1: The email subject (one short line).
+LINE 2: The email body (can be multiple sentences; use {{first_name}} where appropriate).
+
+Format your reply as:
+SUBJECT: your subject here
+BODY: your body text here`;
+
+  const message = await client.messages.create({
+    model,
+    max_tokens: 400,
+    system: systemPrompt,
+    messages: [{ role: "user", content: userPrompt }]
+  });
+
+  const text = message.content
+    ?.filter((block) => block.type === "text")
+    ?.map((block) => block.text)
+    ?.join("")
+    ?.trim();
+  if (!text) return { subject: "Special offer from us", body: `Hi {{first_name}},\n\nWe have a promotion we think you'll love. Reach out to learn more!` };
+
+  const subjectMatch = text.match(/SUBJECT:\s*(.+?)(?:\n|$)/i);
+  const bodyMatch = text.match(/BODY:\s*([\s\S]+?)(?:\n*$)/i);
+  let subject = subjectMatch ? subjectMatch[1].trim() : null;
+  let body = bodyMatch ? bodyMatch[1].trim() : null;
+  if (!subject || !body) {
+    const lines = text.split(/\n+/).map((l) => l.trim()).filter(Boolean);
+    subject = subject || (lines[0]?.slice(0, 80) || "Special offer");
+    body = body || (lines.slice(1).join("\n\n") || lines[0] || text);
+  }
+  return { subject, body };
 }
