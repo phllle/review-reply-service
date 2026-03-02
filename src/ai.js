@@ -80,7 +80,7 @@ function mapStarRatingToNumber(starRating) {
 export async function generateCampaignMessageWithClaude(opts = {}) {
   const apiKey = process.env.ANTHROPIC_API_KEY?.trim();
   if (!apiKey) throw new Error("ANTHROPIC_API_KEY is not set");
-  const { type = "birthday", businessName = "our business", eventName, offerText } = opts;
+  const { type = "birthday", businessName = "our business", eventName, offerText, businessPrompt } = opts;
   const Anthropic = (await import("@anthropic-ai/sdk")).default;
   const client = new Anthropic({ apiKey });
   const model = process.env.ANTHROPIC_MODEL?.trim() || "claude-sonnet-4-20250514";
@@ -88,13 +88,15 @@ export async function generateCampaignMessageWithClaude(opts = {}) {
   const systemPrompt = `You write short, friendly marketing messages for a small business. Rules:
 - Output plain text only. No markdown, bullets, or hashtags.
 - Include {{first_name}} for the customer's name. Include the exact offer/discount in the message (use {{offer}} as placeholder if the offer will be inserted later).
+- Tailor the message to the specific business: use its name and infer the business type from the name (e.g. nail salon, restaurant, Pho, spa, retail) so the copy fits naturally — mention relevant services, products, or vibes (e.g. nails/manicure for a nail salon, food/dining for a restaurant).
 - Keep it under 150 words. Warm and professional.`;
 
   const offerHint = offerText ? ` The offer to include (use {{offer}} or weave in naturally): "${offerText}".` : "";
+  const businessHint = businessPrompt ? ` The business owner provided this description — use it to tailor the message: "${businessPrompt}".` : "";
   const userPrompt =
     type === "birthday"
-      ? `Business: ${businessName}. Write a birthday email message. Use {{first_name}}.${offerHint} Example: "Happy birthday, {{first_name}}! As a thank you, {{offer}}. We hope to see you soon."`
-      : `Business: ${businessName}. Write a short promotional email for the event: ${eventName || "holiday"}. Use {{first_name}} and the offer.${offerHint} Keep it brief and inviting.`;
+      ? `Business: "${businessName}".${businessHint} Write a birthday email message tailored to this business (use its name and type so it feels specific — e.g. for a nail salon mention nails/manicure; for a restaurant mention dining/food, cuisine type, or vibe). Use {{first_name}}.${offerHint} Example: "Happy birthday, {{first_name}}! As a thank you, {{offer}}. We hope to see you soon."`
+      : `Business: "${businessName}".${businessHint} Write a short promotional email for the event: ${eventName || "holiday"}, tailored to this business (use its name and type). Use {{first_name}} and the offer.${offerHint} Keep it brief and inviting.`;
 
   const message = await client.messages.create({
     model,

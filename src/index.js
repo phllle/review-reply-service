@@ -1241,7 +1241,7 @@ app.patch("/pro/birthday-settings", async (req, res, next) => {
 });
 
 app.get("/pro/events", (req, res) => {
-  const events = getUpcomingEvents(90);
+  const events = getUpcomingEvents(365);
   res.json(events);
 });
 
@@ -1316,7 +1316,8 @@ app.post("/pro/generate-message", async (req, res, next) => {
       type: type || "birthday",
       businessName: business?.name || "Our business",
       eventName,
-      offerText: offerText ? String(offerText).trim() : ""
+      offerText: offerText ? String(offerText).trim() : "",
+      businessPrompt: prompt ? String(prompt).trim() : ""
     });
     if (offerText && typeof messageText === "string") {
       messageText = messageText.replace(/\{\{offer\}\}/gi, String(offerText).trim());
@@ -1438,19 +1439,22 @@ app.get("/pro", async (req, res, next) => {
     display: block; font-size: 12px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase;
     color: var(--muted); margin-bottom: 8px;
   }
-  textarea, input[type="text"], input[type="date"] {
+  textarea, input[type="text"], input[type="date"], select {
     width: 100%; background: var(--surface2); border: 1px solid var(--border); border-radius: 12px;
     color: var(--text); font-family: 'DM Sans', sans-serif; font-size: 14px; padding: 14px 16px;
     resize: vertical; transition: border-color 0.2s, box-shadow 0.2s; outline: none; line-height: 1.6;
   }
-  textarea:focus, input[type="text"]:focus, input[type="date"]:focus {
+  textarea:focus, input[type="text"]:focus, input[type="date"]:focus, select:focus {
     border-color: rgba(74,158,255,0.4); box-shadow: 0 0 0 3px rgba(74,158,255,0.08);
   }
+  select { cursor: pointer; min-height: 46px; }
   textarea { min-height: 180px; }
   #birthday-message { min-height: 220px; }
   #oneoff-body { min-height: 180px; }
   #oneoff-prompt { min-height: 90px; }
   .field-group { margin-bottom: 20px; }
+  .field-hint { font-size: 12px; color: var(--muted); margin-top: 6px; line-height: 1.5; }
+  .field-input { margin-bottom: 0; }
   .btn {
     display: inline-flex; align-items: center; gap: 7px; border: none; border-radius: 10px;
     font-family: 'DM Sans', sans-serif; font-size: 14px; font-weight: 600; cursor: pointer;
@@ -1477,6 +1481,10 @@ app.get("/pro", async (req, res, next) => {
   }
   .btn-skip:hover { background: rgba(255,255,255,0.04); color: var(--text); }
   .btn-skip:disabled { opacity: 0.7; cursor: default; }
+  .btn-confirm.event-edit { background: rgba(124,106,247,0.2); color: var(--accent2); }
+  .btn-confirm.event-edit:hover { background: rgba(124,106,247,0.3); color: var(--text); }
+  .btn-undo { background: transparent; color: var(--muted); border: 1px solid var(--border); font-size: 12px; padding: 6px 12px; }
+  .btn-undo:hover { color: var(--accent); border-color: rgba(74,158,255,0.4); }
   .events-list { display: flex; flex-direction: column; gap: 8px; }
   .event-row {
     display: flex; align-items: center; padding: 14px 16px; background: var(--surface2);
@@ -1488,6 +1496,9 @@ app.get("/pro", async (req, res, next) => {
   .event-name { font-size: 14px; font-weight: 600; color: var(--text); }
   .event-date { font-size: 12px; color: var(--muted); margin-top: 2px; }
   .event-actions { display: flex; gap: 8px; flex-shrink: 0; }
+  .event-detail-panel { display: none; margin-top: 16px; padding: 20px; background: var(--surface2); border: 1px solid var(--border); border-radius: 14px; }
+  .event-detail-panel.visible { display: block; }
+  .event-detail-title { font-family: 'Fraunces', serif; font-size: 18px; color: var(--text); margin-bottom: 16px; padding-bottom: 12px; border-bottom: 1px solid var(--border); }
   .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 20px; }
   .pro-msg { margin-top: 8px; font-size: 13px; color: var(--muted); }
   .pro-msg.ok { color: #6ee7a3; }
@@ -1523,6 +1534,11 @@ app.get("/pro", async (req, res, next) => {
       <span class="toggle-status ${birthday?.enabled ? "" : "off"}" id="toggle-status">${birthday?.enabled ? "Active" : "Off"}</span>
     </div>
     <div class="field-group">
+      <label class="field-label">Describe your business (optional)</label>
+      <input type="text" id="birthday-prompt" placeholder="e.g. Anchovie and Salts is a seafood restaurant in Seattle — tailor the message to that" class="field-input">
+      <p class="field-hint">Add a short description so Replyr can tailor the birthday message to your business name and type.</p>
+    </div>
+    <div class="field-group">
       <label class="field-label">Message</label>
       <textarea id="birthday-message" placeholder="Happy birthday, {{first_name}}! As a thank you, {{offer}}...">${escapeHtml(birthday?.messageText || "")}</textarea>
     </div>
@@ -1547,6 +1563,38 @@ app.get("/pro", async (req, res, next) => {
       </div>
     </div>
     <div class="events-list" id="events-list"></div>
+    <div class="event-detail-panel" id="event-detail-panel">
+      <div class="event-detail-title" id="event-detail-title">Event</div>
+      <div class="field-group">
+        <label class="field-label">Describe your business (optional)</label>
+        <input type="text" id="event-detail-prompt" placeholder="e.g. Anchovie and Salts is a seafood restaurant — tailor the message" class="field-input">
+        <p class="field-hint">So Replyr can tailor the event message to your business.</p>
+      </div>
+      <div class="field-group">
+        <label class="field-label">Message</label>
+        <textarea id="event-detail-message" placeholder="e.g. Happy Easter! {{first_name}}, {{offer}}... Use {{first_name}} and {{offer}}." style="min-height: 160px;"></textarea>
+      </div>
+      <button type="button" class="btn btn-generate" id="event-detail-generate">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M13 2L3 6l4 3 3 4 3-11z"/></svg>
+        Generate with Replyr
+      </button>
+      <div class="field-group">
+        <label class="field-label">Offer</label>
+        <input type="text" id="event-detail-offer" placeholder="e.g. 20% off next visit">
+      </div>
+      <div class="field-group">
+        <label class="field-label">When to send</label>
+        <select id="event-detail-send" class="field-input">
+          <option value="0">On the event day</option>
+          <option value="1">1 day before</option>
+          <option value="3">3 days before</option>
+          <option value="7">1 week before</option>
+          <option value="14" selected>2 weeks before</option>
+        </select>
+      </div>
+      <button type="button" class="btn btn-primary" id="event-detail-save">Save and confirm</button>
+      <span id="event-detail-msg" class="pro-msg" aria-live="polite"></span>
+    </div>
   </div>
 
   <div class="card">
@@ -1614,48 +1662,144 @@ app.get("/pro.js", (req, res) => {
       el.innerHTML = events.slice(0, 14).map(function(ev) {
         var eventDateStr = fmtDate(ev.sendDate);
         var emoji = eventEmoji[ev.key] || "📅";
-        return '<div class="event-row" data-key="' + ev.key + '" data-year="' + ev.sendDate.slice(0,4) + '">' +
+        var y = ev.sendDate.slice(0, 4);
+        return '<div class="event-row" data-key="' + ev.key + '" data-year="' + y + '">' +
           '<div class="event-emoji">' + emoji + '</div>' +
           '<div class="event-info"><div class="event-name">' + ev.name + '</div><div class="event-date">' + eventDateStr + '</div></div>' +
           '<div class="event-actions">' +
-          '<button type="button" class="btn btn-confirm event-confirm" data-key="' + ev.key + '" data-year="' + ev.sendDate.slice(0,4) + '">Confirm</button>' +
-          '<button type="button" class="btn btn-skip event-skip" data-key="' + ev.key + '" data-year="' + ev.sendDate.slice(0,4) + '">Skip</button>' +
+          '<button type="button" class="btn btn-confirm event-confirm" data-key="' + ev.key + '" data-year="' + y + '" data-name="' + (ev.name || "").replace(/"/g, "&quot;") + '" data-date="' + eventDateStr.replace(/"/g, "&quot;") + '">Confirm</button>' +
+          '<button type="button" class="btn btn-skip event-skip" data-key="' + ev.key + '" data-year="' + y + '">Skip</button>' +
+          '<button type="button" class="btn btn-undo event-undo" data-key="' + ev.key + '" data-year="' + y + '" style="display:none">Undo</button>' +
           '</div></div>';
       }).join("");
+      var panel = document.getElementById("event-detail-panel");
+      var panelTitle = document.getElementById("event-detail-title");
+      var panelMessage = document.getElementById("event-detail-message");
+      var panelOffer = document.getElementById("event-detail-offer");
+      var panelSend = document.getElementById("event-detail-send");
+      var panelPrompt = document.getElementById("event-detail-prompt");
+      var panelMsg = document.getElementById("event-detail-msg");
       el.querySelectorAll(".event-confirm").forEach(function(btn) {
         btn.onclick = function() {
+          if (btn.disabled) return;
           var key = btn.getAttribute("data-key");
           var year = btn.getAttribute("data-year");
-          var msg = prompt("Message (optional; use {{offer}} for the offer):") || "";
-          var offer = prompt("Offer (e.g. 20% off):") || "";
-          var whenMsg = "When to send the email?\\n0 = On the event day\\n1 = 1 day before\\n3 = 3 days before\\n7 = 1 week before\\n14 = 2 weeks before\\nEnter number (default 14):";
-          var whenStr = prompt(whenMsg, "14");
-          var sendDaysBefore = 14;
-          if (whenStr !== null && whenStr !== "") {
-            var n = parseInt(whenStr, 10);
-            if ([0, 1, 3, 7, 14].indexOf(n) !== -1) sendDaysBefore = n;
-          }
-          fetch("/pro/events/" + key + "/" + year + "?accountId=" + encodeURIComponent(accountId), {
-            method: "PATCH",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ accountId: accountId, status: "confirmed", messageText: msg, offerText: offer, sendDaysBefore: sendDaysBefore })
-          }).then(function(r) { return r.json(); }).then(function() { btn.textContent = "Confirmed"; btn.disabled = true; }).catch(function() { alert("Failed"); });
+          var name = btn.getAttribute("data-name") || key.replace(/_/g, " ");
+          var dateStr = btn.getAttribute("data-date") || "";
+          panel.dataset.key = key;
+          panel.dataset.year = year;
+          panel.dataset.eventName = name;
+          panel._confirmBtn = btn;
+          panelTitle.textContent = name + (dateStr ? " – " + dateStr : "");
+          panelMessage.value = "";
+          panelOffer.value = "";
+          panelSend.value = "14";
+          panelPrompt.value = "";
+          panelMsg.textContent = "";
+          panel.classList.add("visible");
+          fetch("/pro/events/" + key + "/" + year + "?accountId=" + encodeURIComponent(accountId))
+            .then(function(r) { return r.json(); })
+            .then(function(c) {
+              if (c && c.messageText) panelMessage.value = c.messageText;
+              if (c && c.offerText) panelOffer.value = c.offerText;
+              if (c && c.sendDaysBefore !== undefined) panelSend.value = String(c.sendDaysBefore);
+              if (c && c.status === "confirmed") { btn.textContent = "Edit"; btn.classList.add("event-edit"); }
+            })
+            .catch(function() {});
         };
       });
       el.querySelectorAll(".event-skip").forEach(function(btn) {
         btn.onclick = function() {
+          if (btn.disabled) return;
+          var row = btn.closest(".event-row");
+          var undoBtn = row ? row.querySelector(".event-undo") : null;
           var key = btn.getAttribute("data-key");
           var year = btn.getAttribute("data-year");
           fetch("/pro/events/" + key + "/" + year + "?accountId=" + encodeURIComponent(accountId), {
             method: "PATCH",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ accountId: accountId, status: "skipped" })
-          }).then(function(r) { return r.json(); }).then(function() { btn.textContent = "Skipped"; btn.disabled = true; });
+          }).then(function(r) { return r.json(); }).then(function() {
+            btn.textContent = "Skipped";
+            btn.disabled = true;
+            if (undoBtn) undoBtn.style.display = "";
+          });
+        };
+      });
+      el.querySelectorAll(".event-undo").forEach(function(btn) {
+        btn.onclick = function() {
+          var row = btn.closest(".event-row");
+          var skipBtn = row ? row.querySelector(".event-skip") : null;
+          var key = btn.getAttribute("data-key");
+          var year = btn.getAttribute("data-year");
+          fetch("/pro/events/" + key + "/" + year + "?accountId=" + encodeURIComponent(accountId), {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ accountId: accountId, status: "pending" })
+          }).then(function(r) { return r.json(); }).then(function() {
+            if (skipBtn) { skipBtn.textContent = "Skip"; skipBtn.disabled = false; }
+            btn.style.display = "none";
+          }).catch(function() { alert("Undo failed"); });
         };
       });
     });
   }
   loadEvents();
+
+  var eventDetailPanel = document.getElementById("event-detail-panel");
+  var eventDetailGenerate = document.getElementById("event-detail-generate");
+  var eventDetailSave = document.getElementById("event-detail-save");
+  if (eventDetailGenerate) {
+    var eventDetailGenerateOrig = eventDetailGenerate.innerHTML;
+    eventDetailGenerate.onclick = function() {
+      if (!eventDetailPanel || !eventDetailPanel.dataset.key) return;
+      var eventName = eventDetailPanel.dataset.eventName || "";
+      var offerText = (document.getElementById("event-detail-offer") && document.getElementById("event-detail-offer").value) ? document.getElementById("event-detail-offer").value.trim() : "";
+      var businessPrompt = (document.getElementById("event-detail-prompt") && document.getElementById("event-detail-prompt").value) ? document.getElementById("event-detail-prompt").value.trim() : "";
+      eventDetailGenerate.disabled = true;
+      eventDetailGenerate.innerHTML = eventDetailGenerateOrig.replace(/Generate with Replyr/g, "Thinking…");
+      fetch("/pro/generate-message", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ accountId: accountId, type: "event", eventName: eventName, offerText: offerText, prompt: businessPrompt })
+      }).then(function(r) { return r.json(); }).then(function(data) {
+        var ta = document.getElementById("event-detail-message");
+        if (ta && data.messageText) ta.value = data.messageText;
+      }).catch(function() { alert("Generate failed"); }).finally(function() {
+        eventDetailGenerate.innerHTML = eventDetailGenerateOrig;
+        eventDetailGenerate.disabled = false;
+      });
+    };
+  }
+  if (eventDetailSave) {
+    eventDetailSave.onclick = function() {
+      if (!eventDetailPanel || !eventDetailPanel.dataset.key) return;
+      var key = eventDetailPanel.dataset.key;
+      var year = eventDetailPanel.dataset.year;
+      var message = document.getElementById("event-detail-message") ? document.getElementById("event-detail-message").value : "";
+      var offer = document.getElementById("event-detail-offer") ? document.getElementById("event-detail-offer").value : "";
+      var sendEl = document.getElementById("event-detail-send");
+      var sendDaysBefore = sendEl ? parseInt(sendEl.value, 10) : 14;
+      var msgEl = document.getElementById("event-detail-msg");
+      eventDetailSave.disabled = true;
+      if (msgEl) msgEl.textContent = "";
+      fetch("/pro/events/" + key + "/" + year + "?accountId=" + encodeURIComponent(accountId), {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ accountId: accountId, status: "confirmed", messageText: message, offerText: offer, sendDaysBefore: sendDaysBefore })
+      }).then(function(r) { return r.json(); }).then(function() {
+        if (msgEl) { msgEl.textContent = "Saved and confirmed."; msgEl.className = "pro-msg ok"; }
+        eventDetailPanel.classList.remove("visible");
+        if (eventDetailPanel._confirmBtn) {
+          eventDetailPanel._confirmBtn.textContent = "Edit";
+          eventDetailPanel._confirmBtn.disabled = false;
+          eventDetailPanel._confirmBtn.classList.add("event-edit");
+        }
+      }).catch(function() {
+        if (msgEl) { msgEl.textContent = "Save failed."; msgEl.className = "pro-msg err"; }
+      }).finally(function() { eventDetailSave.disabled = false; });
+    };
+  }
 
   var birthdayCheck = document.getElementById("birthday-enabled");
   var toggleStatus = document.getElementById("toggle-status");
@@ -1665,18 +1809,25 @@ app.get("/pro.js", (req, res) => {
 
   var birthdayGenerate = document.getElementById("birthday-generate");
   if (birthdayGenerate) {
+    var birthdayGenerateOrig = birthdayGenerate.innerHTML;
     birthdayGenerate.onclick = function() {
       var offerInput = document.getElementById("birthday-offer");
+      var promptInput = document.getElementById("birthday-prompt");
       var offerText = (offerInput && offerInput.value) ? offerInput.value.trim() : "";
+      var businessPrompt = (promptInput && promptInput.value) ? promptInput.value.trim() : "";
       birthdayGenerate.disabled = true;
+      birthdayGenerate.innerHTML = birthdayGenerateOrig.replace(/Generate with Replyr/g, "Thinking…");
       fetch("/pro/generate-message", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ accountId: accountId, type: "birthday", offerText: offerText })
+        body: JSON.stringify({ accountId: accountId, type: "birthday", offerText: offerText, prompt: businessPrompt })
       }).then(function(r) { return r.json(); }).then(function(data) {
         var ta = document.getElementById("birthday-message");
         if (ta && data.messageText) ta.value = data.messageText;
-      }).catch(function() { alert("Generate failed"); }).finally(function() { birthdayGenerate.disabled = false; });
+      }).catch(function() { alert("Generate failed"); }).finally(function() {
+        birthdayGenerate.innerHTML = birthdayGenerateOrig;
+        birthdayGenerate.disabled = false;
+      });
     };
   }
   var birthdaySave = document.getElementById("birthday-save");
@@ -1700,11 +1851,13 @@ app.get("/pro.js", (req, res) => {
 
   var oneoffGenerate = document.getElementById("oneoff-generate");
   if (oneoffGenerate) {
+    var oneoffGenerateOrig = oneoffGenerate.innerHTML;
     oneoffGenerate.onclick = function() {
       var promptEl = document.getElementById("oneoff-prompt");
       var promptText = (promptEl && promptEl.value) ? promptEl.value.trim() : "";
       if (!promptText) { alert("Describe your promo first (e.g. Mother's Day 20% off)."); return; }
       oneoffGenerate.disabled = true;
+      oneoffGenerate.innerHTML = oneoffGenerateOrig.replace(/Generate with Replyr/g, "Thinking…");
       fetch("/pro/generate-message", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -1714,7 +1867,10 @@ app.get("/pro.js", (req, res) => {
         var bod = document.getElementById("oneoff-body");
         if (sub && data.subject) sub.value = data.subject;
         if (bod && data.body) bod.value = data.body;
-      }).catch(function() { alert("Generate failed."); }).finally(function() { oneoffGenerate.disabled = false; });
+      }).catch(function() { alert("Generate failed."); }).finally(function() {
+        oneoffGenerate.innerHTML = oneoffGenerateOrig;
+        oneoffGenerate.disabled = false;
+      });
     };
   }
   var oneoffSchedule = document.getElementById("oneoff-schedule");
