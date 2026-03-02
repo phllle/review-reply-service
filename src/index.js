@@ -13,7 +13,7 @@ import * as db from "./db.js";
 import { getAuthUrl, handleOAuthCallback, getTokenStatus, replyToReview, listAccounts, listLocations, listReviews } from "./google.js";
 import { processPendingReviews, startScheduler, getReplyText, addRepliedReviewId } from "./auto.js";
 import { getAllBusinesses, getBusiness, upsertBusiness, getAccountIdByStripeCustomerId } from "./businesses.js";
-import { replaceProContacts, getProContactsCount, setProContactUnsubscribed } from "./proContacts.js";
+import { replaceProContacts, getProContactsCount, getProContactsList, setProContactUnsubscribed } from "./proContacts.js";
 import { parseProCsv, validateFile } from "./csvPro.js";
 import { verifyUnsubscribeToken } from "./campaignEmail.js";
 import { generateCampaignMessageWithClaude, generateOneOffWithClaude } from "./ai.js";
@@ -135,6 +135,29 @@ app.get("/test-alert", async (req, res, next) => {
     res.json({ ok: true, message: "Test alert sent. Check " + (process.env.ALERT_EMAIL || "ALERT_EMAIL") + " (and phone if configured)." });
   } catch (err) {
     req.log?.error(err, "Test alert failed");
+    next(err);
+  }
+});
+
+// Test: trigger birthday campaign for a date (e.g. 3/1/26). Set TEST_ALERT_SECRET. GET /test-trigger-birthday?secret=...&accountId=...&date=2026-03-01
+app.get("/test-trigger-birthday", async (req, res, next) => {
+  try {
+    const secret = (req.query.secret || "").trim();
+    const expected = process.env.TEST_ALERT_SECRET?.trim();
+    if (!expected || secret !== expected) {
+      return res.status(400).json({ error: "Missing or invalid secret. Set TEST_ALERT_SECRET and use ?secret= that value." });
+    }
+    const accountId = (req.query.accountId || "").trim();
+    const date = (req.query.date || "").trim();
+    if (!accountId) return res.status(400).json({ error: "accountId required" });
+    if (!date) return res.status(400).json({ error: "date required (e.g. date=2026-03-01 for March 1)" });
+    if (!db.useDb()) return res.status(503).json({ error: "Database required" });
+    const business = await getBusiness(accountId);
+    if (!business?.isPro) return res.status(403).json({ error: "Account is not Replyr Pro" });
+    const result = await sendBirthdayCampaignsForAccount(accountId, req.log, date);
+    res.json({ ok: true, sent: result.sent, message: `Birthday campaign ran for date ${date}. Emails sent: ${result.sent}.` });
+  } catch (err) {
+    req.log?.error(err, "Test trigger birthday failed");
     next(err);
   }
 });
@@ -429,7 +452,9 @@ app.get("/connected", async (req, res, next) => {
   <div id="pro-mapping-wrap" class="pro-mapping-wrap" style="display:none;"><p class="pro-mapping-label">Map your columns:</p><div class="pro-mapping-row"><label>Email *</label><select id="pro-map-email" data-field="email"></select></div><div class="pro-mapping-row"><label>First name</label><select id="pro-map-first_name" data-field="first_name"><option value="">— Don't use —</option></select></div><div class="pro-mapping-row"><label>Birthday</label><select id="pro-map-birthday" data-field="birthday"><option value="">— Don't use —</option></select></div><div class="pro-mapping-row"><label>Phone</label><select id="pro-map-phone" data-field="phone"><option value="">— Don't use —</option></select></div></div>
   <button type="button" id="pro-upload-btn" class="btn btn-ghost" style="max-width:180px"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M8 2v9M4 8l4 4 4-4"/><path d="M2 14h12"/></svg>Upload CSV</button>
   <p id="pro-upload-msg" class="connected-msg" aria-live="polite"></p>
-  <div style="text-align:center"><a href="/pro?accountId=${encodeURIComponent(accountId)}" class="manage-link">🗓 Manage campaigns <span style="color:var(--muted);font-weight:400">(birthday, events, one-off)</span> →</a></div>`
+  <div style="margin-top:12px"><button type="button" id="pro-view-customers-btn" class="btn btn-ghost" style="font-size:13px">View customers</button></div>
+  <div id="pro-customers-list-wrap" style="display:none;margin-top:16px;overflow-x:auto"><table class="pro-customers-table" id="pro-customers-table"><thead><tr><th>Email</th><th>First name</th><th>Birthday</th><th>Phone</th><th>Status</th></tr></thead><tbody id="pro-customers-tbody"></tbody></table><div id="pro-customers-pagination" style="margin-top:10px;font-size:13px;color:var(--muted)"></div></div>
+  <div style="text-align:center;margin-top:16px"><a href="/pro?accountId=${encodeURIComponent(accountId)}" class="manage-link">🗓 Manage campaigns <span style="color:var(--muted);font-weight:400">(birthday, events, one-off)</span> →</a></div>`
     : `<div class="card-desc" style="margin-bottom:12px">Replyr Pro turns your customer list into automated, personal outreach. This is included in <strong>Replyr Pro</strong>.</div>
   <ul class="pro-benefits"><li><strong>Customer database</strong> — Upload a CSV (email, name, birthday, phone). We store it securely per business.</li><li><strong>Birthday messages</strong> — We automatically email customers on their birthday. Add a coupon or any offer you choose.</li><li><strong>Holiday & event campaigns</strong> — Mothers Day, Fathers Day, and more. You pick the discount or message.</li><li><strong>Your voice or ours</strong> — Curate the message yourself or let Replyr write it.</li><li><strong>Sent on your behalf</strong> — Emails go out with your business name; replies go to your contact email.</li></ul>
   <p class="card-desc" style="margin-bottom:8px">By uploading and sending you confirm you have permission to email those contacts. <a href="/compliance" style="color:var(--accent2)">Compliance</a>.</p>
@@ -522,6 +547,10 @@ app.get("/connected", async (req, res, next) => {
   .pro-mapping-row label { min-width: 80px; color: var(--text); }
   .pro-mapping-row select { flex: 1; max-width: 180px; padding: 6px 10px; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; color: var(--text); }
   .empty-state { text-align: center; padding: 20px 0 4px; color: var(--muted); font-size: 13px; }
+  .pro-customers-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .pro-customers-table th, .pro-customers-table td { padding: 8px 10px; text-align: left; border-bottom: 1px solid var(--border); }
+  .pro-customers-table th { color: var(--muted); font-weight: 600; }
+  .pro-customers-table td { color: var(--text); }
   .manage-link { display: inline-flex; align-items: center; gap: 6px; margin-top: 12px; color: var(--accent2); font-size: 13px; font-weight: 500; text-decoration: none; transition: color 0.2s; }
   .manage-link:hover { color: #a099f7; }
   .stars-row { display: flex; gap: 2px; margin-bottom: 6px; }
@@ -862,16 +891,21 @@ app.get("/connected.js", (req, res) => {
     var proUploadMsg = document.getElementById("pro-upload-msg");
     var proMappingWrap = document.getElementById("pro-mapping-wrap");
     var proMapEmail = document.getElementById("pro-map-email");
-    function showProCount(total, unsubscribed) {
+    function showProCount(total, unsubscribed, withEmail) {
       if (!proCountEl) return;
       if (total === 0) proCountEl.textContent = "No contacts yet. Upload a CSV to get started.";
-      else proCountEl.textContent = total + " contact" + (total === 1 ? "" : "s") + (unsubscribed > 0 ? " (" + unsubscribed + " unsubscribed)" : "");
+      else {
+        var t = total + " contact" + (total === 1 ? "" : "s");
+        if (withEmail != null && withEmail !== total) t += " (" + withEmail + " with email)";
+        if (unsubscribed > 0) t += " · " + unsubscribed + " unsubscribed";
+        proCountEl.textContent = t;
+      }
     }
     fetch("/pro/contacts?accountId=" + encodeURIComponent(accountId))
       .then(function(r) { return r.json(); })
       .then(function(data) {
         if (data.error) return;
-        showProCount(data.total || 0, data.unsubscribed || 0);
+        showProCount(data.total || 0, data.unsubscribed || 0, data.withEmail);
       })
       .catch(function() {});
     function fillMappingSelects(headers) {
@@ -914,6 +948,7 @@ app.get("/connected.js", (req, res) => {
       });
     }
     if (proUploadBtn && proCsvInput && proUploadMsg) {
+      var proUploadBtnOrig = proUploadBtn.innerHTML;
       proUploadBtn.addEventListener("click", function() {
         var file = proCsvInput.files && proCsvInput.files[0];
         if (!file) {
@@ -928,6 +963,7 @@ app.get("/connected.js", (req, res) => {
           return;
         }
         proUploadBtn.disabled = true;
+        proUploadBtn.innerHTML = proUploadBtnOrig.replace(/Upload CSV/g, "Loading…");
         proUploadMsg.textContent = "";
         proUploadMsg.classList.remove("ok", "err");
         var mapping = {};
@@ -946,25 +982,71 @@ app.get("/connected.js", (req, res) => {
           .then(function(r) { return r.json(); })
           .then(function(data) {
             if (data.ok) {
+              proUploadBtn.innerHTML = proUploadBtnOrig.replace(/Upload CSV/g, "Done!");
               proUploadMsg.textContent = data.message || "Upload complete.";
               proUploadMsg.classList.remove("err"); proUploadMsg.classList.add("ok");
               proCsvInput.value = "";
               if (proMappingWrap) proMappingWrap.style.display = "none";
               fetch("/pro/contacts?accountId=" + encodeURIComponent(accountId))
                 .then(function(r2) { return r2.json(); })
-                .then(function(c) { if (!c.error) showProCount(c.total || 0, c.unsubscribed || 0); })
-                .catch(function() { showProCount(data.total || data.imported || 0, 0); });
+                .then(function(c) { if (!c.error) showProCount(c.total || 0, c.unsubscribed || 0, c.withEmail); })
+                .catch(function() { showProCount(data.total || data.imported || 0, 0, data.withEmail); });
+              setTimeout(function() { proUploadBtn.innerHTML = proUploadBtnOrig; proUploadBtn.disabled = false; }, 1500);
             } else {
               proUploadMsg.textContent = data.error || "Upload failed.";
               proUploadMsg.classList.remove("ok"); proUploadMsg.classList.add("err");
+              proUploadBtn.innerHTML = proUploadBtnOrig;
+              proUploadBtn.disabled = false;
             }
           })
           .catch(function() {
             proUploadMsg.textContent = "Upload failed. Try again.";
             proUploadMsg.classList.remove("ok"); proUploadMsg.classList.add("err");
-          })
-          .finally(function() { proUploadBtn.disabled = false; });
+            proUploadBtn.innerHTML = proUploadBtnOrig;
+            proUploadBtn.disabled = false;
+          });
       });
+    }
+    var proViewBtn = document.getElementById("pro-view-customers-btn");
+    var proListWrap = document.getElementById("pro-customers-list-wrap");
+    var proListTbody = document.getElementById("pro-customers-tbody");
+    var proListPagination = document.getElementById("pro-customers-pagination");
+    var proListOffset = 0;
+    var proListLimit = 50;
+    function loadProCustomersList(offset) {
+      if (!accountId || !proListTbody) return;
+      proListOffset = offset || 0;
+      fetch("/pro/contacts/list?accountId=" + encodeURIComponent(accountId) + "&limit=" + proListLimit + "&offset=" + proListOffset)
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+          if (data.error) return;
+          if (proListWrap) proListWrap.style.display = "block";
+          proListTbody.innerHTML = (data.list || []).map(function(c) {
+            return "<tr><td>" + (c.email || "—") + "</td><td>" + (c.first_name || "—") + "</td><td>" + (c.birthday || "—") + "</td><td>" + (c.phone || "—") + "</td><td>" + (c.unsubscribed ? "Unsubscribed" : "—") + "</td></tr>";
+          }).join("");
+          var total = data.total || 0;
+          var from = total ? proListOffset + 1 : 0;
+          var to = Math.min(proListOffset + proListLimit, total);
+          if (proListPagination) {
+            proListPagination.innerHTML = "Showing " + from + "–" + to + " of " + total + ".";
+            if (total > proListLimit) {
+              var prevBtn = proListOffset > 0 ? '<button type="button" class="btn btn-ghost" style="font-size:12px;margin-right:8px" id="pro-customers-prev">Previous</button>' : "";
+              var nextBtn = proListOffset + proListLimit < total ? '<button type="button" class="btn btn-ghost" style="font-size:12px" id="pro-customers-next">Next</button>' : "";
+              proListPagination.innerHTML += " " + prevBtn + nextBtn;
+              var prevEl = document.getElementById("pro-customers-prev");
+              var nextEl = document.getElementById("pro-customers-next");
+              if (prevEl) prevEl.onclick = function() { loadProCustomersList(proListOffset - proListLimit); };
+              if (nextEl) nextEl.onclick = function() { loadProCustomersList(proListOffset + proListLimit); };
+            }
+          }
+        })
+        .catch(function() {});
+    }
+    if (proViewBtn) {
+      proViewBtn.onclick = function() {
+        if (proListWrap && proListWrap.style.display === "none") loadProCustomersList(0);
+        else if (proListWrap) { proListWrap.style.display = proListWrap.style.display === "none" ? "block" : "none"; }
+      };
     }
   }
 })();
@@ -1147,8 +1229,24 @@ app.get("/pro/contacts", async (req, res, next) => {
     if (!business.isPro) {
       return res.status(403).json({ error: "Replyr Pro required. Upgrade at the Subscribe page." });
     }
-    const { total, unsubscribed } = await getProContactsCount(accountId);
-    res.json({ total, unsubscribed });
+    const { total, withEmail, unsubscribed } = await getProContactsCount(accountId);
+    res.json({ total, withEmail: withEmail ?? total, unsubscribed });
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.get("/pro/contacts/list", async (req, res, next) => {
+  try {
+    const accountId = (req.query.accountId || "").trim();
+    const limit = Math.min(parseInt(req.query.limit, 10) || 100, 500);
+    const offset = parseInt(req.query.offset, 10) || 0;
+    if (!accountId) return res.status(400).json({ error: "accountId required" });
+    const business = await getBusiness(accountId);
+    if (!business?.isPro) return res.status(403).json({ error: "Replyr Pro required" });
+    const list = await getProContactsList(accountId, limit, offset);
+    const { total } = await getProContactsCount(accountId);
+    res.json({ list, total, limit, offset });
   } catch (err) {
     next(err);
   }
@@ -1197,12 +1295,12 @@ app.post("/pro/contacts/upload", proUpload.single("file"), async (req, res, next
       return res.status(400).json({ error: parsed.error });
     }
     await replaceProContacts(accountId, parsed.rows);
-    res.json({
-      ok: true,
-      imported: parsed.rows.length,
-      total: parsed.rows.length,
-      message: `Uploaded ${parsed.rows.length} contact${parsed.rows.length === 1 ? "" : "s"}. Uploading replaces your current list.`
-    });
+    const { total, withEmail } = await getProContactsCount(accountId);
+    const withEmailNum = withEmail ?? total;
+    let message = `Uploaded ${total} contact${total === 1 ? "" : "s"}.`;
+    if (total !== withEmailNum) message += ` ${withEmailNum} have email (used for campaigns).`;
+    message += " Uploading replaces your current list.";
+    res.json({ ok: true, imported: parsed.rows.length, total, withEmail: withEmailNum, message });
   } catch (err) {
     if (err.code === "LIMIT_FILE_SIZE") {
       return res.status(400).json({ error: "File too large (max 5MB)" });

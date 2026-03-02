@@ -27,7 +27,7 @@ async function writeAll(obj) {
   await fs.writeFile(PRO_CONTACTS_PATH, JSON.stringify(obj, null, 2), "utf8");
 }
 
-/** Replace all contacts for an account. Rows: [{ email, first_name?, birthday?, phone? }]. Preserves unsubscribed_at for emails that were already unsubscribed. */
+/** Replace all contacts for an account. Rows: [{ email, first_name?, birthday?, phone? }]. Preserves unsubscribed_at. Stores all rows (with or without email). */
 export async function replaceProContacts(accountId, rows) {
   if (db.useDb()) {
     return await db.replaceProContacts(accountId, rows);
@@ -35,35 +35,55 @@ export async function replaceProContacts(accountId, rows) {
   const all = await readAll();
   const existing = all[accountId] || [];
   const unsubscribedSet = new Set(
-    existing.filter((c) => c.unsubscribed_at).map((c) => (c.email || "").toLowerCase())
+    existing.filter((c) => c.unsubscribed_at && c.email).map((c) => (c.email || "").toLowerCase())
   );
-  const normalized = rows.map((r) => {
-    const email = (r.email || "").trim().toLowerCase();
-    return {
-      email,
-      first_name: (r.first_name ?? r.firstName ?? "").trim() || null,
-      birthday: (r.birthday ?? r.birth_date ?? "").trim() || null,
-      phone: (r.phone ?? "").trim() || null,
-      unsubscribed_at: email && unsubscribedSet.has(email) ? new Date().toISOString() : null
+  const withEmail = new Map();
+  const withoutEmail = [];
+  for (const r of rows) {
+    const email = (r.email || "").trim();
+    const emailLower = email.toLowerCase() || null;
+    const row = {
+      email: email || "",
+      first_name: (r.first_name ?? r.firstName ?? "").trim() || "",
+      birthday: (r.birthday ?? r.birth_date ?? "").trim() || "",
+      phone: (r.phone ?? "").trim() || "",
+      unsubscribed_at: emailLower && unsubscribedSet.has(emailLower) ? new Date().toISOString() : null
     };
-  });
-  const byEmail = new Map();
-  for (const row of normalized) {
-    if (row.email) byEmail.set(row.email, row);
+    if (emailLower) withEmail.set(emailLower, row);
+    else withoutEmail.push(row);
   }
-  all[accountId] = Array.from(byEmail.values());
+  all[accountId] = [...withEmail.values(), ...withoutEmail];
   await writeAll(all);
 }
 
-/** Get contact count and unsubscribed count for an account. */
+/** Get contact count (total, withEmail, unsubscribed) for an account. */
 export async function getProContactsCount(accountId) {
   if (db.useDb()) {
     return await db.getProContactsCount(accountId);
   }
-  const all = await readAll();
-  const list = all[accountId] || [];
-  const unsubscribed = list.filter((c) => c.unsubscribed_at).length;
-  return { total: list.length, unsubscribed };
+  const list = (await readAll())[accountId] || [];
+  const withEmail = list.filter((c) => (c.email || "").trim()).length;
+  const unsubscribed = list.filter((c) => c.unsubscribed_at && (c.email || "").trim()).length;
+  return { total: list.length, withEmail, unsubscribed };
+}
+
+/** List contacts for an account (paginated). File-based: no id, use index. */
+export async function getProContactsList(accountId, limit = 100, offset = 0) {
+  if (db.useDb()) {
+    return await db.getProContactsList(accountId, limit, offset);
+  }
+  const list = (await readAll())[accountId] || [];
+  const lim = Math.min(Number(limit) || 100, 500);
+  const off = Number(offset) || 0;
+  const slice = list.slice(off, off + lim);
+  return slice.map((c, i) => ({
+    id: off + i + 1,
+    email: c.email ?? "",
+    first_name: c.first_name ?? "",
+    birthday: c.birthday ?? "",
+    phone: c.phone ?? "",
+    unsubscribed: !!c.unsubscribed_at
+  }));
 }
 
 /** Mark a contact as unsubscribed (opt-out). */

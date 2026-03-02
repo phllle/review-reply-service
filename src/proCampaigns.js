@@ -119,14 +119,25 @@ export function getSendDateForEvent(eventDateIso, sendDaysBefore = 14) {
   return addDays(eventDateIso, -Number(sendDaysBefore));
 }
 
-/** Parse birthday string (YYYY-MM-DD or MM-DD or MM/DD) to { month, day }. */
+/** Parse birthday string (YYYY-MM-DD, MM-DD, MM/DD, or MM/DD/YY) to { month, day }. */
 function parseBirthday(birthday) {
   if (!birthday || typeof birthday !== "string") return null;
   const s = birthday.trim().replace(/\//g, "-");
-  const parts = s.split("-");
+  const parts = s.split("-").map((p) => parseInt(p, 10)).filter((n) => !Number.isNaN(n));
   if (parts.length >= 2) {
-    const month = parseInt(parts[0], 10);
-    const day = parseInt(parts[parts.length - 1], 10);
+    let month, day;
+    if (parts.length === 2) {
+      month = parts[0];
+      day = parts[1];
+    } else {
+      if (parts[0] > 31) {
+        month = parts[1];
+        day = parts[2];
+      } else {
+        month = parts[0];
+        day = parts[1];
+      }
+    }
     if (month >= 1 && month <= 12 && day >= 1 && day <= 31) return { month, day };
   }
   return null;
@@ -146,6 +157,19 @@ export function filterContactsWithBirthdayToday(contacts) {
   });
 }
 
+/** Get contacts whose birthday matches the given date (month/day). asOfDate: YYYY-MM-DD string. */
+export function filterContactsByBirthdayDate(contacts, asOfDate) {
+  if (!asOfDate || typeof asOfDate !== "string") return filterContactsWithBirthdayToday(contacts);
+  const [y, m, d] = asOfDate.trim().split(/[-/]/).map((n) => parseInt(n, 10));
+  const month = m >= 1 && m <= 12 ? m : null;
+  const day = d >= 1 && d <= 31 ? d : null;
+  if (month == null || day == null) return filterContactsWithBirthdayToday(contacts);
+  return contacts.filter((c) => {
+    const b = parseBirthday(c.birthday);
+    return b && b.month === month && b.day === day;
+  });
+}
+
 /** Personalize message: replace {{first_name}} and {{offer}}. */
 export function personalizeBirthdayMessage(messageText, offerText, firstName) {
   let s = (messageText || "").replace(/\{\{first_name\}\}/gi, firstName || "there").replace(/\{\{name\}\}/gi, firstName || "there");
@@ -153,15 +177,17 @@ export function personalizeBirthdayMessage(messageText, offerText, firstName) {
   return s;
 }
 
-/** Send birthday emails for one business (called by scheduler). */
-export async function sendBirthdayCampaignsForAccount(accountId, logger = console) {
+/** Send birthday emails for one business (called by scheduler). Optional asOfDate (YYYY-MM-DD) for testing. */
+export async function sendBirthdayCampaignsForAccount(accountId, logger = console, asOfDate = null) {
   if (!db.useDb()) return { sent: 0 };
   const settings = await db.getProBirthdaySettings(accountId);
   if (!settings || !settings.enabled || !settings.messageText) return { sent: 0 };
   const business = await getBusiness(accountId);
   if (!business?.isPro) return { sent: 0 };
   const contacts = await db.getProContactsForSending(accountId);
-  const birthdayContacts = filterContactsWithBirthdayToday(contacts);
+  const birthdayContacts = asOfDate
+    ? filterContactsByBirthdayDate(contacts, asOfDate)
+    : filterContactsWithBirthdayToday(contacts);
   if (!birthdayContacts.length) return { sent: 0 };
   const businessName = business.name || "This business";
   const replyTo = business.contact?.match(/\S+@\S+/) ? business.contact : undefined;

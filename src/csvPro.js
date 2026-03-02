@@ -84,7 +84,6 @@ export function parseProCsv(buffer, options = {}) {
   const rows = [];
   for (const row of raw) {
     const email = (row[emailKey] || "").trim();
-    if (!email) continue;
     rows.push({
       email,
       first_name: firstKey ? (row[firstKey] || "").trim() || undefined : undefined,

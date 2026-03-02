@@ -62,20 +62,40 @@ export async function init() {
   } catch (err) {
     if (err.code !== "42701") throw err;
   }
-  // Replyr Pro: contacts per business (email required; first_name, birthday, phone optional)
+  // Replyr Pro: contacts per business (all CSV rows; email optional for storage, required for sending)
   await client.query(`
     CREATE TABLE IF NOT EXISTS pro_contacts (
+      id BIGSERIAL PRIMARY KEY,
       account_id TEXT NOT NULL,
-      email TEXT NOT NULL,
+      email TEXT,
       first_name TEXT,
       birthday TEXT,
       phone TEXT,
       unsubscribed_at TIMESTAMPTZ,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      PRIMARY KEY (account_id, email)
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
     CREATE INDEX IF NOT EXISTS idx_pro_contacts_account ON pro_contacts(account_id);
   `);
+  // Migrate old schema (account_id, email PK) to new (id PK, email nullable) if needed
+  const hasId = await client.query(
+    "SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'pro_contacts' AND column_name = 'id'"
+  );
+  if (hasId.rows.length === 0) {
+    await client.query(`
+      CREATE TABLE pro_contacts_new (id BIGSERIAL PRIMARY KEY, account_id TEXT NOT NULL, email TEXT, first_name TEXT, birthday TEXT, phone TEXT, unsubscribed_at TIMESTAMPTZ, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW());
+      INSERT INTO pro_contacts_new (account_id, email, first_name, birthday, phone, unsubscribed_at, created_at) SELECT account_id, email, first_name, birthday, phone, unsubscribed_at, created_at FROM pro_contacts;
+      DROP TABLE pro_contacts;
+      ALTER TABLE pro_contacts_new RENAME TO pro_contacts;
+      CREATE INDEX IF NOT EXISTS idx_pro_contacts_account ON pro_contacts(account_id);
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_pro_contacts_account_email ON pro_contacts(account_id, email) WHERE email IS NOT NULL;
+    `);
+  } else {
+    try {
+      await client.query("CREATE UNIQUE INDEX IF NOT EXISTS idx_pro_contacts_account_email ON pro_contacts(account_id, email) WHERE email IS NOT NULL");
+    } catch (e) {
+      if (e.code !== "42P07") throw e;
+    }
+  }
   // Pro campaigns: birthday settings (one per business)
   await client.query(`
     CREATE TABLE IF NOT EXISTS pro_birthday_settings (
@@ -281,7 +301,7 @@ export function useDb() {
 /** Get set of emails that have unsubscribed for this account (so we preserve opt-out on replace). */
 export async function getProContactUnsubscribedEmails(accountId) {
   const res = await getPool().query(
-    "SELECT email FROM pro_contacts WHERE account_id = $1 AND unsubscribed_at IS NOT NULL",
+    "SELECT email FROM pro_contacts WHERE account_id = $1 AND email IS NOT NULL AND unsubscribed_at IS NOT NULL",
     [accountId]
   );
   return new Set(res.rows.map((r) => (r.email || "").toLowerCase()));
@@ -292,34 +312,71 @@ export async function replaceProContacts(accountId, rows) {
   const unsubscribedSet = await getProContactUnsubscribedEmails(accountId);
   await client.query("DELETE FROM pro_contacts WHERE account_id = $1", [accountId]);
   if (!rows.length) return;
-  const now = new Date().toISOString();
+  // Rows with email: dedupe by email (last wins). Rows without email: keep all.
+  const withEmail = new Map();
+  const withoutEmail = [];
   for (const r of rows) {
+    const emailRaw = (r.email || "").trim();
+    const email = emailRaw.toLowerCase() || null;
+    const row = {
+      email: emailRaw || null,
+      first_name: (r.first_name || r.firstName || "").trim() || null,
+      birthday: (r.birthday || r.birth_date || "").trim() || null,
+      phone: (r.phone || "").trim() || null
+    };
+    if (email) withEmail.set(email, row);
+    else withoutEmail.push(row);
+  }
+  const now = new Date().toISOString();
+  for (const r of withEmail.values()) {
     const email = (r.email || "").trim().toLowerCase();
-    if (!email) continue;
     const unsub = unsubscribedSet.has(email);
     await client.query(
       `INSERT INTO pro_contacts (account_id, email, first_name, birthday, phone, unsubscribed_at, created_at)
        VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-      [
-        accountId,
-        email,
-        (r.first_name || r.firstName || "").trim() || null,
-        (r.birthday || r.birth_date || "").trim() || null,
-        (r.phone || "").trim() || null,
-        unsub ? now : null,
-        now
-      ]
+      [accountId, email, r.first_name, r.birthday, r.phone, unsub ? now : null, now]
+    );
+  }
+  for (const r of withoutEmail) {
+    await client.query(
+      `INSERT INTO pro_contacts (account_id, email, first_name, birthday, phone, unsubscribed_at, created_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+      [accountId, null, r.first_name, r.birthday, r.phone, null, now]
     );
   }
 }
 
 export async function getProContactsCount(accountId) {
   const res = await getPool().query(
-    "SELECT COUNT(*) AS total, COUNT(*) FILTER (WHERE unsubscribed_at IS NOT NULL) AS unsubscribed FROM pro_contacts WHERE account_id = $1",
+    `SELECT COUNT(*) AS total,
+            COUNT(*) FILTER (WHERE email IS NOT NULL) AS with_email,
+            COUNT(*) FILTER (WHERE email IS NOT NULL AND unsubscribed_at IS NOT NULL) AS unsubscribed
+     FROM pro_contacts WHERE account_id = $1`,
     [accountId]
   );
   const row = res.rows[0];
-  return { total: Number(row?.total ?? 0), unsubscribed: Number(row?.unsubscribed ?? 0) };
+  return {
+    total: Number(row?.total ?? 0),
+    withEmail: Number(row?.with_email ?? 0),
+    unsubscribed: Number(row?.unsubscribed ?? 0)
+  };
+}
+
+/** List contacts for an account (paginated). For campaigns, filter by email IS NOT NULL and unsubscribed_at IS NULL elsewhere. */
+export async function getProContactsList(accountId, limit = 100, offset = 0) {
+  const res = await getPool().query(
+    `SELECT id, email, first_name, birthday, phone, unsubscribed_at IS NOT NULL AS unsubscribed
+     FROM pro_contacts WHERE account_id = $1 ORDER BY id LIMIT $2 OFFSET $3`,
+    [accountId, Math.min(Number(limit) || 100, 500), Number(offset) || 0]
+  );
+  return res.rows.map((r) => ({
+    id: r.id,
+    email: r.email ?? "",
+    first_name: r.first_name ?? "",
+    birthday: r.birthday ?? "",
+    phone: r.phone ?? "",
+    unsubscribed: !!r.unsubscribed
+  }));
 }
 
 export async function setProContactUnsubscribed(accountId, email) {
@@ -429,10 +486,10 @@ export async function markProOneOffCampaignSent(id) {
   await getPool().query("UPDATE pro_one_off_campaigns SET status = 'sent' WHERE id = $1", [id]);
 }
 
-// --- Pro contacts for sending (non-unsubscribed) ---
+// --- Pro contacts for sending (have email, not unsubscribed) ---
 export async function getProContactsForSending(accountId) {
   const res = await getPool().query(
-    "SELECT email, first_name, birthday FROM pro_contacts WHERE account_id = $1 AND unsubscribed_at IS NULL",
+    "SELECT email, first_name, birthday FROM pro_contacts WHERE account_id = $1 AND email IS NOT NULL AND unsubscribed_at IS NULL",
     [accountId]
   );
   return res.rows.map((r) => ({
