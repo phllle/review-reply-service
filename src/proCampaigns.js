@@ -5,6 +5,7 @@
 
 import * as db from "./db.js";
 import { sendCampaignEmail } from "./campaignEmail.js";
+import { sendCampaignSms, isSmsConfigured } from "./campaignSms.js";
 import { getBusiness } from "./businesses.js";
 
 // Major US events: key, name, and a function (year) -> send date (YYYY-MM-DD)
@@ -192,19 +193,33 @@ export async function sendBirthdayCampaignsForAccount(accountId, logger = consol
   const businessName = business.name || "This business";
   const replyTo = business.contact?.match(/\S+@\S+/) ? business.contact : undefined;
   let sent = 0;
+  const sendEmail = settings.sendEmail !== false;
+  const sendSms = settings.sendSms !== false;
   for (const c of birthdayContacts) {
     try {
       const body = personalizeBirthdayMessage(settings.messageText, settings.offerText, c.firstName);
-      await sendCampaignEmail({
-        to: c.email,
-        subject: `${businessName} – Happy Birthday!`,
-        bodyContent: body,
-        businessName,
-        accountId,
-        replyTo
-      });
-      sent++;
-      logger?.info?.({ accountId, email: c.email }, "Birthday email sent");
+      if (sendEmail) {
+        await sendCampaignEmail({
+          to: c.email,
+          subject: `${businessName} – Happy Birthday!`,
+          bodyContent: body,
+          businessName,
+          accountId,
+          replyTo
+        });
+        sent++;
+        logger?.info?.({ accountId, email: c.email }, "Birthday email sent");
+      }
+      if (sendSms && c.phone && isSmsConfigured()) {
+        const smsBody = `Happy birthday ${c.firstName || "there"}! ${(settings.offerText || "").slice(0, 40)} from ${businessName}. Reply STOP to opt out.`;
+        try {
+          await sendCampaignSms(c.phone, smsBody);
+          sent++;
+          logger?.info?.({ accountId, phone: c.phone }, "Birthday SMS sent");
+        } catch (smsErr) {
+          logger?.error?.({ err: smsErr, accountId, phone: c.phone }, "Birthday SMS failed");
+        }
+      }
     } catch (err) {
       logger?.error?.({ err, accountId, email: c.email }, "Birthday email failed");
     }
@@ -231,11 +246,26 @@ export async function sendEventCampaignForAccount(accountId, eventKey, eventYear
   const body = (campaign.messageText || "").replace(/\{\{offer\}\}/gi, campaign.offerText || "");
   const subject = `${businessName} – ${eventName}`;
   let sent = 0;
+  const offerSnippet = (campaign.offerText || "").slice(0, 40);
+  const sendEmail = campaign.sendEmail !== false;
+  const sendSms = campaign.sendSms !== false;
   for (const c of contacts) {
     try {
       const personalized = body.replace(/\{\{first_name\}\}/gi, c.firstName || "there");
-      await sendCampaignEmail({ to: c.email, subject, bodyContent: personalized, businessName, accountId, replyTo });
-      sent++;
+      if (sendEmail) {
+        await sendCampaignEmail({ to: c.email, subject, bodyContent: personalized, businessName, accountId, replyTo });
+        sent++;
+      }
+      if (sendSms && c.phone && isSmsConfigured()) {
+        const smsBody = `${businessName}: ${eventName} – ${c.firstName || "there"}, ${offerSnippet || "special offer"}. Reply STOP to opt out.`;
+        try {
+          await sendCampaignSms(c.phone, smsBody);
+          sent++;
+          logger?.info?.({ accountId, phone: c.phone }, "Event SMS sent");
+        } catch (smsErr) {
+          logger?.error?.({ err: smsErr, accountId, phone: c.phone }, "Event SMS failed");
+        }
+      }
     } catch (err) {
       logger?.error?.({ err, accountId, email: c.email }, "Event email failed");
     }
@@ -245,19 +275,34 @@ export async function sendEventCampaignForAccount(accountId, eventKey, eventYear
   return { sent };
 }
 
-/** Send one-off campaign (called by scheduler). */
-export async function sendOneOffCampaign(id, accountId, subject, body, logger = console) {
+/** Send one-off campaign (called by scheduler). campaignRow may include send_email, send_sms. */
+export async function sendOneOffCampaign(id, accountId, subject, body, logger = console, campaignRow = {}) {
   const business = await getBusiness(accountId);
   if (!business?.isPro) return { sent: 0 };
   const contacts = await db.getProContactsForSending(accountId);
   const businessName = business.name || "This business";
   const replyTo = business.contact?.match(/\S+@\S+/) ? business.contact : undefined;
+  const subjectSnippet = (subject || "").slice(0, 50);
+  const sendEmail = campaignRow.send_email !== false;
+  const sendSms = campaignRow.send_sms !== false;
   let sent = 0;
   for (const c of contacts) {
     try {
       const personalized = (body || "").replace(/\{\{first_name\}\}/gi, c.firstName || "there");
-      await sendCampaignEmail({ to: c.email, subject, bodyContent: personalized, businessName, accountId, replyTo });
-      sent++;
+      if (sendEmail) {
+        await sendCampaignEmail({ to: c.email, subject, bodyContent: personalized, businessName, accountId, replyTo });
+        sent++;
+      }
+      if (sendSms && c.phone && isSmsConfigured()) {
+        const smsBody = `${businessName}: ${subjectSnippet || "Update"}. Reply STOP to opt out.`;
+        try {
+          await sendCampaignSms(c.phone, smsBody);
+          sent++;
+          logger?.info?.({ accountId, phone: c.phone }, "One-off SMS sent");
+        } catch (smsErr) {
+          logger?.error?.({ err: smsErr, accountId, phone: c.phone }, "One-off SMS failed");
+        }
+      }
     } catch (err) {
       logger?.error?.({ err, accountId, email: c.email }, "One-off email failed");
     }
