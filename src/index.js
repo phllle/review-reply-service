@@ -2151,12 +2151,20 @@ app.get("/compliance", (req, res) => {
   res.send(`
 <!DOCTYPE html>
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Replyr – Messaging compliance</title></head>
-<body style="font-family:system-ui,sans-serif;max-width:560px;margin:2rem auto;padding:1.5rem;">
+<body style="font-family:system-ui,sans-serif;max-width:600px;margin:2rem auto;padding:1.5rem;">
   <h1>Replyr – Messaging compliance</h1>
-  <h2 style="font-size:1rem;color:#555;">Opt-in and consent</h2>
-  <p>By uploading a customer list and sending campaigns through Replyr Pro, you confirm that each contact has agreed to receive <strong>marketing and promotional messages</strong> from your business, including birthday offers, holiday promotions, and special offers (e.g. they opted in via web form, in-store, or have an existing customer relationship where they agreed to hear from you).</p>
-  <p>Consent language you may use when collecting contacts: &ldquo;I agree to receive marketing messages and special offers via email and/or SMS. Message and data rates may apply. Reply STOP to opt out of text messages.&rdquo;</p>
-  <p>You must not use Replyr to send spam or to contacts who have not agreed to receive marketing from you. Every campaign email includes an unsubscribe link; every SMS includes instructions to reply STOP. We process opt-outs and do not resend to unsubscribed contacts.</p>
+
+  <h2 style="font-size:1rem;color:#333;margin-top:1.5rem;">Opt-in workflow (Web Form)</h2>
+  <p>When collecting contact information for <strong>marketing and promotional messages</strong> (birthday offers, holiday promotions, special offers), the business must obtain explicit consent. Example web form workflow:</p>
+  <div style="background:#f8f9fa;border:1px solid #dee2e6;border-radius:8px;padding:1rem;margin:0.75rem 0;">
+    <p style="margin:0 0 0.5rem;font-weight:600;">Required consent (checkbox or equivalent):</p>
+    <p style="margin:0;font-size:0.95rem;">&ldquo;I agree to receive marketing messages and special offers via email and/or SMS from this business. Message and data rates may apply. Reply STOP to opt out of text messages.&rdquo;</p>
+  </div>
+  <p>The collected contacts are then used only for the declared use case: birthday and holiday promotional messaging. Consent is obtained before any messages are sent.</p>
+
+  <h2 style="font-size:1rem;color:#333;margin-top:1.5rem;">Business confirmation</h2>
+  <p>By uploading a customer list and sending campaigns through Replyr Pro, the business confirms that each contact has agreed to receive marketing and promotional messages (as above) via web form, in-store signup, or an existing customer relationship where they agreed to hear from the business.</p>
+  <p>We do not allow spam. Every campaign email includes an unsubscribe link; every SMS includes instructions to reply STOP. We process opt-outs and do not resend to unsubscribed contacts.</p>
   <p>We include a physical address in campaign footers where required (e.g. CAN-SPAM).</p>
   <p><a href="/">← Back to Replyr</a></p>
 </body></html>`);
