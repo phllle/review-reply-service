@@ -58,7 +58,7 @@ async function runCampaignScheduler() {
     const oneOffDue = await db.getProOneOffCampaignsDueToSend();
     for (const row of oneOffDue) {
       try {
-        await sendOneOffCampaign(row.id, row.account_id, row.subject, row.body, logger);
+        await sendOneOffCampaign(row.id, row.account_id, row.subject, row.body, logger, row);
       } catch (err) {
         logger.error({ err, id: row.id }, "One-off campaign send failed");
       }
@@ -101,6 +101,8 @@ app.use(cors(corsOptions));
 app.use(pinoHttp({ logger }));
 // Stripe webhook needs raw body for signature verification (must be before express.json())
 app.post("/webhooks/stripe", express.raw({ type: "application/json" }), stripeWebhook);
+// Twilio incoming SMS webhook (form-urlencoded) – handle STOP / UNSUBSCRIBE etc.
+app.post("/webhooks/twilio/sms", express.urlencoded({ extended: true }), twilioSmsWebhook);
 app.use(express.json());
 app.use(express.static("public"));
 
@@ -139,6 +141,33 @@ app.get("/test-alert", async (req, res, next) => {
   }
 });
 
+// Test: send one campaign-style SMS. Set TEST_ALERT_SECRET and CAMPAIGN_SMS_ENABLED=true + Twilio. GET /test-sms?secret=...&to=4252899410 (to optional; defaults to ALERT_PHONE)
+app.get("/test-sms", async (req, res, next) => {
+  try {
+    const secret = (req.query.secret || "").trim();
+    const expected = process.env.TEST_ALERT_SECRET?.trim();
+    if (!expected || secret !== expected) {
+      return res.status(400).json({ error: "Missing or invalid secret. Set TEST_ALERT_SECRET and use ?secret= that value." });
+    }
+    const toParam = (req.query.to || "").trim();
+    const alertPhone = process.env.ALERT_PHONE?.trim();
+    const toPhone = toParam || alertPhone;
+    if (!toPhone) {
+      return res.status(400).json({ error: "No phone number. Set ALERT_PHONE in env or pass ?to=4252899410" });
+    }
+    const { sendCampaignSms, isSmsConfigured } = await import("./campaignSms.js");
+    if (!isSmsConfigured()) {
+      return res.status(400).json({ error: "Campaign SMS not configured. Set CAMPAIGN_SMS_ENABLED=true and Twilio env vars (TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_FROM_NUMBER)." });
+    }
+    const body = "Replyr test: campaign SMS is working. Reply STOP to opt out.";
+    await sendCampaignSms(toPhone, body);
+    res.json({ ok: true, message: "Test SMS sent.", to: toPhone });
+  } catch (err) {
+    req.log?.error(err, "Test SMS failed");
+    res.status(500).json({ error: err.message || "Test SMS failed. Check CAMPAIGN_SMS_ENABLED and Twilio env vars." });
+  }
+});
+
 // Test: trigger birthday campaign for a date (e.g. 3/1/26). Set TEST_ALERT_SECRET. GET /test-trigger-birthday?secret=...&accountId=...&date=2026-03-01
 app.get("/test-trigger-birthday", async (req, res, next) => {
   try {
@@ -161,6 +190,25 @@ app.get("/test-trigger-birthday", async (req, res, next) => {
     next(err);
   }
 });
+
+/** Twilio incoming SMS: handle STOP / UNSUBSCRIBE etc. and mark contact unsubscribed. */
+async function twilioSmsWebhook(req, res) {
+  try {
+    const from = (req.body?.From || "").trim();
+    const body = (req.body?.Body || "").trim().toUpperCase();
+    const stopWords = ["STOP", "UNSUBSCRIBE", "CANCEL", "END", "QUIT"];
+    if (from && stopWords.includes(body)) {
+      if (db.useDb()) {
+        await db.setProContactUnsubscribedByPhone(from);
+        req.log?.info?.({ from, body }, "SMS opt-out processed");
+      }
+    }
+    res.status(200).type("text/xml").send('<?xml version="1.0" encoding="UTF-8"?><Response></Response>');
+  } catch (err) {
+    req.log?.error?.(err, "Twilio SMS webhook error");
+    res.status(200).type("text/xml").send('<?xml version="1.0" encoding="UTF-8"?><Response></Response>');
+  }
+}
 
 async function stripeWebhook(req, res) {
   const secret = process.env.STRIPE_WEBHOOK_SECRET;
@@ -457,7 +505,7 @@ app.get("/connected", async (req, res, next) => {
   <div style="text-align:center;margin-top:16px"><a href="/pro?accountId=${encodeURIComponent(accountId)}" class="manage-link">🗓 Manage campaigns <span style="color:var(--muted);font-weight:400">(birthday, events, one-off)</span> →</a></div>`
     : `<div class="card-desc" style="margin-bottom:12px">Replyr Pro turns your customer list into automated, personal outreach. This is included in <strong>Replyr Pro</strong>.</div>
   <ul class="pro-benefits"><li><strong>Customer database</strong> — Upload a CSV (email, name, birthday, phone). We store it securely per business.</li><li><strong>Birthday messages</strong> — We automatically email customers on their birthday. Add a coupon or any offer you choose.</li><li><strong>Holiday & event campaigns</strong> — Mothers Day, Fathers Day, and more. You pick the discount or message.</li><li><strong>Your voice or ours</strong> — Curate the message yourself or let Replyr write it.</li><li><strong>Sent on your behalf</strong> — Emails go out with your business name; replies go to your contact email.</li></ul>
-  <p class="card-desc" style="margin-bottom:8px">By uploading and sending you confirm you have permission to email those contacts. <a href="/compliance" style="color:var(--accent2)">Compliance</a>.</p>
+  <p class="card-desc" style="margin-bottom:8px">By uploading and sending you confirm you have permission to email and text those contacts. We send email to contacts with an address; if SMS is enabled, we also send a short text to contacts with a mobile number. <a href="/compliance" style="color:var(--accent2)">Compliance</a>.</p>
   <p><a href="/subscribe?accountId=${encodeURIComponent(accountId)}" class="manage-link">Upgrade to Pro →</a> to unlock the customer list and automated campaigns.</p>`}
 </div>`
       : "";
@@ -1326,12 +1374,12 @@ app.get("/pro/birthday-settings", async (req, res, next) => {
 
 app.patch("/pro/birthday-settings", async (req, res, next) => {
   try {
-    const { accountId, enabled, messageText, offerText } = req.body || {};
+    const { accountId, enabled, messageText, offerText, sendEmail, sendSms } = req.body || {};
     if (!accountId) return res.status(400).json({ error: "accountId required" });
     const business = await getBusiness(accountId);
     if (!business?.isPro) return res.status(403).json({ error: "Replyr Pro required" });
     if (!db.useDb()) return res.status(503).json({ error: "Database required for campaigns" });
-    const updated = await db.setProBirthdaySettings(accountId, { enabled, messageText, offerText });
+    const updated = await db.setProBirthdaySettings(accountId, { enabled, messageText, offerText, sendEmail, sendSms });
     res.json(updated);
   } catch (err) {
     next(err);
@@ -1362,7 +1410,7 @@ app.patch("/pro/events/:key/:year", async (req, res, next) => {
   try {
     const accountId = (req.body?.accountId || req.query.accountId || "").trim();
     const { key, year } = req.params;
-    const { status, messageText, offerText, sendDaysBefore } = req.body || {};
+    const { status, messageText, offerText, sendDaysBefore, sendEmail, sendSms } = req.body || {};
     if (!accountId) return res.status(400).json({ error: "accountId required" });
     const business = await getBusiness(accountId);
     if (!business?.isPro) return res.status(403).json({ error: "Replyr Pro required" });
@@ -1374,6 +1422,8 @@ app.patch("/pro/events/:key/:year", async (req, res, next) => {
       messageText,
       offerText,
       sendDaysBefore: [0, 1, 3, 7, 14].includes(days) ? days : 14,
+      sendEmail,
+      sendSms,
       confirmedAt: status === "confirmed" ? new Date().toISOString() : null
     });
     const updated = await db.getProEventCampaign(accountId, key, eventYear);
@@ -1385,12 +1435,12 @@ app.patch("/pro/events/:key/:year", async (req, res, next) => {
 
 app.post("/pro/one-off", async (req, res, next) => {
   try {
-    const { accountId, sendDate, subject, body } = req.body || {};
+    const { accountId, sendDate, subject, body, sendEmail, sendSms } = req.body || {};
     if (!accountId || !sendDate || !subject) return res.status(400).json({ error: "accountId, sendDate, subject required" });
     const business = await getBusiness(accountId);
     if (!business?.isPro) return res.status(403).json({ error: "Replyr Pro required" });
     if (!db.useDb()) return res.status(503).json({ error: "Database required for campaigns" });
-    const campaign = await db.createProOneOffCampaign(accountId, sendDate, subject, body || "");
+    const campaign = await db.createProOneOffCampaign(accountId, sendDate, subject, body || "", sendEmail !== false, sendSms !== false);
     res.json(campaign);
   } catch (err) {
     next(err);
@@ -1596,6 +1646,8 @@ app.get("/pro", async (req, res, next) => {
   .event-actions { display: flex; gap: 8px; flex-shrink: 0; }
   .event-detail-panel { display: none; margin-top: 16px; padding: 20px; background: var(--surface2); border: 1px solid var(--border); border-radius: 14px; }
   .event-detail-panel.visible { display: block; }
+  .channel-toggles { margin-top: 12px; display: flex; flex-wrap: wrap; gap: 12px; }
+  .channel-toggles .toggle-row { margin: 0; }
   .event-detail-title { font-family: 'Fraunces', serif; font-size: 18px; color: var(--text); margin-bottom: 16px; padding-bottom: 12px; border-bottom: 1px solid var(--border); }
   .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 20px; }
   .pro-msg { margin-top: 8px; font-size: 13px; color: var(--muted); }
@@ -1612,7 +1664,7 @@ app.get("/pro", async (req, res, next) => {
       Back to Connected
     </a>
     <h1 class="page-title">Replyr Pro <span>Campaigns</span></h1>
-    <p class="compliance-note">By uploading and sending you confirm you have permission to email those contacts. <a href="/compliance">Compliance →</a></p>
+    <p class="compliance-note">By uploading and sending you confirm you have permission to email and text those contacts. We send email to contacts with an address; if SMS is enabled, we also send a short text to contacts with a mobile number (birthday, events, one-off). <a href="/compliance">Compliance →</a></p>
   </div>
 
   <div class="card">
@@ -1620,7 +1672,7 @@ app.get("/pro", async (req, res, next) => {
       <div class="card-icon blue">🎂</div>
       <div>
         <div class="card-title">Birthday messages</div>
-        <div class="card-desc">One message used for all birthday emails. Use <code style="color:var(--accent);font-size:12px">{{first_name}}</code> and <code style="color:var(--accent);font-size:12px">{{offer}}</code> — filled automatically from your customer list.</div>
+        <div class="card-desc">One message used for all birthday messages. Use <code style="color:var(--accent);font-size:12px">{{first_name}}</code> and <code style="color:var(--accent);font-size:12px">{{offer}}</code> — filled automatically from your customer list.</div>
       </div>
     </div>
     <div class="toggle-row">
@@ -1628,8 +1680,24 @@ app.get("/pro", async (req, res, next) => {
         <input type="checkbox" id="birthday-enabled" ${birthday?.enabled ? "checked" : ""}>
         <span class="toggle-track"></span>
       </label>
-      <span class="toggle-label">Enable birthday emails</span>
+      <span class="toggle-label">Enable birthday messages</span>
       <span class="toggle-status ${birthday?.enabled ? "" : "off"}" id="toggle-status">${birthday?.enabled ? "Active" : "Off"}</span>
+    </div>
+    <div class="channel-toggles">
+      <div class="toggle-row">
+        <label class="toggle">
+          <input type="checkbox" id="birthday-send-email" ${(birthday?.sendEmail !== false) ? "checked" : ""}>
+          <span class="toggle-track"></span>
+        </label>
+        <span class="toggle-label">Send email</span>
+      </div>
+      <div class="toggle-row">
+        <label class="toggle">
+          <input type="checkbox" id="birthday-send-sms" ${(birthday?.sendSms !== false) ? "checked" : ""}>
+          <span class="toggle-track"></span>
+        </label>
+        <span class="toggle-label">Send SMS (when contact has phone)</span>
+      </div>
     </div>
     <div class="field-group">
       <label class="field-label">Describe your business (optional)</label>
@@ -1690,6 +1758,22 @@ app.get("/pro", async (req, res, next) => {
           <option value="14" selected>2 weeks before</option>
         </select>
       </div>
+      <div class="channel-toggles">
+        <div class="toggle-row">
+          <label class="toggle">
+            <input type="checkbox" id="event-detail-send-email" checked>
+            <span class="toggle-track"></span>
+          </label>
+          <span class="toggle-label">Send email</span>
+        </div>
+        <div class="toggle-row">
+          <label class="toggle">
+            <input type="checkbox" id="event-detail-send-sms" checked>
+            <span class="toggle-track"></span>
+          </label>
+          <span class="toggle-label">Send SMS (when contact has phone)</span>
+        </div>
+      </div>
       <button type="button" class="btn btn-primary" id="event-detail-save">Save and confirm</button>
       <span id="event-detail-msg" class="pro-msg" aria-live="polite"></span>
     </div>
@@ -1724,6 +1808,22 @@ app.get("/pro", async (req, res, next) => {
     <div class="field-group">
       <label class="field-label">Body</label>
       <textarea id="oneoff-body" placeholder="Email body..."></textarea>
+    </div>
+    <div class="channel-toggles">
+      <div class="toggle-row">
+        <label class="toggle">
+          <input type="checkbox" id="oneoff-send-email" checked>
+          <span class="toggle-track"></span>
+        </label>
+        <span class="toggle-label">Send email</span>
+      </div>
+      <div class="toggle-row">
+        <label class="toggle">
+          <input type="checkbox" id="oneoff-send-sms" checked>
+          <span class="toggle-track"></span>
+        </label>
+        <span class="toggle-label">Send SMS (when contact has phone)</span>
+      </div>
     </div>
     <button type="button" class="btn btn-primary" id="oneoff-schedule">Schedule campaign</button>
     <span id="oneoff-msg" class="pro-msg" aria-live="polite"></span>
@@ -1795,12 +1895,18 @@ app.get("/pro.js", (req, res) => {
           panelPrompt.value = "";
           panelMsg.textContent = "";
           panel.classList.add("visible");
+          var sendEmailEl = document.getElementById("event-detail-send-email");
+          var sendSmsEl = document.getElementById("event-detail-send-sms");
+          if (sendEmailEl) sendEmailEl.checked = true;
+          if (sendSmsEl) sendSmsEl.checked = true;
           fetch("/pro/events/" + key + "/" + year + "?accountId=" + encodeURIComponent(accountId))
             .then(function(r) { return r.json(); })
             .then(function(c) {
               if (c && c.messageText) panelMessage.value = c.messageText;
               if (c && c.offerText) panelOffer.value = c.offerText;
               if (c && c.sendDaysBefore !== undefined) panelSend.value = String(c.sendDaysBefore);
+              if (sendEmailEl && c && c.sendEmail !== undefined) sendEmailEl.checked = c.sendEmail !== false;
+              if (sendSmsEl && c && c.sendSms !== undefined) sendSmsEl.checked = c.sendSms !== false;
               if (c && c.status === "confirmed") { btn.textContent = "Edit"; btn.classList.add("event-edit"); }
             })
             .catch(function() {});
@@ -1878,13 +1984,17 @@ app.get("/pro.js", (req, res) => {
       var offer = document.getElementById("event-detail-offer") ? document.getElementById("event-detail-offer").value : "";
       var sendEl = document.getElementById("event-detail-send");
       var sendDaysBefore = sendEl ? parseInt(sendEl.value, 10) : 14;
+      var sendEmailEl = document.getElementById("event-detail-send-email");
+      var sendSmsEl = document.getElementById("event-detail-send-sms");
+      var sendEmail = sendEmailEl ? sendEmailEl.checked : true;
+      var sendSms = sendSmsEl ? sendSmsEl.checked : true;
       var msgEl = document.getElementById("event-detail-msg");
       eventDetailSave.disabled = true;
       if (msgEl) msgEl.textContent = "";
       fetch("/pro/events/" + key + "/" + year + "?accountId=" + encodeURIComponent(accountId), {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ accountId: accountId, status: "confirmed", messageText: message, offerText: offer, sendDaysBefore: sendDaysBefore })
+        body: JSON.stringify({ accountId: accountId, status: "confirmed", messageText: message, offerText: offer, sendDaysBefore: sendDaysBefore, sendEmail: sendEmail, sendSms: sendSms })
       }).then(function(r) { return r.json(); }).then(function() {
         if (msgEl) { msgEl.textContent = "Saved and confirmed."; msgEl.className = "pro-msg ok"; }
         eventDetailPanel.classList.remove("visible");
@@ -1934,11 +2044,15 @@ app.get("/pro.js", (req, res) => {
       var enabled = document.getElementById("birthday-enabled").checked;
       var message = document.getElementById("birthday-message").value;
       var offer = document.getElementById("birthday-offer").value;
+      var sendEmailEl = document.getElementById("birthday-send-email");
+      var sendSmsEl = document.getElementById("birthday-send-sms");
+      var sendEmail = sendEmailEl ? sendEmailEl.checked : true;
+      var sendSms = sendSmsEl ? sendSmsEl.checked : true;
       birthdaySave.disabled = true;
       fetch("/pro/birthday-settings", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ accountId: accountId, enabled: enabled, messageText: message, offerText: offer })
+        body: JSON.stringify({ accountId: accountId, enabled: enabled, messageText: message, offerText: offer, sendEmail: sendEmail, sendSms: sendSms })
       }).then(function(r) { return r.json(); }).then(function() {
         var m = document.getElementById("birthday-msg"); m.textContent = "Saved."; m.className = "pro-msg ok";
       }).catch(function() {
@@ -1978,11 +2092,15 @@ app.get("/pro.js", (req, res) => {
       var subject = document.getElementById("oneoff-subject").value.trim();
       var body = document.getElementById("oneoff-body").value;
       if (!date || !subject) { alert("Date and subject required"); return; }
+      var sendEmailEl = document.getElementById("oneoff-send-email");
+      var sendSmsEl = document.getElementById("oneoff-send-sms");
+      var sendEmail = sendEmailEl ? sendEmailEl.checked : true;
+      var sendSms = sendSmsEl ? sendSmsEl.checked : true;
       oneoffSchedule.disabled = true;
       fetch("/pro/one-off", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ accountId: accountId, sendDate: date, subject: subject, body: body })
+        body: JSON.stringify({ accountId: accountId, sendDate: date, subject: subject, body: body, sendEmail: sendEmail, sendSms: sendSms })
       }).then(function(r) { return r.json(); }).then(function() {
         var m = document.getElementById("oneoff-msg"); m.textContent = "Scheduled for " + date + "."; m.className = "pro-msg ok";
         document.getElementById("oneoff-date").value = "";
@@ -2027,16 +2145,18 @@ app.get("/pro/unsubscribe", async (req, res, next) => {
   }
 });
 
-// Compliance / acceptable use (linked from Pro UI and email footer)
+// Compliance / acceptable use (linked from Pro UI and email footer). Wording aligned with toll-free use case: marketing/promotional messages.
 app.get("/compliance", (req, res) => {
   res.set("Content-Type", "text/html; charset=utf-8");
   res.send(`
 <!DOCTYPE html>
-<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Replyr – Email compliance</title></head>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Replyr – Messaging compliance</title></head>
 <body style="font-family:system-ui,sans-serif;max-width:560px;margin:2rem auto;padding:1.5rem;">
-  <h1>Replyr – Email compliance</h1>
-  <p>By uploading a customer list and sending campaigns through Replyr Pro, you confirm that you have permission to email those contacts (e.g. they opted in or have an existing relationship with your business).</p>
-  <p>You must not use Replyr to send spam or to contacts who have not agreed to hear from you. Every campaign email includes an unsubscribe link; we process opt-outs and do not resend to unsubscribed addresses.</p>
+  <h1>Replyr – Messaging compliance</h1>
+  <h2 style="font-size:1rem;color:#555;">Opt-in and consent</h2>
+  <p>By uploading a customer list and sending campaigns through Replyr Pro, you confirm that each contact has agreed to receive <strong>marketing and promotional messages</strong> from your business, including birthday offers, holiday promotions, and special offers (e.g. they opted in via web form, in-store, or have an existing customer relationship where they agreed to hear from you).</p>
+  <p>Consent language you may use when collecting contacts: &ldquo;I agree to receive marketing messages and special offers via email and/or SMS. Message and data rates may apply. Reply STOP to opt out of text messages.&rdquo;</p>
+  <p>You must not use Replyr to send spam or to contacts who have not agreed to receive marketing from you. Every campaign email includes an unsubscribe link; every SMS includes instructions to reply STOP. We process opt-outs and do not resend to unsubscribed contacts.</p>
   <p>We include a physical address in campaign footers where required (e.g. CAN-SPAM).</p>
   <p><a href="/">← Back to Replyr</a></p>
 </body></html>`);
