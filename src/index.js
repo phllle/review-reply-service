@@ -504,7 +504,7 @@ app.get("/connected", async (req, res, next) => {
   <div id="pro-customers-list-wrap" style="display:none;margin-top:16px;overflow-x:auto"><table class="pro-customers-table" id="pro-customers-table"><thead><tr><th>Email</th><th>First name</th><th>Birthday</th><th>Phone</th><th>Status</th></tr></thead><tbody id="pro-customers-tbody"></tbody></table><div id="pro-customers-pagination" style="margin-top:10px;font-size:13px;color:var(--muted)"></div></div>
   <div style="text-align:center;margin-top:16px"><a href="/pro?accountId=${encodeURIComponent(accountId)}" class="manage-link">🗓 Manage campaigns <span style="color:var(--muted);font-weight:400">(birthday, events, one-off)</span> →</a></div>`
     : `<div class="card-desc" style="margin-bottom:12px">Replyr Pro turns your customer list into automated, personal outreach. This is included in <strong>Replyr Pro</strong>.</div>
-  <ul class="pro-benefits"><li><strong>Customer database</strong> — Upload a CSV (email, name, birthday, phone). We store it securely per business.</li><li><strong>Birthday messages</strong> — We automatically email customers on their birthday. Add a coupon or any offer you choose.</li><li><strong>Holiday & event campaigns</strong> — Mothers Day, Fathers Day, and more. You pick the discount or message.</li><li><strong>Your voice or ours</strong> — Curate the message yourself or let Replyr write it.</li><li><strong>Sent on your behalf</strong> — Emails go out with your business name; replies go to your contact email.</li></ul>
+  <ul class="pro-benefits"><li><strong>Customer database</strong> — Upload a CSV (email, name, birthday, phone). We store it securely per business.</li><li><strong>Birthday messages</strong> — We automatically email and text customers on their birthday. Add a coupon or any offer you choose.</li><li><strong>Holiday & event campaigns</strong> — Mothers Day, Fathers Day, and more by email and SMS. You pick the discount or message.</li><li><strong>Your voice or ours</strong> — Curate the message yourself or let Replyr write it.</li><li><strong>Sent on your behalf</strong> — Messages go out with your business name (email and SMS); replies go to your contact email.</li></ul>
   <p class="card-desc" style="margin-bottom:8px">By uploading and sending you confirm you have permission to email and text those contacts. We send email to contacts with an address; if SMS is enabled, we also send a short text to contacts with a mobile number. <a href="/compliance" style="color:var(--accent2)">Compliance</a>.</p>
   <p><a href="/subscribe?accountId=${encodeURIComponent(accountId)}" class="manage-link">Upgrade to Pro →</a> to unlock the customer list and automated campaigns.</p>`}
 </div>`
@@ -712,15 +712,15 @@ app.get("/subscribe", (req, res) => {
     </div>
     ${hasPro ? `<div class="plan-card plan-card-pro">
       <h2>Replyr Pro</h2>
-      <p class="plan-desc">Everything in Replyr, plus a customer database and automated campaigns: birthday messages and holiday promos (Mothers Day, Fathers Day, etc.). You choose the coupon or message; Replyr sends it.</p>
+      <p class="plan-desc">Everything in Replyr, plus a customer database and automated campaigns: birthday messages and holiday promos (Mothers Day, Fathers Day, etc.) by email and SMS. You choose the coupon or message; Replyr sends it.</p>
       <p class="plan-price">${escapeHtml(proPriceLabel)}</p>
       <ul class="plan-features">
         <li>Everything in Replyr</li>
         <li>Upload customer CSV (email, name, birthday, phone)</li>
-        <li>Automated birthday emails with your chosen coupon (e.g. 20% off)</li>
+        <li>Automated birthday and event messages by email and SMS with your chosen coupon (e.g. 20% off)</li>
         <li>Event campaigns (e.g. a week before Mothers Day, Fathers Day) with your discount or announcement</li>
         <li>Curate the message yourself or let Replyr write it</li>
-        <li>Emails show your business name; replies go to your contact email</li>
+        <li>Messages show your business name; email replies go to your contact</li>
       </ul>
       <div class="cta-wrap">
         <button type="button" id="subscribe-pro-cta" class="cta-btn" style="border:none;cursor:pointer;font:inherit;" data-plan="pro">Subscribe to Replyr Pro</button>
