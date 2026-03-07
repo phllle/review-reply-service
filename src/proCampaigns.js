@@ -178,6 +178,17 @@ export function personalizeBirthdayMessage(messageText, offerText, firstName) {
   return s;
 }
 
+/** Turn long message into SMS-friendly text: single line, max length, then " Reply STOP to opt out." */
+function toSmsFriendly(longText, maxChars = 280) {
+  if (!longText || typeof longText !== "string") return "";
+  const oneLine = longText.replace(/\s+/g, " ").trim();
+  if (oneLine.length <= maxChars) return oneLine;
+  const cut = oneLine.slice(0, maxChars);
+  const lastSpace = cut.lastIndexOf(" ");
+  const truncated = lastSpace > maxChars * 0.6 ? cut.slice(0, lastSpace) : cut;
+  return truncated.replace(/\s+$/, "") + "…";
+}
+
 /** Send birthday emails for one business (called by scheduler). Optional asOfDate (YYYY-MM-DD) for testing. */
 export async function sendBirthdayCampaignsForAccount(accountId, logger = console, asOfDate = null) {
   if (!db.useDb()) return { sent: 0 };
@@ -198,7 +209,7 @@ export async function sendBirthdayCampaignsForAccount(accountId, logger = consol
   for (const c of birthdayContacts) {
     try {
       const body = personalizeBirthdayMessage(settings.messageText, settings.offerText, c.firstName);
-      if (sendEmail) {
+      if (sendEmail && c.email) {
         await sendCampaignEmail({
           to: c.email,
           subject: `${businessName} – Happy Birthday!`,
@@ -211,9 +222,10 @@ export async function sendBirthdayCampaignsForAccount(accountId, logger = consol
         logger?.info?.({ accountId, email: c.email }, "Birthday email sent");
       }
       if (sendSms && c.phone && isSmsConfigured()) {
-        const smsBody = `Happy birthday ${c.firstName || "there"}! ${(settings.offerText || "").slice(0, 40)} from ${businessName}. Reply STOP to opt out.`;
+        const footer = " Reply STOP to opt out.";
+        const fullSmsBody = body.replace(/\s+/g, " ").trim() + footer;
         try {
-          await sendCampaignSms(c.phone, smsBody);
+          await sendCampaignSms(c.phone, fullSmsBody);
           sent++;
           logger?.info?.({ accountId, phone: c.phone }, "Birthday SMS sent");
         } catch (smsErr) {
@@ -246,18 +258,18 @@ export async function sendEventCampaignForAccount(accountId, eventKey, eventYear
   const body = (campaign.messageText || "").replace(/\{\{offer\}\}/gi, campaign.offerText || "");
   const subject = `${businessName} – ${eventName}`;
   let sent = 0;
-  const offerSnippet = (campaign.offerText || "").slice(0, 40);
   const sendEmail = campaign.sendEmail !== false;
   const sendSms = campaign.sendSms !== false;
+  const footer = " Reply STOP to opt out.";
   for (const c of contacts) {
     try {
       const personalized = body.replace(/\{\{first_name\}\}/gi, c.firstName || "there");
-      if (sendEmail) {
+      if (sendEmail && c.email) {
         await sendCampaignEmail({ to: c.email, subject, bodyContent: personalized, businessName, accountId, replyTo });
         sent++;
       }
       if (sendSms && c.phone && isSmsConfigured()) {
-        const smsBody = `${businessName}: ${eventName} – ${c.firstName || "there"}, ${offerSnippet || "special offer"}. Reply STOP to opt out.`;
+        const smsBody = personalized.replace(/\s+/g, " ").trim() + footer;
         try {
           await sendCampaignSms(c.phone, smsBody);
           sent++;
@@ -282,19 +294,19 @@ export async function sendOneOffCampaign(id, accountId, subject, body, logger = 
   const contacts = await db.getProContactsForSending(accountId);
   const businessName = business.name || "This business";
   const replyTo = business.contact?.match(/\S+@\S+/) ? business.contact : undefined;
-  const subjectSnippet = (subject || "").slice(0, 50);
   const sendEmail = campaignRow.send_email !== false;
   const sendSms = campaignRow.send_sms !== false;
+  const footer = " Reply STOP to opt out.";
   let sent = 0;
   for (const c of contacts) {
     try {
       const personalized = (body || "").replace(/\{\{first_name\}\}/gi, c.firstName || "there");
-      if (sendEmail) {
+      if (sendEmail && c.email) {
         await sendCampaignEmail({ to: c.email, subject, bodyContent: personalized, businessName, accountId, replyTo });
         sent++;
       }
       if (sendSms && c.phone && isSmsConfigured()) {
-        const smsBody = `${businessName}: ${subjectSnippet || "Update"}. Reply STOP to opt out.`;
+        const smsBody = personalized.replace(/\s+/g, " ").trim() + footer;
         try {
           await sendCampaignSms(c.phone, smsBody);
           sent++;
