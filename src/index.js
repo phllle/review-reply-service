@@ -373,6 +373,7 @@ app.get("/no-business", (req, res) => {
       ? "<p>Your Google account is connected, but there’s no business location linked yet. Replyr needs a Google Business Profile (and at least one location) to reply to reviews.</p><p>Create or complete your <a href=\"https://business.google.com\" target=\"_blank\" rel=\"noopener\">Google Business Profile</a>, then try connecting again.</p>"
       : "<p>Replyr works with <strong>Google Business Profile</strong>. The Google account you signed in with doesn’t have access to any business profile (or doesn’t own or manage one).</p><p>If you have a business, create or claim your listing at <a href=\"https://business.google.com\" target=\"_blank\" rel=\"noopener\">business.google.com</a>, then connect again. If you were just exploring, no problem — you can go back to the homepage.</p>"}
     <p><a href="/" class="btn">Back to Replyr</a></p>
+    <p style="margin-top:12px;font-size:13px;"><a href="/contact">Contact us</a></p>
   </div>
 </body></html>`);
 });
@@ -624,6 +625,7 @@ app.get("/connected", async (req, res, next) => {
     ${nextStepLine ? `<p class="hero-desc" style="margin-top:8px">${nextStepLine}</p>` : ""}
   </div>
   ${freeReplySection}
+  <p class="connected-footer" style="text-align:center;margin-top:32px;font-size:13px;color:var(--muted);"><a href="/contact" style="color:var(--accent2);text-decoration:none;">Contact us</a> — questions or concerns?</p>
 </div>
 <script src="/connected.js"></script>
 </body>
@@ -729,6 +731,7 @@ app.get("/subscribe", (req, res) => {
     </div>` : ""}
     ${hasBillingPortal ? `<p class="back" style="margin-bottom:0.5rem;"><a href="${escapeHtml(billingPortalUrl)}" target="_blank" rel="noopener">Manage billing / subscription</a></p>` : ""}
     <p class="back"><a href="/">← Back to Replyr</a></p>
+    <p class="back" style="margin-top:0.5rem;"><a href="/contact">Contact us</a></p>
   </div>
   <script src="/subscribe.js"></script>
 </body>
@@ -2145,6 +2148,44 @@ app.get("/pro/unsubscribe", async (req, res, next) => {
   }
 });
 
+// Contact us – for current and potential users (questions, concerns)
+app.get("/contact", (req, res) => {
+  const contactEmail = (process.env.ALERT_EMAIL || "").trim();
+  const emailHtml = contactEmail
+    ? `<p>Email: <a href="mailto:${escapeHtml(contactEmail)}" class="contact-link">${escapeHtml(contactEmail)}</a></p>`
+    : "<p>Set <code>ALERT_EMAIL</code> in your environment to show your contact email here.</p>";
+  res.set("Content-Type", "text/html; charset=utf-8");
+  res.send(`
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Replyr – Contact us</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: system-ui, sans-serif; background: #0f0f11; color: #f0ede8; min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 24px; }
+  .contact-card { max-width: 420px; background: #17171a; border: 1px solid rgba(255,255,255,0.07); border-radius: 20px; padding: 32px; }
+  h1 { font-size: 22px; margin-bottom: 12px; color: #f0ede8; }
+  p { font-size: 14px; color: #7a7880; line-height: 1.6; margin-bottom: 16px; }
+  a { color: #4a9eff; text-decoration: none; font-weight: 500; }
+  a:hover { text-decoration: underline; }
+  .contact-link { display: inline-block; margin-top: 8px; font-size: 15px; }
+  .back { margin-top: 24px; font-size: 13px; }
+  .back a { color: #7c6af7; }
+</style>
+</head>
+<body>
+  <div class="contact-card">
+    <h1>Contact us</h1>
+    <p>Questions or concerns? We're here to help — whether you're already using Replyr or thinking about signing up.</p>
+    ${emailHtml}
+    <p class="back"><a href="/">← Back to Replyr</a></p>
+  </div>
+</body>
+</html>`);
+});
+
 // Compliance / acceptable use (linked from Pro UI and email footer). Wording aligned with toll-free use case: marketing/promotional messages.
 app.get("/compliance", (req, res) => {
   res.set("Content-Type", "text/html; charset=utf-8");
@@ -2166,7 +2207,7 @@ app.get("/compliance", (req, res) => {
   <p>By uploading a customer list and sending campaigns through Replyr Pro, the business confirms that each contact has agreed to receive marketing and promotional messages (as above) via web form, in-store signup, or an existing customer relationship where they agreed to hear from the business.</p>
   <p>We do not allow spam. Every campaign email includes an unsubscribe link; every SMS includes instructions to reply STOP. We process opt-outs and do not resend to unsubscribed contacts.</p>
   <p>We include a physical address in campaign footers where required (e.g. CAN-SPAM).</p>
-  <p><a href="/">← Back to Replyr</a></p>
+  <p><a href="/">← Back to Replyr</a> · <a href="/contact">Contact us</a></p>
 </body></html>`);
 });
 
