@@ -547,14 +547,16 @@ export async function markProOneOffCampaignSent(id) {
   await getPool().query("UPDATE pro_one_off_campaigns SET status = 'sent' WHERE id = $1", [id]);
 }
 
-// --- Pro contacts for sending (have email, not unsubscribed) ---
+// --- Pro contacts for sending (have email and/or phone, not unsubscribed) ---
 export async function getProContactsForSending(accountId) {
   const res = await getPool().query(
-    "SELECT email, first_name, birthday, phone FROM pro_contacts WHERE account_id = $1 AND email IS NOT NULL AND unsubscribed_at IS NULL",
+    `SELECT email, first_name, birthday, phone FROM pro_contacts
+     WHERE account_id = $1 AND unsubscribed_at IS NULL
+       AND ((email IS NOT NULL AND TRIM(email) != '') OR (phone IS NOT NULL AND TRIM(phone) != ''))`,
     [accountId]
   );
   return res.rows.map((r) => ({
-    email: r.email,
+    email: r.email ? String(r.email).trim() || null : null,
     firstName: r.first_name ?? "",
     birthday: r.birthday ?? "",
     phone: (r.phone || "").trim() || null
