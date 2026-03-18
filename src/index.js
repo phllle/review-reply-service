@@ -2211,6 +2211,67 @@ app.get("/compliance", (req, res) => {
 </body></html>`);
 });
 
+// Privacy policy (linked from Google OAuth consent screen)
+app.get("/privacy", (req, res) => {
+  res.set("Content-Type", "text/html; charset=utf-8");
+  res.send(`
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Replyr – Privacy policy</title></head>
+<body style="font-family:system-ui,sans-serif;max-width:720px;margin:2rem auto;padding:1.5rem;">
+  <h1>Replyr – Privacy policy</h1>
+  <p style="color:#555;line-height:1.6;">Last updated: ${new Date().toISOString().split("T")[0]}</p>
+
+  <h2 style="font-size:1rem;margin-top:1.5rem;color:#333;">Who we are</h2>
+  <p>Replyr (“we”, “us”, “our”) provides an AI-assisted service that helps businesses respond to Google Business Profile reviews.</p>
+
+  <h2 style="font-size:1rem;margin-top:1.5rem;color:#333;">What we collect</h2>
+  <p>When you connect your Google account, we store Google OAuth tokens for the Google Business Profile you authorize. For Replyr Pro, we also store customer-list data you upload via CSV (email, name, birthday, and optional phone).</p>
+
+  <h2 style="font-size:1rem;margin-top:1.5rem;color:#333;">How we use information</h2>
+  <p>We use stored data to: (1) read reviews from your authorized Google Business location(s), (2) generate replies with an AI model, and (3) send email/SMS campaigns for businesses who subscribe to Replyr Pro.</p>
+
+  <h2 style="font-size:1rem;margin-top:1.5rem;color:#333;">Sharing</h2>
+  <p>We share limited information with service providers (e.g. Google APIs, Resend for email sending, Twilio for SMS sending, Stripe for billing, and Anthropic for AI generation) to deliver the service. We do not sell your data.</p>
+
+  <h2 style="font-size:1rem;margin-top:1.5rem;color:#333;">Data retention</h2>
+  <p>We retain OAuth tokens and any enabled campaign settings while your business account is active and until you disconnect or cancel your subscriptions. Pro customer uploads are stored for the purpose of running campaigns and can be replaced by uploading a new CSV.</p>
+
+  <h2 style="font-size:1rem;margin-top:1.5rem;color:#333;">Your choices</h2>
+  <p>You can disconnect Google access via the app, and you can manage/unsubscribe contacts using the unsubscribe links provided in emails/SMS (Pro campaigns).</p>
+
+  <p style="margin-top:1.5rem;"><a href="/">← Back to Replyr</a> · <a href="/contact">Contact us</a></p>
+</body></html>`);
+});
+
+// Terms of service (linked from Google OAuth consent screen)
+app.get("/terms", (req, res) => {
+  res.set("Content-Type", "text/html; charset=utf-8");
+  res.send(`
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Replyr – Terms of service</title></head>
+<body style="font-family:system-ui,sans-serif;max-width:720px;margin:2rem auto;padding:1.5rem;">
+  <h1>Replyr – Terms of service</h1>
+  <p style="color:#555;line-height:1.6;">Last updated: ${new Date().toISOString().split("T")[0]}</p>
+
+  <h2 style="font-size:1rem;margin-top:1.5rem;color:#333;">Agreement</h2>
+  <p>By using Replyr, you agree to these Terms. Replyr provides an automation and AI-assistance tool; it does not guarantee specific outcomes.</p>
+
+  <h2 style="font-size:1rem;margin-top:1.5rem;color:#333;">Use of service</h2>
+  <p>You are responsible for ensuring you have the rights and permissions to send messages to your contacts and for complying with applicable laws (including consent and unsubscribe requirements for promotional messages).</p>
+
+  <h2 style="font-size:1rem;margin-top:1.5rem;color:#333;">No warranty</h2>
+  <p>Replyr is provided “as is”. We do not guarantee uninterrupted service, accuracy of AI-generated text, or that replies/campaigns will be delivered.</p>
+
+  <h2 style="font-size:1rem;margin-top:1.5rem;color:#333;">Billing (Stripe)</h2>
+  <p>If you subscribe, billing is handled by Stripe according to Stripe terms. Cancellation and refund policies (if any) are governed by Stripe’s policy and your plan.</p>
+
+  <h2 style="font-size:1rem;margin-top:1.5rem;color:#333;">Limitation of liability</h2>
+  <p>To the maximum extent permitted by law, Replyr is not liable for indirect, incidental, or consequential damages arising from use of the service.</p>
+
+  <p style="margin-top:1.5rem;"><a href="/">← Back to Replyr</a> · <a href="/contact">Contact us</a></p>
+</body></html>`);
+});
+
 // Admin page: list businesses, edit contact and auto-reply
 app.get("/admin", (req, res) => {
   res.set("Content-Type", "text/html; charset=utf-8");

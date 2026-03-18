@@ -1,6 +1,27 @@
-## Review Reply Service (Google Business Profile)
+## Review Reply Service (Replyr)
 
 Minimal Node/Express service that authenticates with Google and replies to Google Business Profile reviews via API.
+
+### Services Replyr uses
+
+| Service | What it's for | Where to configure | Env vars (main) |
+|--------|----------------|--------------------|-----------------|
+| **Google Cloud** | Sign-in (OAuth) and Google Business Profile API (reviews, locations, post replies) | [Google Cloud Console](https://console.cloud.google.com) → APIs & Services → Credentials, OAuth consent screen | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_REDIRECT_URI` |
+| **PostgreSQL** | Persist tokens, businesses, auto-reply state, subscriptions, Pro contacts & campaigns | Railway Postgres plugin or any Postgres host | `DATABASE_URL` |
+| **Stripe** | Subscriptions (Replyr + Replyr Pro), Checkout, Customer Portal, webhooks | [Stripe Dashboard](https://dashboard.stripe.com) → Products, Webhooks, Billing → Customer portal | `STRIPE_SECRET_KEY`, `STRIPE_PRICE_ID`, `STRIPE_WEBHOOK_SECRET`, `STRIPE_PRO_PRICE_ID`, `STRIPE_CUSTOMER_PORTAL_URL`, `BASE_URL` |
+| **Anthropic (Claude)** | AI-generated review replies and Pro campaign copy (birthday, events, one-off) | [Anthropic Console](https://console.anthropic.com) | `ANTHROPIC_API_KEY`, `ANTHROPIC_MODEL` (optional) |
+| **Resend** | Transactional email: failure alerts, Pro campaign emails, unsubscribe links | [Resend](https://resend.com) → API Keys, Domains (verify replyr.pro for sending) | `RESEND_API_KEY`, `ALERT_FROM_EMAIL`, `ALERT_EMAIL`, `UNSUBSCRIBE_SECRET`, `CAMPAIGN_FOOTER_ADDRESS` |
+| **Twilio** | SMS: failure alerts, Pro campaign SMS (birthday, events, one-off), STOP opt-out webhook | [Twilio Console](https://console.twilio.com) → Phone Numbers, Messaging webhook | `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_FROM_NUMBER`, `ALERT_PHONE`, `CAMPAIGN_SMS_ENABLED` |
+| **Railway** | Hosting, custom domain (e.g. replyr.pro), env vars | [Railway](https://railway.app) → Project → Settings (Networking), Variables | `BASE_URL`, `PORT` |
+| **Domain (e.g. Squarespace)** | replyr.pro DNS: A/ALIAS/CNAME to Railway, TXT for Railway verify; Resend DKIM/SPF for email | Squarespace (or registrar) → Domains → DNS | — |
+
+**Quick links**
+
+- **Google OAuth:** Authorized redirect URI = `https://replyr.pro/auth/google/callback` (and origin `https://replyr.pro`).
+- **Stripe webhook:** Endpoint URL = `https://replyr.pro/webhooks/stripe`; events: `checkout.session.completed`, `customer.subscription.deleted`, `customer.subscription.updated`.
+- **Twilio SMS webhook:** "A message comes in" = `https://replyr.pro/webhooks/twilio/sms` (for STOP handling).
+
+---
 
 ### Setup
 1. cd ~/review-reply-service && npm install
