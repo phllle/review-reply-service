@@ -113,6 +113,9 @@
   .cta-strip p { font-size: 13px; color: var(--muted); margin-top: 14px; }
   .cta-strip p a { color: var(--accent2); text-decoration: none; font-weight: 500; }
   .cta-strip p a:hover { text-decoration: underline; }
+  .legal-footer { margin-top: 18px; font-size: 12px; color: var(--muted); }
+  .legal-footer a { color: var(--muted); text-decoration: underline; }
+  .legal-footer a:hover { color: var(--text); }
   @keyframes fadeUp { from { opacity: 0; transform: translateY(18px); } to { opacity: 1; transform: translateY(0); } }
 </style>
 </head>
@@ -241,6 +244,9 @@
     </a>
     <p>Already set up? <a href="/dashboard">Manage your account →</a></p>
     <p>Questions or concerns? <a href="/contact">Contact us</a></p>
+    <div class="legal-footer">
+      <a href="/privacy">Privacy</a> · <a href="/terms">Terms</a>
+    </div>
   </div>
 </div>
 <script src="/signup.js"></script>
