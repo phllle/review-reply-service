@@ -23,6 +23,7 @@ import {
   getSendDateForEvent,
   sendBirthdayCampaignsForAccount,
   sendEventCampaignForAccount,
+  sendProEventCampaignTest,
   sendOneOffCampaign
 } from "./proCampaigns.js";
 import multer from "multer";
@@ -187,6 +188,41 @@ app.get("/test-sms", async (req, res, next) => {
   } catch (err) {
     req.log?.error(err, "Test SMS failed");
     res.status(500).json({ error: err.message || "Test SMS failed. Check CAMPAIGN_SMS_ENABLED and Twilio env vars." });
+  }
+});
+
+// Test: upcoming event campaign (one email and/or SMS to you only). Saves must include message body. Does not mark event sent.
+// GET /test-trigger-event?secret=...&accountId=...&eventKey=easter&year=2026&email=you@x.com&to=+1425... (email/to optional; default ALERT_EMAIL / ALERT_PHONE)
+app.get("/test-trigger-event", async (req, res, next) => {
+  try {
+    const secret = (req.query.secret || "").trim();
+    const expected = process.env.TEST_ALERT_SECRET?.trim();
+    if (!expected || secret !== expected) {
+      return res.status(400).json({ error: "Missing or invalid secret. Set TEST_ALERT_SECRET and use ?secret= that value." });
+    }
+    const accountId = (req.query.accountId || "").trim();
+    const eventKey = (req.query.eventKey || "").trim();
+    const yearRaw = (req.query.year || req.query.eventYear || "").trim();
+    const eventYear = parseInt(yearRaw, 10);
+    if (!accountId) return res.status(400).json({ error: "accountId required" });
+    if (!eventKey) return res.status(400).json({ error: "eventKey required (e.g. easter, mothers_day)" });
+    if (!yearRaw || Number.isNaN(eventYear)) return res.status(400).json({ error: "year required (e.g. year=2026)" });
+    if (!db.useDb()) return res.status(503).json({ error: "Database required" });
+    const business = await getBusiness(accountId);
+    if (!business?.isPro) return res.status(403).json({ error: "Replyr Pro required" });
+    const testEmail = (req.query.email || "").trim() || process.env.ALERT_EMAIL?.trim() || "";
+    const testPhone = (req.query.to || "").trim() || process.env.ALERT_PHONE?.trim() || "";
+    const firstName = (req.query.firstName || req.query.first_name || "Test").trim() || "Test";
+    const result = await sendProEventCampaignTest(accountId, eventKey, eventYear, {
+      testEmail,
+      testPhone,
+      firstName,
+      logger: req.log
+    });
+    res.json({ ok: true, ...result });
+  } catch (err) {
+    req.log?.error(err, "Test trigger event failed");
+    res.status(500).json({ error: err.message || "Test event send failed." });
   }
 });
 
@@ -1633,6 +1669,7 @@ app.get("/pro", async (req, res, next) => {
   select { cursor: pointer; min-height: 46px; }
   textarea { min-height: 180px; }
   #birthday-message { min-height: 220px; }
+  #event-detail-prompt { min-height: 110px; }
   #oneoff-body { min-height: 180px; }
   #oneoff-prompt { min-height: 90px; }
   .field-group { margin-bottom: 20px; }
@@ -1768,7 +1805,7 @@ app.get("/pro", async (req, res, next) => {
       <div class="event-detail-title" id="event-detail-title">Event</div>
       <div class="field-group">
         <label class="field-label">Prompt for Replyr (optional)</label>
-        <input type="text" id="event-detail-prompt" placeholder="e.g. Keep it warm and short, mention we're a nail salon, highlight spring colors" class="field-input">
+        <textarea id="event-detail-prompt" placeholder="e.g. Keep it warm and short, mention we're a nail salon, highlight spring colors"></textarea>
         <p class="field-hint">Used only when you click <strong>Generate with Replyr</strong>. Add tone, style, and business context.</p>
       </div>
       <div class="field-group">
