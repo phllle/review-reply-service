@@ -191,6 +191,17 @@ app.get("/test-sms", async (req, res, next) => {
   }
 });
 
+// Diagnose campaign SMS env (no secrets). GET /test-sms-diag?secret=... — use after deploy if /test-sms says "not configured"
+app.get("/test-sms-diag", async (req, res) => {
+  const secret = (req.query.secret || "").trim();
+  const expected = process.env.TEST_ALERT_SECRET?.trim();
+  if (!expected || secret !== expected) {
+    return res.status(400).json({ error: "Missing or invalid secret. Set TEST_ALERT_SECRET and use ?secret= that value." });
+  }
+  const { getCampaignSmsDiagnostics } = await import("./campaignSms.js");
+  res.json(getCampaignSmsDiagnostics());
+});
+
 // Test: upcoming event campaign (one email and/or SMS to you only). Saves must include message body. Does not mark event sent.
 // GET /test-trigger-event?secret=...&accountId=...&eventKey=easter&year=2026&email=you@x.com&to=+1425... (email/to optional; default ALERT_EMAIL / ALERT_PHONE)
 app.get("/test-trigger-event", async (req, res, next) => {

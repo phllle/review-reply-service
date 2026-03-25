@@ -3,13 +3,39 @@
  * Set CAMPAIGN_SMS_ENABLED=true and Twilio env vars to enable.
  */
 
-const TWILIO_ACCOUNT_SID = process.env.TWILIO_ACCOUNT_SID?.trim();
-const TWILIO_AUTH_TOKEN = process.env.TWILIO_AUTH_TOKEN?.trim();
-const TWILIO_FROM_NUMBER = process.env.TWILIO_FROM_NUMBER?.trim();
-const CAMPAIGN_SMS_ENABLED = process.env.CAMPAIGN_SMS_ENABLED === "true" || process.env.CAMPAIGN_SMS_ENABLED === "1";
+function parseCampaignSmsEnabled() {
+  const v = (process.env.CAMPAIGN_SMS_ENABLED || "").trim().toLowerCase();
+  return v === "true" || v === "1" || v === "yes";
+}
+
+function getTwilioEnv() {
+  return {
+    accountSid: process.env.TWILIO_ACCOUNT_SID?.trim() || "",
+    authToken: process.env.TWILIO_AUTH_TOKEN?.trim() || "",
+    fromNumber: process.env.TWILIO_FROM_NUMBER?.trim() || ""
+  };
+}
 
 function isSmsConfigured() {
-  return CAMPAIGN_SMS_ENABLED && TWILIO_ACCOUNT_SID && TWILIO_AUTH_TOKEN && TWILIO_FROM_NUMBER;
+  const { accountSid, authToken, fromNumber } = getTwilioEnv();
+  return parseCampaignSmsEnabled() && !!accountSid && !!authToken && !!fromNumber;
+}
+
+/**
+ * Non-secret snapshot for debugging Railway env (use with TEST_ALERT_SECRET on the route).
+ */
+export function getCampaignSmsDiagnostics() {
+  const { accountSid, authToken, fromNumber } = getTwilioEnv();
+  const rawFlag = process.env.CAMPAIGN_SMS_ENABLED;
+  return {
+    campaignSmsEnabledVarPresent: rawFlag != null && String(rawFlag).length > 0,
+    campaignSmsEnabledParsedTrue: parseCampaignSmsEnabled(),
+    twilioAccountSidSet: accountSid.length > 0,
+    twilioAuthTokenSet: authToken.length > 0,
+    twilioFromNumberSet: fromNumber.length > 0,
+    twilioFromLooksE164: /^\+\d{10,15}$/.test(fromNumber),
+    isSmsConfigured: isSmsConfigured()
+  };
 }
 
 /** Normalize US phone to E.164 (+1XXXXXXXXXX). Returns null if not valid. */
@@ -29,13 +55,14 @@ function normalizePhone(phone) {
  */
 export async function sendCampaignSms(toPhone, body) {
   if (!isSmsConfigured()) return;
+  const { accountSid, authToken, fromNumber } = getTwilioEnv();
   const to = normalizePhone(toPhone);
   if (!to) throw new Error("Invalid or unsupported phone number (need 10 or 11 digits)");
   const twilio = (await import("twilio")).default;
-  const client = twilio(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN);
+  const client = twilio(accountSid, authToken);
   await client.messages.create({
     body: (body || "").slice(0, 1600),
-    from: TWILIO_FROM_NUMBER,
+    from: fromNumber,
     to
   });
 }
