@@ -178,9 +178,13 @@ app.get("/test-sms", async (req, res, next) => {
     if (!toPhone) {
       return res.status(400).json({ error: "No phone number. Set ALERT_PHONE in env or pass ?to=4252899410" });
     }
-    const { sendCampaignSms, isSmsConfigured } = await import("./campaignSms.js");
+    const { sendCampaignSms, isSmsConfigured, getCampaignSmsDiagnostics } = await import("./campaignSms.js");
     if (!isSmsConfigured()) {
-      return res.status(400).json({ error: "Campaign SMS not configured. Set CAMPAIGN_SMS_ENABLED=true and Twilio env vars (TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_FROM_NUMBER)." });
+      return res.status(400).json({
+        error:
+          "Campaign SMS not configured. Set CAMPAIGN_SMS_ENABLED=true and Twilio env vars (TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_FROM_NUMBER).",
+        diag: getCampaignSmsDiagnostics()
+      });
     }
     const body = "Replyr test: campaign SMS is working. Reply STOP to opt out.";
     await sendCampaignSms(toPhone, body);
