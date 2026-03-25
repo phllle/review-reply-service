@@ -178,6 +178,33 @@ export function personalizeBirthdayMessage(messageText, offerText, firstName) {
   return s;
 }
 
+/**
+ * Format saved campaign copy for SMS: keep paragraph breaks (blank lines), collapse
+ * spaces within a line. SMS has no subject line — drop a leading "Subject: …" line
+ * when the draft was written like an email.
+ */
+function formatBodyForSms(text) {
+  const lines = (text || "").replace(/\r\n/g, "\n").split("\n");
+  if (lines.length && /^\s*subject\s*:/i.test(lines[0])) {
+    lines.shift();
+    while (lines.length && !lines[0].trim()) lines.shift();
+  }
+  const paragraphs = [];
+  let current = [];
+  for (const line of lines) {
+    if (!line.trim()) {
+      if (current.length) {
+        paragraphs.push(current.join(" "));
+        current = [];
+      }
+    } else {
+      current.push(line.replace(/\s+/g, " ").trim());
+    }
+  }
+  if (current.length) paragraphs.push(current.join(" "));
+  return paragraphs.map((p) => p.replace(/\s+/g, " ").trim()).filter(Boolean).join("\n\n");
+}
+
 /** Turn long message into SMS-friendly text: single line, max length, then " Reply STOP to opt out." */
 function toSmsFriendly(longText, maxChars = 280) {
   if (!longText || typeof longText !== "string") return "";
@@ -223,7 +250,7 @@ export async function sendBirthdayCampaignsForAccount(accountId, logger = consol
       }
       if (sendSms && c.phone && isSmsConfigured()) {
         const footer = " Reply STOP to opt out.";
-        const fullSmsBody = body.replace(/\s+/g, " ").trim() + footer;
+        const fullSmsBody = formatBodyForSms(body) + footer;
         try {
           await sendCampaignSms(c.phone, fullSmsBody);
           sent++;
@@ -269,7 +296,7 @@ export async function sendEventCampaignForAccount(accountId, eventKey, eventYear
         sent++;
       }
       if (sendSms && c.phone && isSmsConfigured()) {
-        const smsBody = personalized.replace(/\s+/g, " ").trim() + footer;
+        const smsBody = formatBodyForSms(personalized) + footer;
         try {
           await sendCampaignSms(c.phone, smsBody);
           sent++;
@@ -337,11 +364,11 @@ export async function sendProEventCampaignTest(accountId, eventKey, eventYear, o
     if (!isSmsConfigured()) {
       if (!emailSent) {
         throw new Error(
-          "SMS test requested but campaign SMS is not configured. Set CAMPAIGN_SMS_ENABLED=true and Twilio env vars, or add email= for an email-only test."
+          "SMS test requested but Twilio is not configured (TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_FROM_NUMBER), or add email= for an email-only test."
         );
       }
     } else {
-      const smsBody = "(TEST) " + personalized.replace(/\s+/g, " ").trim() + footer;
+      const smsBody = "(TEST)\n\n" + formatBodyForSms(personalized) + footer;
       try {
         await sendCampaignSms(phoneTo, smsBody);
         smsSent = true;
@@ -379,7 +406,7 @@ export async function sendOneOffCampaign(id, accountId, subject, body, logger = 
         sent++;
       }
       if (sendSms && c.phone && isSmsConfigured()) {
-        const smsBody = personalized.replace(/\s+/g, " ").trim() + footer;
+        const smsBody = formatBodyForSms(personalized) + footer;
         try {
           await sendCampaignSms(c.phone, smsBody);
           sent++;
