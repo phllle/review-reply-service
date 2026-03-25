@@ -164,7 +164,7 @@ app.get("/test-alert", async (req, res, next) => {
   }
 });
 
-// Test: send one campaign-style SMS. Set TEST_ALERT_SECRET and CAMPAIGN_SMS_ENABLED=true + Twilio. GET /test-sms?secret=...&to=4252899410 (to optional; defaults to ALERT_PHONE)
+// Test: send one campaign-style SMS. Set TEST_ALERT_SECRET and Twilio env vars. GET /test-sms?secret=...&to=4252899410 (to optional; defaults to ALERT_PHONE)
 app.get("/test-sms", async (req, res, next) => {
   try {
     const secret = (req.query.secret || "").trim();
@@ -182,7 +182,7 @@ app.get("/test-sms", async (req, res, next) => {
     if (!isSmsConfigured()) {
       return res.status(400).json({
         error:
-          "Campaign SMS not configured. Set CAMPAIGN_SMS_ENABLED=true and Twilio env vars (TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_FROM_NUMBER).",
+          "Campaign SMS not configured. Set Twilio env vars: TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_FROM_NUMBER.",
         diag: getCampaignSmsDiagnostics()
       });
     }
@@ -191,7 +191,7 @@ app.get("/test-sms", async (req, res, next) => {
     res.json({ ok: true, message: "Test SMS sent.", to: toPhone });
   } catch (err) {
     req.log?.error(err, "Test SMS failed");
-    res.status(500).json({ error: err.message || "Test SMS failed. Check CAMPAIGN_SMS_ENABLED and Twilio env vars." });
+    res.status(500).json({ error: err.message || "Test SMS failed. Check Twilio env vars." });
   }
 });
 

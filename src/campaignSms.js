@@ -1,12 +1,7 @@
 /**
  * Replyr Pro: send campaign SMS (birthday, events, one-off) via Twilio.
- * Set CAMPAIGN_SMS_ENABLED=true and Twilio env vars to enable.
+ * SMS is enabled automatically whenever all three Twilio env vars are present.
  */
-
-function parseCampaignSmsEnabled() {
-  const v = (process.env.CAMPAIGN_SMS_ENABLED || "").trim().toLowerCase();
-  return v === "true" || v === "1" || v === "yes";
-}
 
 function getTwilioEnv() {
   return {
@@ -18,7 +13,7 @@ function getTwilioEnv() {
 
 function isSmsConfigured() {
   const { accountSid, authToken, fromNumber } = getTwilioEnv();
-  return parseCampaignSmsEnabled() && !!accountSid && !!authToken && !!fromNumber;
+  return !!accountSid && !!authToken && !!fromNumber;
 }
 
 /**
@@ -26,20 +21,12 @@ function isSmsConfigured() {
  */
 export function getCampaignSmsDiagnostics() {
   const { accountSid, authToken, fromNumber } = getTwilioEnv();
-  const rawFlag = process.env.CAMPAIGN_SMS_ENABLED;
-  // Show any env key that contains "campaign" or "sms" (case-insensitive) to catch typos.
-  const relatedKeys = Object.keys(process.env).filter(
-    (k) => /campaign|sms/i.test(k)
-  );
   return {
-    campaignSmsEnabledVarPresent: rawFlag != null && String(rawFlag).length > 0,
-    campaignSmsEnabledParsedTrue: parseCampaignSmsEnabled(),
     twilioAccountSidSet: accountSid.length > 0,
     twilioAuthTokenSet: authToken.length > 0,
     twilioFromNumberSet: fromNumber.length > 0,
     twilioFromLooksE164: /^\+\d{10,15}$/.test(fromNumber),
-    isSmsConfigured: isSmsConfigured(),
-    relatedEnvKeys: relatedKeys
+    isSmsConfigured: isSmsConfigured()
   };
 }
 
