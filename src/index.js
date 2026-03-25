@@ -44,11 +44,19 @@ async function runCampaignScheduler() {
       }
     }
     const today = new Date().toISOString().slice(0, 10);
+    const pacificNowLocal = getPacificNowLocalMinute();
     const eventDue = await db.getProEventCampaignsDueToSend();
-    for (const { accountId, eventKey, eventYear, sendDaysBefore } of eventDue) {
-      const eventDate = getEventSendDate(eventKey, eventYear);
-      const sendDate = getSendDateForEvent(eventDate, sendDaysBefore);
-      if (sendDate !== today) continue;
+    for (const { accountId, eventKey, eventYear, sendDaysBefore, sendAtLocal } of eventDue) {
+      let shouldSend = false;
+      if (sendAtLocal && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(sendAtLocal)) {
+        shouldSend = sendAtLocal <= pacificNowLocal;
+      } else {
+        // Backward compatibility for older rows that only have send_days_before.
+        const eventDate = getEventSendDate(eventKey, eventYear);
+        const sendDate = getSendDateForEvent(eventDate, sendDaysBefore);
+        shouldSend = sendDate === today;
+      }
+      if (!shouldSend) continue;
       try {
         await sendEventCampaignForAccount(accountId, eventKey, eventYear, logger);
       } catch (err) {
@@ -66,6 +74,20 @@ async function runCampaignScheduler() {
   } catch (err) {
     logger.error({ err }, "Campaign scheduler failed");
   }
+}
+
+function getPacificNowLocalMinute() {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/Los_Angeles",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false
+  }).formatToParts(new Date());
+  const pick = (type) => parts.find((p) => p.type === type)?.value || "00";
+  return `${pick("year")}-${pick("month")}-${pick("day")}T${pick("hour")}:${pick("minute")}`;
 }
 
 async function start() {
@@ -1407,7 +1429,7 @@ app.get("/pro/events/:key/:year", async (req, res, next) => {
     if (!business?.isPro) return res.status(403).json({ error: "Replyr Pro required" });
     if (!db.useDb()) return res.status(503).json({ error: "Database required for campaigns" });
     const campaign = await db.getProEventCampaign(accountId, key, parseInt(year, 10));
-    res.json(campaign || { status: "pending", messageText: "", offerText: "", confirmedAt: null, sentAt: null });
+    res.json(campaign || { status: "pending", messageText: "", offerText: "", sendAtLocal: null, confirmedAt: null, sentAt: null });
   } catch (err) {
     next(err);
   }
@@ -1417,18 +1439,24 @@ app.patch("/pro/events/:key/:year", async (req, res, next) => {
   try {
     const accountId = (req.body?.accountId || req.query.accountId || "").trim();
     const { key, year } = req.params;
-    const { status, messageText, offerText, sendDaysBefore, sendEmail, sendSms } = req.body || {};
+    const { status, messageText, offerText, sendAtLocal, sendEmail, sendSms } = req.body || {};
     if (!accountId) return res.status(400).json({ error: "accountId required" });
     const business = await getBusiness(accountId);
     if (!business?.isPro) return res.status(403).json({ error: "Replyr Pro required" });
     if (!db.useDb()) return res.status(503).json({ error: "Database required for campaigns" });
     const eventYear = parseInt(year, 10);
-    const days = sendDaysBefore !== undefined ? Number(sendDaysBefore) : 14;
+    const normalizedSendAtLocal =
+      typeof sendAtLocal === "string" && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(sendAtLocal.trim())
+        ? sendAtLocal.trim()
+        : null;
+    if (status === "confirmed" && !normalizedSendAtLocal) {
+      return res.status(400).json({ error: "sendAtLocal is required in YYYY-MM-DDTHH:mm format (Pacific Time)." });
+    }
     await db.upsertProEventCampaign(accountId, key, eventYear, {
       status: status || "pending",
       messageText,
       offerText,
-      sendDaysBefore: [0, 1, 3, 7, 14].includes(days) ? days : 14,
+      sendAtLocal: normalizedSendAtLocal,
       sendEmail,
       sendSms,
       confirmedAt: status === "confirmed" ? new Date().toISOString() : null
@@ -1732,16 +1760,16 @@ app.get("/pro", async (req, res, next) => {
       <div class="card-icon purple">📅</div>
       <div>
         <div class="card-title">Upcoming events</div>
-        <div class="card-desc">Opt in per event. We show the <strong style="color:var(--text)">event date</strong> (the holiday); you choose <strong style="color:var(--text)">when to send</strong> — 2 weeks before, 1 week before, or on the day. Set message and offer, then Confirm.</div>
+        <div class="card-desc">Opt in per event. We show the <strong style="color:var(--text)">event date</strong> (the holiday); you choose the <strong style="color:var(--text)">exact send date and time</strong> in Pacific Time. Set message and offer, then Confirm.</div>
       </div>
     </div>
     <div class="events-list" id="events-list"></div>
     <div class="event-detail-panel" id="event-detail-panel">
       <div class="event-detail-title" id="event-detail-title">Event</div>
       <div class="field-group">
-        <label class="field-label">Describe your business (optional)</label>
-        <input type="text" id="event-detail-prompt" placeholder="e.g. Anchovie and Salts is a seafood restaurant — tailor the message" class="field-input">
-        <p class="field-hint">So Replyr can tailor the event message to your business.</p>
+        <label class="field-label">Prompt for Replyr (optional)</label>
+        <input type="text" id="event-detail-prompt" placeholder="e.g. Keep it warm and short, mention we're a nail salon, highlight spring colors" class="field-input">
+        <p class="field-hint">Used only when you click <strong>Generate with Replyr</strong>. Add tone, style, and business context.</p>
       </div>
       <div class="field-group">
         <label class="field-label">Message</label>
@@ -1756,14 +1784,9 @@ app.get("/pro", async (req, res, next) => {
         <input type="text" id="event-detail-offer" placeholder="e.g. 20% off next visit">
       </div>
       <div class="field-group">
-        <label class="field-label">When to send</label>
-        <select id="event-detail-send" class="field-input">
-          <option value="0">On the event day</option>
-          <option value="1">1 day before</option>
-          <option value="3">3 days before</option>
-          <option value="7">1 week before</option>
-          <option value="14" selected>2 weeks before</option>
-        </select>
+        <label class="field-label">When to send (Pacific Time - PST/PDT)</label>
+        <input type="datetime-local" id="event-detail-send-at" class="field-input">
+        <p class="field-hint">Pick the exact date and time in Pacific Time.</p>
       </div>
       <div class="channel-toggles">
         <div class="toggle-row">
@@ -1864,6 +1887,11 @@ app.get("/pro.js", (req, res) => {
           return d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
         } catch (_) { return iso; }
       }
+      function defaultSendAtLocal(eventDateIso) {
+        if (!eventDateIso || !/^\\d{4}-\\d{2}-\\d{2}$/.test(eventDateIso)) return "";
+        // Default to 10:00 local Pacific time on the event date.
+        return eventDateIso + "T10:00";
+      }
       el.innerHTML = events.slice(0, 14).map(function(ev) {
         var eventDateStr = fmtDate(ev.sendDate);
         var emoji = eventEmoji[ev.key] || "📅";
@@ -1872,7 +1900,7 @@ app.get("/pro.js", (req, res) => {
           '<div class="event-emoji">' + emoji + '</div>' +
           '<div class="event-info"><div class="event-name">' + ev.name + '</div><div class="event-date">' + eventDateStr + '</div></div>' +
           '<div class="event-actions">' +
-          '<button type="button" class="btn btn-confirm event-confirm" data-key="' + ev.key + '" data-year="' + y + '" data-name="' + (ev.name || "").replace(/"/g, "&quot;") + '" data-date="' + eventDateStr.replace(/"/g, "&quot;") + '">Confirm</button>' +
+          '<button type="button" class="btn btn-confirm event-confirm" data-key="' + ev.key + '" data-year="' + y + '" data-name="' + (ev.name || "").replace(/"/g, "&quot;") + '" data-date="' + eventDateStr.replace(/"/g, "&quot;") + '" data-event-date="' + (ev.sendDate || "") + '">Confirm</button>' +
           '<button type="button" class="btn btn-skip event-skip" data-key="' + ev.key + '" data-year="' + y + '">Skip</button>' +
           '<button type="button" class="btn btn-undo event-undo" data-key="' + ev.key + '" data-year="' + y + '" style="display:none">Undo</button>' +
           '</div></div>';
@@ -1881,7 +1909,7 @@ app.get("/pro.js", (req, res) => {
       var panelTitle = document.getElementById("event-detail-title");
       var panelMessage = document.getElementById("event-detail-message");
       var panelOffer = document.getElementById("event-detail-offer");
-      var panelSend = document.getElementById("event-detail-send");
+      var panelSendAt = document.getElementById("event-detail-send-at");
       var panelPrompt = document.getElementById("event-detail-prompt");
       var panelMsg = document.getElementById("event-detail-msg");
       el.querySelectorAll(".event-confirm").forEach(function(btn) {
@@ -1891,6 +1919,7 @@ app.get("/pro.js", (req, res) => {
           var year = btn.getAttribute("data-year");
           var name = btn.getAttribute("data-name") || key.replace(/_/g, " ");
           var dateStr = btn.getAttribute("data-date") || "";
+          var eventDateIso = btn.getAttribute("data-event-date") || "";
           panel.dataset.key = key;
           panel.dataset.year = year;
           panel.dataset.eventName = name;
@@ -1898,7 +1927,7 @@ app.get("/pro.js", (req, res) => {
           panelTitle.textContent = name + (dateStr ? " – " + dateStr : "");
           panelMessage.value = "";
           panelOffer.value = "";
-          panelSend.value = "14";
+          if (panelSendAt) panelSendAt.value = defaultSendAtLocal(eventDateIso);
           panelPrompt.value = "";
           panelMsg.textContent = "";
           panel.classList.add("visible");
@@ -1911,7 +1940,7 @@ app.get("/pro.js", (req, res) => {
             .then(function(c) {
               if (c && c.messageText) panelMessage.value = c.messageText;
               if (c && c.offerText) panelOffer.value = c.offerText;
-              if (c && c.sendDaysBefore !== undefined) panelSend.value = String(c.sendDaysBefore);
+              if (panelSendAt && c && c.sendAtLocal) panelSendAt.value = c.sendAtLocal;
               if (sendEmailEl && c && c.sendEmail !== undefined) sendEmailEl.checked = c.sendEmail !== false;
               if (sendSmsEl && c && c.sendSms !== undefined) sendSmsEl.checked = c.sendSms !== false;
               if (c && c.status === "confirmed") { btn.textContent = "Edit"; btn.classList.add("event-edit"); }
@@ -1989,8 +2018,8 @@ app.get("/pro.js", (req, res) => {
       var year = eventDetailPanel.dataset.year;
       var message = document.getElementById("event-detail-message") ? document.getElementById("event-detail-message").value : "";
       var offer = document.getElementById("event-detail-offer") ? document.getElementById("event-detail-offer").value : "";
-      var sendEl = document.getElementById("event-detail-send");
-      var sendDaysBefore = sendEl ? parseInt(sendEl.value, 10) : 14;
+      var sendAtEl = document.getElementById("event-detail-send-at");
+      var sendAtLocal = sendAtEl ? String(sendAtEl.value || "").trim() : "";
       var sendEmailEl = document.getElementById("event-detail-send-email");
       var sendSmsEl = document.getElementById("event-detail-send-sms");
       var sendEmail = sendEmailEl ? sendEmailEl.checked : true;
@@ -2001,7 +2030,7 @@ app.get("/pro.js", (req, res) => {
       fetch("/pro/events/" + key + "/" + year + "?accountId=" + encodeURIComponent(accountId), {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ accountId: accountId, status: "confirmed", messageText: message, offerText: offer, sendDaysBefore: sendDaysBefore, sendEmail: sendEmail, sendSms: sendSms })
+        body: JSON.stringify({ accountId: accountId, status: "confirmed", messageText: message, offerText: offer, sendAtLocal: sendAtLocal, sendEmail: sendEmail, sendSms: sendSms })
       }).then(function(r) { return r.json(); }).then(function() {
         if (msgEl) { msgEl.textContent = "Saved and confirmed."; msgEl.className = "pro-msg ok"; }
         eventDetailPanel.classList.remove("visible");

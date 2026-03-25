@@ -138,7 +138,14 @@ export function startScheduler(appLogger = console) {
   const handle = setInterval(async () => {
     const { getEnabledBusinesses, DEFAULT_CONTACT } = await import("./businesses.js");
     let businesses = await getEnabledBusinesses();
-    if (!businesses.length && process.env.AUTO_REPLY_ACCOUNT_ID && process.env.AUTO_REPLY_LOCATION_ID) {
+    // Legacy env fallback is only for local file mode. In DB mode, per-business
+    // toggle state is authoritative and we should not bypass it.
+    if (
+      !businesses.length &&
+      !db.useDb() &&
+      process.env.AUTO_REPLY_ACCOUNT_ID &&
+      process.env.AUTO_REPLY_LOCATION_ID
+    ) {
       businesses = [
         {
           accountId: process.env.AUTO_REPLY_ACCOUNT_ID,
