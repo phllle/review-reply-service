@@ -287,6 +287,79 @@ export async function sendEventCampaignForAccount(accountId, eventKey, eventYear
   return { sent };
 }
 
+/**
+ * Send one test email and/or SMS using saved event campaign copy (does not mark the campaign sent).
+ * Recipients must be passed explicitly or fall back to env ALERT_EMAIL / ALERT_PHONE from the route.
+ */
+export async function sendProEventCampaignTest(accountId, eventKey, eventYear, opts = {}) {
+  const { testEmail, testPhone, firstName = "Test", logger = console } = opts;
+  if (!db.useDb()) throw new Error("Database required");
+  const business = await getBusiness(accountId);
+  if (!business?.isPro) throw new Error("Replyr Pro required");
+  const campaign = await db.getProEventCampaign(accountId, eventKey, eventYear);
+  if (!campaign || !String(campaign.messageText || "").trim()) {
+    throw new Error("Save the event message first (confirm or save so the campaign body exists in the database).");
+  }
+  const eventRule = EVENT_RULES.find((e) => e.key === eventKey);
+  const eventName = eventRule ? eventRule.name : eventKey.replace(/_/g, " ");
+  const businessName = business.name || "This business";
+  const replyTo = business.contact?.match(/\S+@\S+/) ? business.contact : undefined;
+  const rawBody = (campaign.messageText || "").replace(/\{\{offer\}\}/gi, campaign.offerText || "");
+  const personalized = rawBody.replace(/\{\{first_name\}\}/gi, firstName || "there");
+  const subject = `[TEST] ${businessName} – ${eventName}`;
+  const emailIntro = "This is a test send from Replyr — your customer list was not messaged.\n\n";
+  const emailBody = emailIntro + personalized;
+  const sendEmail = campaign.sendEmail !== false;
+  const sendSms = campaign.sendSms !== false;
+  const footer = " Reply STOP to opt out.";
+  let emailSent = false;
+  let smsSent = false;
+  const emailTo = (testEmail || "").trim();
+  const phoneTo = (testPhone || "").trim();
+  if (sendEmail && emailTo) {
+    try {
+      await sendCampaignEmail({
+        to: emailTo,
+        subject,
+        bodyContent: emailBody,
+        businessName,
+        accountId,
+        replyTo
+      });
+      emailSent = true;
+      logger?.info?.({ accountId, eventKey, emailTo }, "Event test email sent");
+    } catch (err) {
+      logger?.error?.({ err, accountId }, "Event test email failed");
+      throw err;
+    }
+  }
+  if (sendSms && phoneTo) {
+    if (!isSmsConfigured()) {
+      if (!emailSent) {
+        throw new Error(
+          "SMS test requested but campaign SMS is not configured. Set CAMPAIGN_SMS_ENABLED=true and Twilio env vars, or add email= for an email-only test."
+        );
+      }
+    } else {
+      const smsBody = "(TEST) " + personalized.replace(/\s+/g, " ").trim() + footer;
+      try {
+        await sendCampaignSms(phoneTo, smsBody);
+        smsSent = true;
+        logger?.info?.({ accountId, eventKey, phoneTo }, "Event test SMS sent");
+      } catch (err) {
+        logger?.error?.({ err, accountId }, "Event test SMS failed");
+        throw err;
+      }
+    }
+  }
+  if (!emailSent && !smsSent) {
+    throw new Error(
+      "No test sent: turn on Send email and/or SMS on the event, save message text, and pass email=… and/or to=… (or set ALERT_EMAIL / ALERT_PHONE defaults)."
+    );
+  }
+  return { emailSent, smsSent, subject };
+}
+
 /** Send one-off campaign (called by scheduler). campaignRow may include send_email, send_sms. */
 export async function sendOneOffCampaign(id, accountId, subject, body, logger = console, campaignRow = {}) {
   const business = await getBusiness(accountId);
