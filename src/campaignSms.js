@@ -27,6 +27,10 @@ function isSmsConfigured() {
 export function getCampaignSmsDiagnostics() {
   const { accountSid, authToken, fromNumber } = getTwilioEnv();
   const rawFlag = process.env.CAMPAIGN_SMS_ENABLED;
+  // Show any env key that contains "campaign" or "sms" (case-insensitive) to catch typos.
+  const relatedKeys = Object.keys(process.env).filter(
+    (k) => /campaign|sms/i.test(k)
+  );
   return {
     campaignSmsEnabledVarPresent: rawFlag != null && String(rawFlag).length > 0,
     campaignSmsEnabledParsedTrue: parseCampaignSmsEnabled(),
@@ -34,7 +38,8 @@ export function getCampaignSmsDiagnostics() {
     twilioAuthTokenSet: authToken.length > 0,
     twilioFromNumberSet: fromNumber.length > 0,
     twilioFromLooksE164: /^\+\d{10,15}$/.test(fromNumber),
-    isSmsConfigured: isSmsConfigured()
+    isSmsConfigured: isSmsConfigured(),
+    relatedEnvKeys: relatedKeys
   };
 }
 
