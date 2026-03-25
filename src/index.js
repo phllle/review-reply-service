@@ -10,7 +10,7 @@ import pinoHttp from "pino-http";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 import * as db from "./db.js";
-import { getAuthUrl, handleOAuthCallback, getTokenStatus, replyToReview, listAccounts, listLocations, listReviews } from "./google.js";
+import { getAuthUrl, handleOAuthCallback, getTokenStatus, replyToReview, listAccounts, listLocations, listReviews, validateState } from "./google.js";
 import { processPendingReviews, startScheduler, getReplyText, addRepliedReviewId } from "./auto.js";
 import { getAllBusinesses, getBusiness, upsertBusiness, getAccountIdByStripeCustomerId } from "./businesses.js";
 import { replaceProContacts, getProContactsCount, getProContactsList, setProContactUnsubscribed } from "./proContacts.js";
@@ -1121,8 +1121,12 @@ app.get("/auth/google", async (req, res, next) => {
 app.get("/auth/google/callback", async (req, res, next) => {
   try {
     const code = req.query.code;
+    const state = req.query.state;
     if (!code) {
       return res.status(400).json({ error: "Missing code" });
+    }
+    if (!validateState(state?.toString())) {
+      return res.status(400).json({ error: "Invalid or expired OAuth state. Please try connecting again." });
     }
     let accountId, accountName;
     try {
