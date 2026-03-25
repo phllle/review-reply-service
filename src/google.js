@@ -1,4 +1,5 @@
 import { OAuth2Client } from "google-auth-library";
+import crypto from "crypto";
 import fs from "fs/promises";
 import path from "path";
 import { fileURLToPath } from "url";
@@ -7,6 +8,25 @@ import * as db from "./db.js";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const TOKENS_PATH = path.resolve(__dirname, "..", "tokens.json");
+
+// In-memory CSRF state store (state → timestamp). TTL: 10 minutes.
+const _oauthStates = new Map();
+const _STATE_TTL_MS = 10 * 60 * 1000;
+
+function generateState() {
+  const state = crypto.randomBytes(32).toString("base64url");
+  _oauthStates.set(state, Date.now());
+  for (const [s, ts] of _oauthStates) {
+    if (Date.now() - ts > _STATE_TTL_MS) _oauthStates.delete(s);
+  }
+  return state;
+}
+
+export function validateState(state) {
+  if (!state || !_oauthStates.has(state)) return false;
+  _oauthStates.delete(state);
+  return true;
+}
 
 function requiredEnv(name) {
   const value = process.env[name];
@@ -63,9 +83,9 @@ function getTokenDataForAccount(tokens, accountId) {
 
 function createOAuthClient() {
   const client = new OAuth2Client({
-    clientId: requiredEnv("GOOGLE_CLIENT_ID"),
-    clientSecret: requiredEnv("GOOGLE_CLIENT_SECRET"),
-    redirectUri: requiredEnv("GOOGLE_REDIRECT_URI")
+    clientId: requiredEnv("GOOGLE_CLIENT_ID").trim(),
+    clientSecret: requiredEnv("GOOGLE_CLIENT_SECRET").trim(),
+    redirectUri: requiredEnv("GOOGLE_REDIRECT_URI").trim()
   });
   return client;
 }
@@ -76,7 +96,8 @@ export async function getAuthUrl() {
   const url = client.generateAuthUrl({
     access_type: "offline",
     prompt: "consent",
-    scope: scopes
+    scope: scopes,
+    state: generateState()
   });
   return url;
 }
