@@ -137,6 +137,11 @@ export async function init() {
   } catch (err) {
     if (err.code !== "42701") throw err;
   }
+  try {
+    await client.query("ALTER TABLE pro_event_campaigns ADD COLUMN send_at_local TEXT");
+  } catch (err) {
+    if (err.code !== "42701") throw err;
+  }
   // Pro one-off campaigns (business picks date, subject, body)
   await client.query(`
     CREATE TABLE IF NOT EXISTS pro_one_off_campaigns (
@@ -464,7 +469,7 @@ export async function setProBirthdaySettings(accountId, settings) {
 // --- Pro event campaigns ---
 export async function getProEventCampaign(accountId, eventKey, eventYear) {
   const res = await getPool().query(
-    "SELECT status, message_text, offer_text, send_days_before, send_email, send_sms, confirmed_at, sent_at FROM pro_event_campaigns WHERE account_id = $1 AND event_key = $2 AND event_year = $3",
+    "SELECT status, message_text, offer_text, send_days_before, send_at_local, send_email, send_sms, confirmed_at, sent_at FROM pro_event_campaigns WHERE account_id = $1 AND event_key = $2 AND event_year = $3",
     [accountId, eventKey, eventYear]
   );
   const row = res.rows[0];
@@ -474,6 +479,7 @@ export async function getProEventCampaign(accountId, eventKey, eventYear) {
     messageText: row.message_text ?? "",
     offerText: row.offer_text ?? "",
     sendDaysBefore: row.send_days_before ?? 14,
+    sendAtLocal: row.send_at_local ?? null,
     sendEmail: row.send_email !== false,
     sendSms: row.send_sms !== false,
     confirmedAt: row.confirmed_at ? new Date(row.confirmed_at).toISOString() : null,
@@ -482,22 +488,22 @@ export async function getProEventCampaign(accountId, eventKey, eventYear) {
 }
 
 export async function upsertProEventCampaign(accountId, eventKey, eventYear, data) {
-  const { status, messageText = "", offerText = "", sendDaysBefore, sendEmail, sendSms, confirmedAt, sentAt } = data;
+  const { status, messageText = "", offerText = "", sendDaysBefore, sendAtLocal, sendEmail, sendSms, confirmedAt, sentAt } = data;
   const days = sendDaysBefore !== undefined ? Number(sendDaysBefore) : 14;
   const sendEmailVal = sendEmail !== undefined ? !!sendEmail : true;
   const sendSmsVal = sendSms !== undefined ? !!sendSms : true;
   await getPool().query(
-    `INSERT INTO pro_event_campaigns (account_id, event_key, event_year, status, message_text, offer_text, send_days_before, send_email, send_sms, confirmed_at, sent_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-     ON CONFLICT (account_id, event_key, event_year) DO UPDATE SET status = $4, message_text = $5, offer_text = $6, send_days_before = $7, send_email = $8, send_sms = $9, confirmed_at = $10, sent_at = $11`,
-    [accountId, eventKey, eventYear, status || "pending", messageText, offerText, days, sendEmailVal, sendSmsVal, confirmedAt || null, sentAt || null]
+    `INSERT INTO pro_event_campaigns (account_id, event_key, event_year, status, message_text, offer_text, send_days_before, send_at_local, send_email, send_sms, confirmed_at, sent_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+     ON CONFLICT (account_id, event_key, event_year) DO UPDATE SET status = $4, message_text = $5, offer_text = $6, send_days_before = $7, send_at_local = $8, send_email = $9, send_sms = $10, confirmed_at = $11, sent_at = $12`,
+    [accountId, eventKey, eventYear, status || "pending", messageText, offerText, days, sendAtLocal || null, sendEmailVal, sendSmsVal, confirmedAt || null, sentAt || null]
   );
   return getProEventCampaign(accountId, eventKey, eventYear);
 }
 
 export async function getProEventCampaignsDueToSend() {
   const res = await getPool().query(
-    `SELECT account_id, event_key, event_year, send_days_before, send_email, send_sms FROM pro_event_campaigns
+    `SELECT account_id, event_key, event_year, send_days_before, send_at_local, send_email, send_sms FROM pro_event_campaigns
      WHERE status = 'confirmed' AND sent_at IS NULL`
   );
   return res.rows.map((r) => ({
@@ -505,6 +511,7 @@ export async function getProEventCampaignsDueToSend() {
     eventKey: r.event_key,
     eventYear: r.event_year,
     sendDaysBefore: r.send_days_before ?? 14,
+    sendAtLocal: r.send_at_local ?? null,
     sendEmail: r.send_email !== false,
     sendSms: r.send_sms !== false
   }));
