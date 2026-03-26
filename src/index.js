@@ -2034,6 +2034,42 @@ app.get("/pro.js", (req, res) => {
           }).catch(function() { alert("Undo failed"); });
         };
       });
+      function applyEventRowStatusFromCampaign(row, c) {
+        if (!row || !c || c.error) return;
+        var confirmBtn = row.querySelector(".event-confirm");
+        var skipBtn = row.querySelector(".event-skip");
+        var undoBtn = row.querySelector(".event-undo");
+        if (!confirmBtn) return;
+        if (c.sentAt) {
+          confirmBtn.textContent = "Sent";
+          confirmBtn.disabled = true;
+          confirmBtn.classList.remove("event-edit");
+          if (skipBtn) skipBtn.style.display = "none";
+          return;
+        }
+        if (c.status === "confirmed") {
+          confirmBtn.textContent = "Edit";
+          confirmBtn.classList.add("event-edit");
+          confirmBtn.disabled = false;
+        }
+        if (c.status === "skipped") {
+          if (skipBtn) { skipBtn.textContent = "Skipped"; skipBtn.disabled = true; }
+          if (undoBtn) undoBtn.style.display = "";
+        }
+      }
+      el.querySelectorAll(".event-row").forEach(function(row) {
+        var confirmBtn = row.querySelector(".event-confirm");
+        if (!confirmBtn) return;
+        var key = confirmBtn.getAttribute("data-key");
+        var year = confirmBtn.getAttribute("data-year");
+        fetch("/pro/events/" + key + "/" + year + "?accountId=" + encodeURIComponent(accountId))
+          .then(function(r) { return r.json().then(function(c) { return { ok: r.ok, c: c }; }); })
+          .then(function(x) {
+            if (!x.ok) return;
+            applyEventRowStatusFromCampaign(row, x.c);
+          })
+          .catch(function() {});
+      });
     });
   }
   loadEvents();
@@ -2083,7 +2119,12 @@ app.get("/pro.js", (req, res) => {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ accountId: accountId, status: "confirmed", messageText: message, offerText: offer, sendAtLocal: sendAtLocal, sendEmail: sendEmail, sendSms: sendSms })
-      }).then(function(r) { return r.json(); }).then(function() {
+      }).then(function(r) {
+        return r.json().catch(function() { return {}; }).then(function(data) { return { ok: r.ok, data: data }; });
+      }).then(function(x) {
+        if (!x.ok) {
+          throw new Error((x.data && x.data.error) || "Save failed.");
+        }
         if (msgEl) { msgEl.textContent = "Saved and confirmed."; msgEl.className = "pro-msg ok"; }
         eventDetailPanel.classList.remove("visible");
         if (eventDetailPanel._confirmBtn) {
@@ -2091,8 +2132,8 @@ app.get("/pro.js", (req, res) => {
           eventDetailPanel._confirmBtn.disabled = false;
           eventDetailPanel._confirmBtn.classList.add("event-edit");
         }
-      }).catch(function() {
-        if (msgEl) { msgEl.textContent = "Save failed."; msgEl.className = "pro-msg err"; }
+      }).catch(function(err) {
+        if (msgEl) { msgEl.textContent = (err && err.message) ? err.message : "Save failed."; msgEl.className = "pro-msg err"; }
       }).finally(function() { eventDetailSave.disabled = false; });
     };
   }
