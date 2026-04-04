@@ -62,6 +62,11 @@ export async function init() {
   } catch (err) {
     if (err.code !== "42701") throw err;
   }
+  try {
+    await client.query("ALTER TABLE businesses ADD COLUMN pro_tier TEXT NOT NULL DEFAULT 'starter'");
+  } catch (err) {
+    if (err.code !== "42701") throw err;
+  }
   // Replyr Pro: contacts per business (all CSV rows; email optional for storage, required for sending)
   await client.query(`
     CREATE TABLE IF NOT EXISTS pro_contacts (
@@ -175,6 +180,15 @@ export async function init() {
   } catch (err) {
     if (err.code !== "42701") throw err;
   }
+  await client.query(`
+    CREATE TABLE IF NOT EXISTS pro_sms_usage (
+      account_id TEXT NOT NULL,
+      month_key TEXT NOT NULL,
+      sms_count INTEGER NOT NULL DEFAULT 0,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (account_id, month_key)
+    );
+  `);
 }
 
 // --- Tokens (keyed by accountId) ---
@@ -205,7 +219,7 @@ export async function writeTokens(data) {
 
 export async function getAllBusinessesFromDb() {
   const res = await getPool().query(
-    "SELECT account_id, location_id, name, contact, auto_reply_enabled, interval_minutes, updated_at, free_reply_used, trial_ends_at, subscribed_at, stripe_customer_id, is_pro FROM businesses"
+    "SELECT account_id, location_id, name, contact, auto_reply_enabled, interval_minutes, updated_at, free_reply_used, trial_ends_at, subscribed_at, stripe_customer_id, is_pro, pro_tier FROM businesses"
   );
   const out = {};
   for (const row of res.rows) {
@@ -221,7 +235,8 @@ export async function getAllBusinessesFromDb() {
       trialEndsAt: row.trial_ends_at ? new Date(row.trial_ends_at).toISOString() : null,
       subscribedAt: row.subscribed_at ? new Date(row.subscribed_at).toISOString() : null,
       stripeCustomerId: row.stripe_customer_id ?? null,
-      isPro: row.is_pro ?? false
+      isPro: row.is_pro ?? false,
+      proTier: row.pro_tier || "starter"
     };
   }
   return out;
@@ -229,7 +244,7 @@ export async function getAllBusinessesFromDb() {
 
 export async function getBusinessFromDb(accountId) {
   const res = await getPool().query(
-    "SELECT account_id, location_id, name, contact, auto_reply_enabled, interval_minutes, updated_at, free_reply_used, trial_ends_at, subscribed_at, stripe_customer_id, is_pro FROM businesses WHERE account_id = $1",
+    "SELECT account_id, location_id, name, contact, auto_reply_enabled, interval_minutes, updated_at, free_reply_used, trial_ends_at, subscribed_at, stripe_customer_id, is_pro, pro_tier FROM businesses WHERE account_id = $1",
     [accountId]
   );
   const row = res.rows[0];
@@ -246,7 +261,8 @@ export async function getBusinessFromDb(accountId) {
     trialEndsAt: row.trial_ends_at ? new Date(row.trial_ends_at).toISOString() : null,
     subscribedAt: row.subscribed_at ? new Date(row.subscribed_at).toISOString() : null,
     stripeCustomerId: row.stripe_customer_id ?? null,
-    isPro: row.is_pro ?? false
+    isPro: row.is_pro ?? false,
+    proTier: row.pro_tier || "starter"
   };
 }
 
@@ -257,6 +273,7 @@ export async function upsertBusinessInDb(config) {
   const subscribedAt = config.subscribedAt !== undefined ? config.subscribedAt : existing?.subscribedAt ?? null;
   const stripeCustomerId = config.stripeCustomerId !== undefined ? config.stripeCustomerId : existing?.stripeCustomerId ?? null;
   const isPro = config.isPro !== undefined ? config.isPro : existing?.isPro ?? false;
+  const proTier = config.proTier !== undefined ? config.proTier : existing?.proTier ?? "starter";
   const row = {
     account_id: config.accountId,
     location_id: config.locationId,
@@ -269,14 +286,15 @@ export async function upsertBusinessInDb(config) {
     trial_ends_at: trialEndsAt,
     subscribed_at: subscribedAt,
     stripe_customer_id: stripeCustomerId,
-    is_pro: isPro
+    is_pro: isPro,
+    pro_tier: proTier || "starter"
   };
   await getPool().query(
-    `INSERT INTO businesses (account_id, location_id, name, contact, auto_reply_enabled, interval_minutes, updated_at, free_reply_used, trial_ends_at, subscribed_at, stripe_customer_id, is_pro)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+    `INSERT INTO businesses (account_id, location_id, name, contact, auto_reply_enabled, interval_minutes, updated_at, free_reply_used, trial_ends_at, subscribed_at, stripe_customer_id, is_pro, pro_tier)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
      ON CONFLICT (account_id) DO UPDATE SET
-       location_id = $2, name = $3, contact = $4, auto_reply_enabled = $5, interval_minutes = $6, updated_at = $7, free_reply_used = $8, trial_ends_at = $9, subscribed_at = $10, stripe_customer_id = $11, is_pro = $12`,
-    [row.account_id, row.location_id, row.name, row.contact, row.auto_reply_enabled, row.interval_minutes, row.updated_at, row.free_reply_used, row.trial_ends_at, row.subscribed_at, row.stripe_customer_id, row.is_pro]
+       location_id = $2, name = $3, contact = $4, auto_reply_enabled = $5, interval_minutes = $6, updated_at = $7, free_reply_used = $8, trial_ends_at = $9, subscribed_at = $10, stripe_customer_id = $11, is_pro = $12, pro_tier = $13`,
+    [row.account_id, row.location_id, row.name, row.contact, row.auto_reply_enabled, row.interval_minutes, row.updated_at, row.free_reply_used, row.trial_ends_at, row.subscribed_at, row.stripe_customer_id, row.is_pro, row.pro_tier]
   );
   return {
     accountId: row.account_id,
@@ -290,7 +308,8 @@ export async function upsertBusinessInDb(config) {
     trialEndsAt: row.trial_ends_at ? new Date(row.trial_ends_at).toISOString() : null,
     subscribedAt: row.subscribed_at ? new Date(row.subscribed_at).toISOString() : null,
     stripeCustomerId: row.stripe_customer_id ?? null,
-    isPro: row.is_pro ?? false
+    isPro: row.is_pro ?? false,
+    proTier: row.pro_tier || "starter"
   };
 }
 
@@ -568,4 +587,27 @@ export async function getProContactsForSending(accountId) {
     birthday: r.birthday ?? "",
     phone: (r.phone || "").trim() || null
   }));
+}
+
+// --- Pro SMS usage metering (per account, per month) ---
+export async function getProSmsUsage(accountId, monthKey) {
+  const res = await getPool().query(
+    "SELECT sms_count FROM pro_sms_usage WHERE account_id = $1 AND month_key = $2",
+    [accountId, monthKey]
+  );
+  return Number(res.rows[0]?.sms_count || 0);
+}
+
+export async function incrementProSmsUsage(accountId, monthKey, amount = 1) {
+  const inc = Math.max(0, Number(amount) || 0);
+  if (!inc) return getProSmsUsage(accountId, monthKey);
+  const res = await getPool().query(
+    `INSERT INTO pro_sms_usage (account_id, month_key, sms_count, updated_at)
+     VALUES ($1, $2, $3, NOW())
+     ON CONFLICT (account_id, month_key) DO UPDATE
+     SET sms_count = pro_sms_usage.sms_count + $3, updated_at = NOW()
+     RETURNING sms_count`,
+    [accountId, monthKey, inc]
+  );
+  return Number(res.rows[0]?.sms_count || 0);
 }

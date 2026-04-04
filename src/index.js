@@ -28,6 +28,7 @@ import {
 } from "./proCampaigns.js";
 import multer from "multer";
 import Stripe from "stripe";
+import { getCurrentMonthKey, getIncludedSmsForTier, normalizeProTier } from "./proPlan.js";
 
 const app = express();
 const logger = pino({ level: process.env.LOG_LEVEL || "info" });
@@ -300,17 +301,40 @@ async function stripeWebhook(req, res) {
     return res.status(400).send("Webhook signature verification failed");
   }
   const stripeProPriceId = (process.env.STRIPE_PRO_PRICE_ID || "").trim();
+  const stripeProStarterPriceId = (process.env.STRIPE_PRO_STARTER_PRICE_ID || "").trim();
+  const stripeProGrowthPriceId = (process.env.STRIPE_PRO_GROWTH_PRICE_ID || "").trim();
+  const stripeProScalePriceId = (process.env.STRIPE_PRO_SCALE_PRICE_ID || "").trim();
+  const allProPriceIds = [
+    stripeProPriceId,
+    stripeProStarterPriceId,
+    stripeProGrowthPriceId,
+    stripeProScalePriceId
+  ].filter(Boolean);
 
   function subscriptionHasProPrice(subscription) {
-    if (!stripeProPriceId || !subscription?.items?.data) return false;
-    return subscription.items.data.some((item) => (item.price?.id || item.price) === stripeProPriceId);
+    if (!allProPriceIds.length || !subscription?.items?.data) return false;
+    return subscription.items.data.some((item) => allProPriceIds.includes(item.price?.id || item.price));
   }
 
-  async function applySubscriptionState(accountId, subscribedAt, isPro) {
+  function getProTierFromSubscription(subscription) {
+    const ids = (subscription?.items?.data || []).map((item) => item.price?.id || item.price).filter(Boolean);
+    if (stripeProScalePriceId && ids.includes(stripeProScalePriceId)) return "scale";
+    if (stripeProGrowthPriceId && ids.includes(stripeProGrowthPriceId)) return "growth";
+    if (stripeProStarterPriceId && ids.includes(stripeProStarterPriceId)) return "starter";
+    if (stripeProPriceId && ids.includes(stripeProPriceId)) return "starter";
+    return "starter";
+  }
+
+  async function applySubscriptionState(accountId, subscribedAt, isPro, proTier) {
     if (!accountId) return;
     const business = await getBusiness(accountId);
     if (business) {
-      await upsertBusiness({ ...business, subscribedAt: subscribedAt || null, isPro: !!isPro });
+      await upsertBusiness({
+        ...business,
+        subscribedAt: subscribedAt || null,
+        isPro: !!isPro,
+        ...(isPro ? { proTier: proTier || business.proTier || "starter" } : {})
+      });
     }
   }
 
@@ -320,11 +344,13 @@ async function stripeWebhook(req, res) {
       const accountId = session.client_reference_id;
       const customerId = typeof session.customer === "string" ? session.customer : (session.customer?.id ?? null);
       let isPro = false;
-      if (stripeProPriceId && session.subscription) {
+      let proTier = "starter";
+      if (allProPriceIds.length && session.subscription) {
         try {
           const stripe = new Stripe(process.env.STRIPE_SECRET_KEY || "");
           const sub = await stripe.subscriptions.retrieve(session.subscription, { expand: ["items.data.price"] });
           isPro = subscriptionHasProPrice(sub);
+          proTier = getProTierFromSubscription(sub);
         } catch (e) {
           req.log?.warn({ err: e.message }, "Could not retrieve subscription for Pro check");
         }
@@ -336,9 +362,10 @@ async function stripeWebhook(req, res) {
             ...business,
             subscribedAt: new Date().toISOString(),
             stripeCustomerId: customerId,
-            isPro
+            isPro,
+            ...(isPro ? { proTier } : {})
           });
-          req.log?.info({ accountId, customerId, isPro }, "Stripe: subscription recorded");
+          req.log?.info({ accountId, customerId, isPro, proTier }, "Stripe: subscription recorded");
         }
       }
     } else if (event.type === "customer.subscription.updated") {
@@ -346,9 +373,10 @@ async function stripeWebhook(req, res) {
       const customerId = typeof subscription.customer === "string" ? subscription.customer : subscription.customer?.id;
       const accountId = customerId ? await getAccountIdByStripeCustomerId(customerId) : null;
       const isPro = subscriptionHasProPrice(subscription);
+      const proTier = isPro ? getProTierFromSubscription(subscription) : "starter";
       const subscribedAt = subscription.status === "active" ? new Date().toISOString() : null;
-      await applySubscriptionState(accountId, subscribedAt, isPro);
-      if (accountId) req.log?.info({ accountId, isPro }, "Stripe: subscription updated");
+      await applySubscriptionState(accountId, subscribedAt, isPro, proTier);
+      if (accountId) req.log?.info({ accountId, isPro, proTier }, "Stripe: subscription updated");
     } else if (event.type === "customer.subscription.deleted") {
       const subscription = event.data.object;
       const customerId = typeof subscription.customer === "string" ? subscription.customer : subscription.customer?.id;
@@ -370,17 +398,39 @@ async function stripeWebhook(req, res) {
   res.status(200).send();
 }
 
-// Create Stripe Checkout Session (so we can pass accountId and get it back in webhook). Body: { accountId, plan?: 'pro' }.
+// Create Stripe Checkout Session (so we can pass accountId and get it back in webhook).
+// Body: { accountId, plan?: '', 'pro', 'pro_starter', 'pro_growth', 'pro_scale' }.
 app.post("/create-checkout-session", async (req, res, next) => {
   try {
     const { accountId, plan } = req.body || {};
     const secret = process.env.STRIPE_SECRET_KEY;
-    const isPro = plan === "pro";
-    const priceId = isPro ? (process.env.STRIPE_PRO_PRICE_ID || "").trim() : process.env.STRIPE_PRICE_ID;
+    const stripeCorePriceId = (process.env.STRIPE_PRICE_ID || "").trim();
+    const stripeProPriceId = (process.env.STRIPE_PRO_PRICE_ID || "").trim(); // legacy fallback
+    const stripeProStarterPriceId = (process.env.STRIPE_PRO_STARTER_PRICE_ID || "").trim();
+    const stripeProGrowthPriceId = (process.env.STRIPE_PRO_GROWTH_PRICE_ID || "").trim();
+    const stripeProScalePriceId = (process.env.STRIPE_PRO_SCALE_PRICE_ID || "").trim();
+    const requestedPlan = String(plan || "").trim().toLowerCase();
+    const isPro = requestedPlan === "pro" || requestedPlan.startsWith("pro_");
+    let selectedTier = null;
+    let priceId = stripeCorePriceId;
+    if (isPro) {
+      if (requestedPlan === "pro_scale") {
+        selectedTier = "scale";
+        priceId = stripeProScalePriceId || stripeProPriceId;
+      } else if (requestedPlan === "pro_growth") {
+        selectedTier = "growth";
+        priceId = stripeProGrowthPriceId || stripeProPriceId;
+      } else {
+        selectedTier = "starter";
+        priceId = stripeProStarterPriceId || stripeProPriceId;
+      }
+    }
     const baseUrl = (process.env.BASE_URL || "").trim() || `${req.protocol}://${req.get("host") || ""}`;
     if (!secret || !priceId) {
       return res.status(503).json({
-        error: isPro ? "Replyr Pro is not configured (STRIPE_PRO_PRICE_ID). Contact us." : "Stripe not configured. Use the Subscribe link below."
+        error: isPro
+          ? "Replyr Pro tier pricing is not configured (set STRIPE_PRO_STARTER_PRICE_ID / STRIPE_PRO_GROWTH_PRICE_ID / STRIPE_PRO_SCALE_PRICE_ID)."
+          : "Stripe not configured. Use the Subscribe link below."
       });
     }
     if (!accountId || typeof accountId !== "string") {
@@ -395,6 +445,7 @@ app.post("/create-checkout-session", async (req, res, next) => {
       mode: "subscription",
       line_items: [{ price: priceId, quantity: 1 }],
       client_reference_id: accountId,
+      metadata: isPro ? { pro_tier: selectedTier || "starter" } : undefined,
       success_url: `${baseUrl.replace(/\/$/, "")}/connected?accountId=${encodeURIComponent(accountId)}&subscribed=1`,
       cancel_url: `${baseUrl.replace(/\/$/, "")}/subscribe?accountId=${encodeURIComponent(accountId)}`
     });
@@ -566,8 +617,12 @@ app.get("/connected", async (req, res, next) => {
       ? `<div class="card card-full" id="pro-contacts-section" data-account-id="${escapeHtml(accountId)}" data-is-pro="${isPro ? "1" : "0"}">
   <div class="pro-card-header">
     <div><div class="card-title" style="margin-bottom:4px">Replyr Pro – Customer list</div><div class="card-desc" style="margin-bottom:0">Upload a CSV of customers for future promos and birthday messages.</div></div>
-    <span class="contacts-badge" id="pro-contacts-count">0 contacts</span>
+    <div style="display:flex;flex-direction:column;gap:8px;align-items:flex-end">
+      <span class="contacts-badge" id="pro-contacts-count">0 contacts</span>
+      <span class="contacts-badge" id="pro-sms-usage-badge">SMS this month: --/--</span>
+    </div>
   </div>
+  <p id="pro-sms-usage-msg" class="connected-msg" aria-live="polite" style="margin-top:10px"></p>
   ${isPro
     ? `<div class="field-specs"><strong>Required:</strong> <code>email</code> &nbsp;·&nbsp; <strong>Recommended:</strong> <code>first_name</code> or <code>name</code>, <code>birthday</code> or <code>birth_date</code> (YYYY-MM-DD or MM/DD) &nbsp;·&nbsp; <strong>Optional:</strong> <code>phone</code><br><span style="margin-top:6px;display:inline-block">Max 5MB. Uploading replaces your current list. <a href="/compliance" style="color:var(--accent2);text-decoration:none">Compliance →</a></span></div>
   <label class="csv-zone"><input type="file" id="pro-csv-input" accept=".csv,text/csv,text/plain" aria-label="Choose CSV"> <div class="csv-icon">📂</div><div class="csv-zone-title">Drop your CSV here or click to browse</div><div class="csv-zone-sub">No file chosen · Max 5MB</div></label>
@@ -713,11 +768,16 @@ app.get("/connected", async (req, res, next) => {
 app.get("/subscribe", (req, res) => {
   const subscribeUrl = process.env.SUBSCRIBE_URL || ""; // Stripe Payment Link or Checkout URL
   const contact = process.env.REPLYR_CONTACT || "";
-  const priceLabel = process.env.SUBSCRIBE_PRICE || "Custom"; // e.g. "$15 / month"
-  const proPriceLabel = (process.env.SUBSCRIBE_PRO_PRICE || "").trim() || "Custom"; // e.g. "$29 / month"
-  const stripeProPriceId = (process.env.STRIPE_PRO_PRICE_ID || "").trim();
+  const priceLabel = process.env.SUBSCRIBE_PRICE || "$19 / month";
+  const proStarterPriceLabel = (process.env.SUBSCRIBE_PRO_STARTER_PRICE || "").trim() || "$39 / month";
+  const proGrowthPriceLabel = (process.env.SUBSCRIBE_PRO_GROWTH_PRICE || "").trim() || "$69 / month";
+  const proScalePriceLabel = (process.env.SUBSCRIBE_PRO_SCALE_PRICE || "").trim() || "$149 / month";
+  const stripeProPriceId = (process.env.STRIPE_PRO_PRICE_ID || "").trim(); // legacy fallback
+  const stripeProStarterPriceId = (process.env.STRIPE_PRO_STARTER_PRICE_ID || "").trim();
+  const stripeProGrowthPriceId = (process.env.STRIPE_PRO_GROWTH_PRICE_ID || "").trim();
+  const stripeProScalePriceId = (process.env.STRIPE_PRO_SCALE_PRICE_ID || "").trim();
   const subscribeProUrl = (process.env.SUBSCRIBE_PRO_URL || "").trim(); // Stripe Payment Link for Replyr Pro (e.g. https://buy.stripe.com/...)
-  const hasProPrice = Boolean(stripeProPriceId);
+  const hasProPrice = Boolean(stripeProPriceId || stripeProStarterPriceId || stripeProGrowthPriceId || stripeProScalePriceId);
   const hasProPaymentLink = subscribeProUrl.startsWith("http");
   const hasPro = hasProPrice || hasProPaymentLink;
   const billingPortalUrl = (process.env.STRIPE_CUSTOMER_PORTAL_URL || "").trim();
@@ -768,7 +828,7 @@ app.get("/subscribe", (req, res) => {
       <span class="brand-name">Replyr</span>
     </div>
     <h1>Subscribe</h1>
-    <p class="tagline">Keep auto-reply after your trial. One plan, simple pricing.</p>
+    <p class="tagline">Keep auto-reply after your trial. Choose a plan that fits your business size.</p>
     <div class="plan-card">
       <h2>Replyr</h2>
       <p class="plan-desc">For businesses that want automatic, professional replies to every new Google review.</p>
@@ -785,23 +845,56 @@ app.get("/subscribe", (req, res) => {
         <p id="subscribe-cta-msg" class="cta-msg" style="margin-top:0.5rem;font-size:0.9rem;min-height:1.2em;color:#c62828;" aria-live="polite"></p>
       </div>
     </div>
-    ${hasPro ? `<div class="plan-card plan-card-pro">
-      <h2>Replyr Pro</h2>
-      <p class="plan-desc">Everything in Replyr, plus a customer database and automated campaigns: birthday messages and holiday promos (Mothers Day, Fathers Day, etc.) by email and SMS. You choose the coupon or message; Replyr sends it.</p>
-      <p class="plan-price">${escapeHtml(proPriceLabel)}</p>
+    ${hasPro ? `
+    <div class="plan-card plan-card-pro">
+      <h2>Replyr Pro Starter</h2>
+      <p class="plan-desc">For growing businesses that want campaigns without worrying about setup.</p>
+      <p class="plan-price">${escapeHtml(proStarterPriceLabel)}</p>
       <ul class="plan-features">
         <li>Everything in Replyr</li>
         <li>Upload customer CSV (email, name, birthday, phone)</li>
-        <li>Automated birthday and event messages by email and SMS with your chosen coupon (e.g. 20% off)</li>
-        <li>Event campaigns (e.g. a week before Mothers Day, Fathers Day) with your discount or announcement</li>
-        <li>Curate the message yourself or let Replyr write it</li>
-        <li>Messages show your business name; email replies go to your contact</li>
+        <li>Automated birthday, event, and one-off campaigns</li>
+        <li>Email + SMS sending with brand personalization</li>
+        <li>Includes up to 500 SMS / month</li>
+        <li>When limit is reached, SMS pauses until next month (or tier upgrade)</li>
       </ul>
       <div class="cta-wrap">
-        <button type="button" id="subscribe-pro-cta" class="cta-btn" style="border:none;cursor:pointer;font:inherit;" data-plan="pro">Subscribe to Replyr Pro</button>
-        <p id="subscribe-pro-cta-msg" class="cta-msg" style="margin-top:0.5rem;font-size:0.9rem;min-height:1.2em;color:#c62828;" aria-live="polite"></p>
+        <button type="button" id="subscribe-pro-starter-cta" class="cta-btn" style="border:none;cursor:pointer;font:inherit;" data-plan="pro_starter">Subscribe to Pro Starter</button>
+        <p id="subscribe-pro-starter-cta-msg" class="cta-msg" style="margin-top:0.5rem;font-size:0.9rem;min-height:1.2em;color:#c62828;" aria-live="polite"></p>
+      </div>
+    </div>
+    <div class="plan-card plan-card-pro">
+      <h2>Replyr Pro Growth</h2>
+      <p class="plan-desc">For businesses with larger customer lists and more frequent campaign sends.</p>
+      <p class="plan-price">${escapeHtml(proGrowthPriceLabel)}</p>
+      <ul class="plan-features">
+        <li>Everything in Pro Starter</li>
+        <li>Includes up to 2,500 SMS / month</li>
+        <li>Best for mid-size customer databases</li>
+        <li>When limit is reached, SMS pauses until next month (or tier upgrade)</li>
+      </ul>
+      <div class="cta-wrap">
+        <button type="button" id="subscribe-pro-growth-cta" class="cta-btn" style="border:none;cursor:pointer;font:inherit;" data-plan="pro_growth">Subscribe to Pro Growth</button>
+        <p id="subscribe-pro-growth-cta-msg" class="cta-msg" style="margin-top:0.5rem;font-size:0.9rem;min-height:1.2em;color:#c62828;" aria-live="polite"></p>
+      </div>
+    </div>
+    ${stripeProScalePriceId ? `
+    <div class="plan-card plan-card-pro">
+      <h2>Replyr Pro Scale</h2>
+      <p class="plan-desc">For high-volume businesses that need reliable campaign capacity.</p>
+      <p class="plan-price">${escapeHtml(proScalePriceLabel)}</p>
+      <ul class="plan-features">
+        <li>Everything in Pro Growth</li>
+        <li>Includes up to 10,000 SMS / month</li>
+        <li>Built for large contact lists and frequent campaigns</li>
+        <li>When limit is reached, SMS pauses until next month (or tier upgrade)</li>
+      </ul>
+      <div class="cta-wrap">
+        <button type="button" id="subscribe-pro-scale-cta" class="cta-btn" style="border:none;cursor:pointer;font:inherit;" data-plan="pro_scale">Subscribe to Pro Scale</button>
+        <p id="subscribe-pro-scale-cta-msg" class="cta-msg" style="margin-top:0.5rem;font-size:0.9rem;min-height:1.2em;color:#c62828;" aria-live="polite"></p>
       </div>
     </div>` : ""}
+` : ""}
     ${hasBillingPortal ? `<p class="back" style="margin-bottom:0.5rem;"><a href="${escapeHtml(billingPortalUrl)}" target="_blank" rel="noopener">Manage billing / subscription</a></p>` : ""}
     <p class="back"><a href="/">← Back to Replyr</a></p>
     <p class="back" style="margin-top:0.5rem;"><a href="/contact">Contact us</a></p>
@@ -840,15 +933,18 @@ app.get("/subscribe.js", (req, res) => {
   }
   var proUrl = (page.getAttribute("data-pro-url") || "").trim();
   var proUseCheckout = page.getAttribute("data-pro-use-checkout") === "1";
+  function isProPlan(plan) {
+    return !!plan && (plan === "pro" || plan.indexOf("pro_") === 0);
+  }
   function bindSubscribe(btn, msgEl, plan) {
     if (!btn) return;
     btn.addEventListener("click", function() {
       if (msgEl) msgEl.textContent = "";
-      if (plan === "pro" && proUrl && !proUseCheckout) {
+      if (isProPlan(plan) && proUrl && !proUseCheckout) {
         go(proUrl, false, msgEl);
         return;
       }
-      if (plan === "pro" && proUseCheckout && !accountId) {
+      if (isProPlan(plan) && proUseCheckout && !accountId) {
         if (msgEl) msgEl.textContent = "Sign in via Dashboard first so we can link Pro to your business.";
         return;
       }
@@ -872,7 +968,9 @@ app.get("/subscribe.js", (req, res) => {
     });
   }
   bindSubscribe(document.getElementById("subscribe-cta"), document.getElementById("subscribe-cta-msg"), "");
-  bindSubscribe(document.getElementById("subscribe-pro-cta"), document.getElementById("subscribe-pro-cta-msg"), "pro");
+  bindSubscribe(document.getElementById("subscribe-pro-starter-cta"), document.getElementById("subscribe-pro-starter-cta-msg"), "pro_starter");
+  bindSubscribe(document.getElementById("subscribe-pro-growth-cta"), document.getElementById("subscribe-pro-growth-cta-msg"), "pro_growth");
+  bindSubscribe(document.getElementById("subscribe-pro-scale-cta"), document.getElementById("subscribe-pro-scale-cta-msg"), "pro_scale");
 })();
 `);
 });
@@ -1010,6 +1108,8 @@ app.get("/connected.js", (req, res) => {
   var isPro = proSection && proSection.getAttribute("data-is-pro") === "1";
   if (proSection && accountId && isPro) {
     var proCountEl = document.getElementById("pro-contacts-count");
+    var proSmsUsageBadge = document.getElementById("pro-sms-usage-badge");
+    var proSmsUsageMsg = document.getElementById("pro-sms-usage-msg");
     var proUploadBtn = document.getElementById("pro-upload-btn");
     var proCsvInput = document.getElementById("pro-csv-input");
     var proUploadMsg = document.getElementById("pro-upload-msg");
@@ -1025,6 +1125,35 @@ app.get("/connected.js", (req, res) => {
         proCountEl.textContent = t;
       }
     }
+    function showSmsUsage(usage) {
+      if (!proSmsUsageBadge) return;
+      if (!usage || usage.error) {
+        proSmsUsageBadge.textContent = "SMS this month: --/--";
+        return;
+      }
+      var used = Number(usage.usedSms || 0);
+      var included = Number(usage.includedSms || 0);
+      var remaining = Number(usage.remainingSms || 0);
+      var pct = included > 0 ? (used / included) : 0;
+      proSmsUsageBadge.textContent = "SMS this month: " + used + "/" + included + " (" + usage.tier + ")";
+      if (!proSmsUsageMsg) return;
+      proSmsUsageMsg.classList.remove("ok", "err");
+      if (pct >= 1) {
+        proSmsUsageMsg.textContent = "Monthly SMS limit reached. SMS sends are paused until next month or tier upgrade.";
+        proSmsUsageMsg.classList.add("err");
+      } else if (pct >= 0.8) {
+        proSmsUsageMsg.textContent = "You are at " + Math.round(pct * 100) + "% of monthly SMS (" + remaining + " remaining).";
+      } else {
+        proSmsUsageMsg.textContent = "SMS remaining this month: " + remaining + ".";
+        proSmsUsageMsg.classList.add("ok");
+      }
+    }
+    function loadSmsUsage() {
+      fetch("/pro/sms-usage?accountId=" + encodeURIComponent(accountId))
+        .then(function(r) { return r.json(); })
+        .then(function(data) { showSmsUsage(data); })
+        .catch(function() { showSmsUsage(null); });
+    }
     fetch("/pro/contacts?accountId=" + encodeURIComponent(accountId))
       .then(function(r) { return r.json(); })
       .then(function(data) {
@@ -1032,6 +1161,7 @@ app.get("/connected.js", (req, res) => {
         showProCount(data.total || 0, data.unsubscribed || 0, data.withEmail);
       })
       .catch(function() {});
+    loadSmsUsage();
     function fillMappingSelects(headers) {
       if (!headers || !headers.length) return;
       var opt = function(val, label) { var o = document.createElement("option"); o.value = val || ""; o.textContent = label || val || "—"; return o; };
@@ -1115,6 +1245,7 @@ app.get("/connected.js", (req, res) => {
                 .then(function(r2) { return r2.json(); })
                 .then(function(c) { if (!c.error) showProCount(c.total || 0, c.unsubscribed || 0, c.withEmail); })
                 .catch(function() { showProCount(data.total || data.imported || 0, 0, data.withEmail); });
+              loadSmsUsage();
               setTimeout(function() { proUploadBtn.innerHTML = proUploadBtnOrig; proUploadBtn.disabled = false; }, 1500);
             } else {
               proUploadMsg.textContent = data.error || "Upload failed.";
@@ -1317,7 +1448,7 @@ app.patch("/businesses/:accountId", async (req, res, next) => {
     if (!existing) {
       return res.status(404).json({ error: "Business not found. Connect via /auth/google first." });
     }
-    const { autoReplyEnabled, contact, intervalMinutes, isPro } = req.body || {};
+    const { autoReplyEnabled, contact, intervalMinutes, isPro, proTier } = req.body || {};
     if (autoReplyEnabled === true) {
       const trialEnded =
         existing.trialEndsAt && new Date(existing.trialEndsAt) < new Date();
@@ -1333,7 +1464,8 @@ app.patch("/businesses/:accountId", async (req, res, next) => {
       ...(typeof autoReplyEnabled === "boolean" && { autoReplyEnabled }),
       ...(contact !== undefined && { contact: String(contact) }),
       ...(intervalMinutes !== undefined && { intervalMinutes: Number(intervalMinutes) }),
-      ...(typeof isPro === "boolean" && { isPro })
+      ...(typeof isPro === "boolean" && { isPro }),
+      ...(proTier !== undefined && { proTier: normalizeProTier(proTier) })
     });
     const updated = await getBusiness(accountId);
     res.json(updated);
@@ -1438,6 +1570,29 @@ app.post("/pro/contacts/upload", proUpload.single("file"), async (req, res, next
 });
 
 // --- Pro campaign API (require isPro and DB) ---
+app.get("/pro/sms-usage", async (req, res, next) => {
+  try {
+    const accountId = (req.query.accountId || "").trim();
+    if (!accountId) return res.status(400).json({ error: "accountId required" });
+    const business = await getBusiness(accountId);
+    if (!business?.isPro) return res.status(403).json({ error: "Replyr Pro required" });
+    if (!db.useDb()) return res.status(503).json({ error: "Database required for campaigns" });
+    const monthKey = getCurrentMonthKey();
+    const tier = normalizeProTier(business.proTier);
+    const includedSms = getIncludedSmsForTier(tier);
+    const usedSms = await db.getProSmsUsage(accountId, monthKey);
+    res.json({
+      monthKey,
+      tier,
+      includedSms,
+      usedSms,
+      remainingSms: Math.max(0, includedSms - usedSms)
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
 app.get("/pro/birthday-settings", async (req, res, next) => {
   try {
     const accountId = (req.query.accountId || "").trim();
@@ -1786,6 +1941,7 @@ app.get("/pro", async (req, res, next) => {
         <span class="toggle-label">Send SMS (when contact has phone)</span>
       </div>
     </div>
+    <p class="field-hint" style="margin-top:0.35rem;margin-bottom:0">SMS uses one segment per recipient: up to 137 characters for your message plus a required “Reply STOP to opt out.” line (160 total).</p>
     <div class="field-group">
       <label class="field-label">Describe your business (optional)</label>
       <input type="text" id="birthday-prompt" placeholder="e.g. Anchovie and Salts is a seafood restaurant in Seattle — tailor the message to that" class="field-input">
@@ -1794,6 +1950,7 @@ app.get("/pro", async (req, res, next) => {
     <div class="field-group">
       <label class="field-label">Message</label>
       <textarea id="birthday-message" placeholder="Happy birthday, {{first_name}}! As a thank you, {{offer}}...">${escapeHtml(birthday?.messageText || "")}</textarea>
+      <div id="birthday-message-counter" class="sms-counter" style="font-size:12px;margin-top:4px;color:var(--muted)">0 chars · 1 SMS segment</div>
     </div>
     <button type="button" class="btn btn-generate" id="birthday-generate">
       <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M13 2L3 6l4 3 3 4 3-11z"/></svg>
@@ -1826,6 +1983,7 @@ app.get("/pro", async (req, res, next) => {
       <div class="field-group">
         <label class="field-label">Message</label>
         <textarea id="event-detail-message" placeholder="e.g. Happy Easter! {{first_name}}, {{offer}}... Use {{first_name}} and {{offer}}." style="min-height: 160px;"></textarea>
+        <div id="event-detail-message-counter" class="sms-counter" style="font-size:12px;margin-top:4px;color:var(--muted)">0 chars · 1 SMS segment</div>
       </div>
       <button type="button" class="btn btn-generate" id="event-detail-generate">
         <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M13 2L3 6l4 3 3 4 3-11z"/></svg>
@@ -1856,6 +2014,7 @@ app.get("/pro", async (req, res, next) => {
           <span class="toggle-label">Send SMS (when contact has phone)</span>
         </div>
       </div>
+      <p class="field-hint" style="margin-top:0.35rem;margin-bottom:0">SMS uses one segment per recipient: up to 137 characters for your message plus a required “Reply STOP to opt out.” line (160 total).</p>
       <button type="button" class="btn btn-primary" id="event-detail-save">Save and confirm</button>
       <span id="event-detail-msg" class="pro-msg" aria-live="polite"></span>
     </div>
@@ -1890,6 +2049,7 @@ app.get("/pro", async (req, res, next) => {
     <div class="field-group">
       <label class="field-label">Body</label>
       <textarea id="oneoff-body" placeholder="Email body..."></textarea>
+      <div id="oneoff-body-counter" class="sms-counter" style="font-size:12px;margin-top:4px;color:var(--muted)">0 chars · 1 SMS segment</div>
     </div>
     <div class="channel-toggles">
       <div class="toggle-row">
@@ -1907,6 +2067,7 @@ app.get("/pro", async (req, res, next) => {
         <span class="toggle-label">Send SMS (when contact has phone)</span>
       </div>
     </div>
+    <p class="field-hint" style="margin-top:0.35rem;margin-bottom:0">SMS uses one segment: only the first 137 characters of this body are sent as text (plus “Reply STOP to opt out.”). For long promos, turn off SMS or write a short SMS version.</p>
     <button type="button" class="btn btn-primary" id="oneoff-schedule">Schedule campaign</button>
     <span id="oneoff-msg" class="pro-msg" aria-live="polite"></span>
   </div>
@@ -1978,6 +2139,7 @@ app.get("/pro.js", (req, res) => {
           panel._confirmBtn = btn;
           panelTitle.textContent = name + (dateStr ? " – " + dateStr : "");
           panelMessage.value = "";
+          panelMessage.dispatchEvent(new Event("input"));
           panelOffer.value = "";
           if (panelSendAt) panelSendAt.value = defaultSendAtLocal(eventDateIso);
           panelPrompt.value = "";
@@ -1990,7 +2152,7 @@ app.get("/pro.js", (req, res) => {
           fetch("/pro/events/" + key + "/" + year + "?accountId=" + encodeURIComponent(accountId))
             .then(function(r) { return r.json(); })
             .then(function(c) {
-              if (c && c.messageText) panelMessage.value = c.messageText;
+              if (c && c.messageText) { panelMessage.value = c.messageText; panelMessage.dispatchEvent(new Event("input")); }
               if (c && c.offerText) panelOffer.value = c.offerText;
               if (panelSendAt && c && c.sendAtLocal) panelSendAt.value = c.sendAtLocal;
               if (sendEmailEl && c && c.sendEmail !== undefined) sendEmailEl.checked = c.sendEmail !== false;
@@ -2092,7 +2254,7 @@ app.get("/pro.js", (req, res) => {
         body: JSON.stringify({ accountId: accountId, type: "event", eventName: eventName, offerText: offerText, prompt: businessPrompt })
       }).then(function(r) { return r.json(); }).then(function(data) {
         var ta = document.getElementById("event-detail-message");
-        if (ta && data.messageText) ta.value = data.messageText;
+        if (ta && data.messageText) { ta.value = data.messageText; ta.dispatchEvent(new Event("input")); }
       }).catch(function() { alert("Generate failed"); }).finally(function() {
         eventDetailGenerate.innerHTML = eventDetailGenerateOrig;
         eventDetailGenerate.disabled = false;
@@ -2160,7 +2322,7 @@ app.get("/pro.js", (req, res) => {
         body: JSON.stringify({ accountId: accountId, type: "birthday", offerText: offerText, prompt: businessPrompt })
       }).then(function(r) { return r.json(); }).then(function(data) {
         var ta = document.getElementById("birthday-message");
-        if (ta && data.messageText) ta.value = data.messageText;
+        if (ta && data.messageText) { ta.value = data.messageText; ta.dispatchEvent(new Event("input")); }
       }).catch(function() { alert("Generate failed"); }).finally(function() {
         birthdayGenerate.innerHTML = birthdayGenerateOrig;
         birthdayGenerate.disabled = false;
@@ -2207,7 +2369,7 @@ app.get("/pro.js", (req, res) => {
         var sub = document.getElementById("oneoff-subject");
         var bod = document.getElementById("oneoff-body");
         if (sub && data.subject) sub.value = data.subject;
-        if (bod && data.body) bod.value = data.body;
+        if (bod && data.body) { bod.value = data.body; bod.dispatchEvent(new Event("input")); }
       }).catch(function() { alert("Generate failed."); }).finally(function() {
         oneoffGenerate.innerHTML = oneoffGenerateOrig;
         oneoffGenerate.disabled = false;
@@ -2240,6 +2402,50 @@ app.get("/pro.js", (req, res) => {
       }).finally(function() { oneoffSchedule.disabled = false; });
     };
   }
+
+  // SMS body budget: 137 chars + 23-char STOP footer = 1 GSM segment (160)
+  (function() {
+    var SMS_SOFT_WARN = 110;
+    var SMS_HARD_CAP = 137;
+    var SEG1 = 160;
+
+    function smsSegments(text) {
+      var len = text.length;
+      if (len === 0) return { chars: 0, segs: 0 };
+      if (len <= SEG1) return { chars: len, segs: 1 };
+      return { chars: len, segs: Math.ceil(len / 153) };
+    }
+
+    function updateCounter(taId, counterId) {
+      var ta = document.getElementById(taId);
+      var counter = document.getElementById(counterId);
+      if (!ta || !counter) return;
+
+      function refresh() {
+        var text = ta.value;
+        if (text.length > SMS_HARD_CAP) {
+          ta.value = text.slice(0, SMS_HARD_CAP);
+          text = ta.value;
+        }
+        var s = smsSegments(text);
+        counter.textContent = s.chars + " / " + SMS_HARD_CAP + " chars (your text) + opt-out = 1 SMS (~1¢ per recipient)";
+        if (s.chars > SMS_SOFT_WARN) {
+          counter.style.color = "#e67e22";
+          counter.textContent += " — approaching limit";
+        } else {
+          counter.style.color = "var(--muted)";
+        }
+      }
+      ta.addEventListener("input", refresh);
+      ta.addEventListener("change", refresh);
+      refresh();
+    }
+
+    updateCounter("birthday-message", "birthday-message-counter");
+    updateCounter("event-detail-message", "event-detail-message-counter");
+    updateCounter("oneoff-body", "oneoff-body-counter");
+  })();
+
 })();
 `);
 });
@@ -2475,7 +2681,7 @@ async function load() {
     if (!Array.isArray(list) || list.length === 0) {
       content.innerHTML = "<p class=\\"empty\\">No businesses yet. Have them connect via the auth link.</p>";
     } else {
-      const tableHtml = "<table><thead><tr><th>Name</th><th>Contact (for 1–2 star replies)</th><th>Trial ends</th><th>Status</th><th>Pro</th><th>Auto-reply</th><th>Interval (min)</th><th>Actions</th></tr></thead><tbody></tbody></table>";
+      const tableHtml = "<table><thead><tr><th>Name</th><th>Contact (for 1–2 star replies)</th><th>Trial ends</th><th>Status</th><th>Pro</th><th>Tier</th><th>Auto-reply</th><th>Interval (min)</th><th>Actions</th></tr></thead><tbody></tbody></table>";
       content.insertAdjacentHTML("beforeend", tableHtml);
       const table = content.querySelector("table");
       if (filterRow) { content.insertBefore(filterRow, table); filterRow.style.display = "flex"; }
@@ -2487,11 +2693,14 @@ async function load() {
         tr.dataset.accountId = b.accountId;
         tr.dataset.locationId = b.locationId || "";
         tr.dataset.status = s.status;
+        var tier = String(b.proTier || "starter").toLowerCase();
+        if (["starter", "growth", "scale"].indexOf(tier) === -1) tier = "starter";
         tr.innerHTML = "<td>" + escapeHtml(b.name || "—") + "</td>" +
           "<td><input type=\\"text\\" value=\\"" + escapeAttr(b.contact || "") + "\\" data-field=\\"contact\\"></td>" +
           "<td>" + escapeHtml(trialEndStr) + "</td>" +
           "<td><span class=\\"" + s.className + "\\">" + escapeHtml(s.label) + "</span></td>" +
           "<td><input type=\\"checkbox\\" " + (b.isPro ? "checked" : "") + " data-field=\\"isPro\\" title=\\"Pro (campaigns, CSV)\\"></td>" +
+          "<td><select data-field=\\"proTier\\"><option value=\\"starter\\" " + (tier === "starter" ? "selected" : "") + ">starter</option><option value=\\"growth\\" " + (tier === "growth" ? "selected" : "") + ">growth</option><option value=\\"scale\\" " + (tier === "scale" ? "selected" : "") + ">scale</option></select></td>" +
           "<td><input type=\\"checkbox\\" " + (b.autoReplyEnabled ? "checked" : "") + " data-field=\\"autoReplyEnabled\\"></td>" +
           "<td><input type=\\"number\\" min=\\"1\\" value=\\""
           + (b.intervalMinutes ?? 30)
@@ -2526,6 +2735,7 @@ async function saveRow(e) {
   const accountId = tr.dataset.accountId;
   const contact = tr.querySelector("[data-field=contact]").value.trim();
   const isPro = tr.querySelector("[data-field=isPro]").checked;
+  const proTier = tr.querySelector("[data-field=proTier]").value;
   const autoReplyEnabled = tr.querySelector("[data-field=autoReplyEnabled]").checked;
   const intervalMinutes = parseInt(tr.querySelector("[data-field=intervalMinutes]").value, 10) || 30;
   const msgEl = tr.querySelector("[data-msg]");
@@ -2536,7 +2746,7 @@ async function saveRow(e) {
     const r = await fetch("/businesses/" + encodeURIComponent(accountId), {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ contact, isPro, autoReplyEnabled, intervalMinutes })
+      body: JSON.stringify({ contact, isPro, proTier, autoReplyEnabled, intervalMinutes })
     });
     const data = await r.json();
     if (!r.ok) throw new Error(data.error || r.statusText);
