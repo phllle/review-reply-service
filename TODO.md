@@ -86,6 +86,17 @@ Replyr stays focused on review replies. Pro adds: businesses upload a customer l
 - [ ] **SMS** – Only if we add explicit opt-in (e.g. “Text JOIN to …”). For Pro v1, email-only is enough.
 - [ ] **Templates & AI** – Let business write promo body or use AI to generate from a short brief (e.g. “Mother’s Day 20% off nails”).
 
+### Twilio & SMS scaling (multi-business Pro)
+
+Today all Pro businesses share **one Twilio account** and typically **one `TWILIO_FROM_NUMBER`** until you change the product.
+
+- [ ] **Phase 1 (current)** – Single Twilio account + one number; tier SMS caps meter usage; monitor volume and errors in Twilio Console.
+- [ ] **Phase 2** – **Twilio Messaging Service** + **multiple sending numbers** in the same account to spread load and improve deliverability; optional sticky sender mapping later.
+- [ ] **Phase 3 – isolation** – **Subaccounts** per large customer (or per segment) for billing/limits separation under your parent Twilio account.
+- [ ] **Phase 4 – per-business numbers (optional add-on)** – Store `twilio_from_number` or Messaging Service SID **per `account_id`**; provision numbers via API; businesses see their own caller ID where you offer it.
+- [ ] **Compliance (US)** – **A2P 10DLC**: register brand/campaign honestly for “platform sending for multiple businesses” vs single brand; revisit as you add numbers or per-tenant senders.
+- [ ] **Pricing sanity check** – Revisit **Scale** tier price vs max segments (e.g. 2–3) at full monthly SMS cap so Twilio cost + margin stay healthy.
+
 ---
 
 *Add new items here as you think of them.*
