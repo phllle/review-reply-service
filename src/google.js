@@ -9,23 +9,34 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const TOKENS_PATH = path.resolve(__dirname, "..", "tokens.json");
 
-// In-memory CSRF state store (state → timestamp). TTL: 10 minutes.
+// In-memory CSRF state store (state → { ts, returnTo }). TTL: 10 minutes.
 const _oauthStates = new Map();
 const _STATE_TTL_MS = 10 * 60 * 1000;
 
-function generateState() {
-  const state = crypto.randomBytes(32).toString("base64url");
-  _oauthStates.set(state, Date.now());
-  for (const [s, ts] of _oauthStates) {
-    if (Date.now() - ts > _STATE_TTL_MS) _oauthStates.delete(s);
+function pruneOAuthStates() {
+  const now = Date.now();
+  for (const [s, entry] of _oauthStates) {
+    const ts = typeof entry === "number" ? entry : entry?.ts;
+    if (now - ts > _STATE_TTL_MS) _oauthStates.delete(s);
   }
+}
+
+function generateState(returnTo = null) {
+  const state = crypto.randomBytes(32).toString("base64url");
+  _oauthStates.set(state, { ts: Date.now(), returnTo: returnTo && String(returnTo).trim() ? String(returnTo).trim() : null });
+  pruneOAuthStates();
   return state;
 }
 
+/** @returns {{ ok: boolean, returnTo?: string|null }} */
 export function validateState(state) {
-  if (!state || !_oauthStates.has(state)) return false;
+  if (!state || !_oauthStates.has(state)) return { ok: false };
+  const entry = _oauthStates.get(state);
   _oauthStates.delete(state);
-  return true;
+  const ts = typeof entry === "number" ? entry : entry?.ts;
+  const returnTo = typeof entry === "object" && entry && "returnTo" in entry ? entry.returnTo : null;
+  if (Date.now() - ts > _STATE_TTL_MS) return { ok: false };
+  return { ok: true, returnTo };
 }
 
 function requiredEnv(name) {
@@ -90,14 +101,16 @@ function createOAuthClient() {
   return client;
 }
 
-export async function getAuthUrl() {
+/** @param {{ returnTo?: string|null }} [options] - relative path + query only, e.g. /connected?accountId=1&subscribed=1 */
+export async function getAuthUrl(options = {}) {
   const client = createOAuthClient();
   const scopes = ["https://www.googleapis.com/auth/business.manage"];
+  const returnTo = options.returnTo && String(options.returnTo).trim().startsWith("/") ? String(options.returnTo).trim() : null;
   const url = client.generateAuthUrl({
     access_type: "offline",
     prompt: "consent",
     scope: scopes,
-    state: generateState()
+    state: generateState(returnTo)
   });
   return url;
 }

@@ -22,7 +22,7 @@ Ongoing ideas and next steps. Check off as you go.
 
 ## Admin & security
 
-- [ ] **Protect /admin** – Add basic auth, a secret query param, or login so only you can access the admin page.
+- [x] **Protect /admin** – `ADMIN_SECRET` via `?secret=` or `X-Admin-Secret`; `/admin.js` requires the same.
 - [x] **Admin: trial & subscription** – In the admin table, show `trialEndsAt` and subscription status (e.g. “Subscribed” / “Trial” / “Expired”), and optionally filter or sort by it.
 
 ---
@@ -31,7 +31,7 @@ Ongoing ideas and next steps. Check off as you go.
 
 - [ ] **Subscribe page copy** – Replace placeholder price/description with your real plan (and add a second plan like “Pro” if you want).
 - [x] **Connected page after subscribe** – If you use Stripe success_url to `/connected`, show a one-time “Thanks for subscribing” message when `?subscribed=1` is present.
-- [ ] **Rate limiting** – Add simple rate limiting on `/auth/google`, `/free-reply`, and API routes to reduce abuse.
+- [x] **Rate limiting** – `express-rate-limit` on `/auth/google`, `/free-reply`, `/create-checkout-session`, `/pro/generate-message`, `/pro/one-off`.
 
 ---
 

@@ -7,12 +7,29 @@ import helmet from "helmet";
 import cors from "cors";
 import pino from "pino";
 import pinoHttp from "pino-http";
+import rateLimit from "express-rate-limit";
+import twilio from "twilio";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 import * as db from "./db.js";
 import { getAuthUrl, handleOAuthCallback, getTokenStatus, replyToReview, listAccounts, listLocations, listReviews, validateState } from "./google.js";
+import {
+  setSessionCookie,
+  readSessionAccountId,
+  isValidAdminRequest,
+  getAdminSecretFromRequest,
+  canAccessAccount,
+  signChooseLocationToken,
+  verifyChooseLocationToken
+} from "./sessionAuth.js";
 import { processPendingReviews, startScheduler, getReplyText, addRepliedReviewId } from "./auto.js";
-import { getAllBusinesses, getBusiness, upsertBusiness, getAccountIdByStripeCustomerId } from "./businesses.js";
+import {
+  getAllBusinesses,
+  getBusiness,
+  upsertBusiness,
+  getAccountIdByStripeCustomerId,
+  isGratisAccount
+} from "./businesses.js";
 import { replaceProContacts, getProContactsCount, getProContactsList, setProContactUnsubscribed } from "./proContacts.js";
 import { parseProCsv, validateFile } from "./csvPro.js";
 import { verifyUnsubscribeToken } from "./campaignEmail.js";
@@ -31,7 +48,50 @@ import Stripe from "stripe";
 import { getCurrentMonthKey, getIncludedSmsForTier, normalizeProTier } from "./proPlan.js";
 
 const app = express();
+app.set("trust proxy", 1);
 const logger = pino({ level: process.env.LOG_LEVEL || "info" });
+
+const authRouteLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 40,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Too many auth attempts. Try again later." }
+});
+const freeReplyLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 15,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Too many free-reply requests. Try again later." }
+});
+const aiCampaignLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 80,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Too many AI or campaign requests. Try again later." }
+});
+
+function getTwilioWebhookUrl(req) {
+  const base = (process.env.BASE_URL || "").trim().replace(/\/$/, "");
+  if (base.startsWith("http")) return `${base}/webhooks/twilio/sms`;
+  return `${req.protocol}://${req.get("host") || "localhost"}/webhooks/twilio/sms`;
+}
+
+/** @returns {boolean} false if response already sent */
+function guardBusinessAccess(req, res, accountId) {
+  const id = (accountId && String(accountId).trim()) || "";
+  if (!id) {
+    res.status(400).json({ error: "accountId is required" });
+    return false;
+  }
+  if (!canAccessAccount(req, id)) {
+    res.status(403).json({ error: "Forbidden" });
+    return false;
+  }
+  return true;
+}
 
 async function runCampaignScheduler() {
   if (!db.useDb()) return;
@@ -93,6 +153,10 @@ function getPacificNowLocalMinute() {
 }
 
 async function start() {
+  if (process.env.NODE_ENV === "production" && !(process.env.REPLYR_SESSION_SECRET || "").trim()) {
+    logger.fatal("REPLYR_SESSION_SECRET is required in production for secure sessions");
+    process.exit(1);
+  }
   if (db.useDb()) {
     await db.init();
     logger.info("Database initialized");
@@ -188,7 +252,7 @@ app.get("/test-sms", async (req, res, next) => {
       });
     }
     const body = "Replyr test: campaign SMS is working. Reply STOP to opt out.";
-    await sendCampaignSms(toPhone, body);
+    await sendCampaignSms(toPhone, body, { bypassCampaignSmsEnabled: true });
     res.json({ ok: true, message: "Test SMS sent.", to: toPhone });
   } catch (err) {
     req.log?.error(err, "Test SMS failed");
@@ -268,6 +332,20 @@ app.get("/test-trigger-birthday", async (req, res, next) => {
 /** Twilio incoming SMS: handle STOP / UNSUBSCRIBE etc. and mark contact unsubscribed. */
 async function twilioSmsWebhook(req, res) {
   try {
+    const authToken = process.env.TWILIO_AUTH_TOKEN?.trim();
+    const signature = req.headers["x-twilio-signature"];
+    const isProd = process.env.NODE_ENV === "production";
+    if (authToken && signature) {
+      const url = getTwilioWebhookUrl(req);
+      const valid = twilio.validateRequest(authToken, signature, url, req.body || {});
+      if (!valid) {
+        req.log?.warn?.("Twilio SMS webhook signature verification failed");
+        return res.status(403).send("Forbidden");
+      }
+    } else if (isProd && authToken) {
+      req.log?.warn?.("Twilio SMS webhook missing signature in production");
+      return res.status(403).send("Forbidden");
+    }
     const from = (req.body?.From || "").trim();
     const body = (req.body?.Body || "").trim().toUpperCase();
     const stopWords = ["STOP", "UNSUBSCRIBE", "CANCEL", "END", "QUIT"];
@@ -400,7 +478,7 @@ async function stripeWebhook(req, res) {
 
 // Create Stripe Checkout Session (so we can pass accountId and get it back in webhook).
 // Body: { accountId, plan?: '', 'pro', 'pro_starter', 'pro_growth', 'pro_scale' }.
-app.post("/create-checkout-session", async (req, res, next) => {
+app.post("/create-checkout-session", aiCampaignLimiter, async (req, res, next) => {
   try {
     const { accountId, plan } = req.body || {};
     const secret = process.env.STRIPE_SECRET_KEY;
@@ -435,6 +513,9 @@ app.post("/create-checkout-session", async (req, res, next) => {
     }
     if (!accountId || typeof accountId !== "string") {
       return res.status(400).json({ error: "accountId is required" });
+    }
+    if (!canAccessAccount(req, accountId)) {
+      return res.status(403).json({ error: "Sign in with Google required. Open /connected after connecting your business." });
     }
     const business = await getBusiness(accountId);
     if (!business) {
@@ -503,9 +584,11 @@ app.get("/no-business", (req, res) => {
 });
 
 // Dashboard: re-run Google sign-in and land back on /connected
-app.get("/dashboard", async (req, res, next) => {
+app.get("/dashboard", authRouteLimiter, async (req, res, next) => {
   try {
-    const url = await getAuthUrl();
+    const returnToRaw = (req.query.return_to && String(req.query.return_to).trim()) || "";
+    const returnTo = returnToRaw.startsWith("/") && !returnToRaw.startsWith("//") ? returnToRaw : null;
+    const url = await getAuthUrl({ returnTo });
     res.redirect(url);
   } catch (err) {
     req.log.error(err, "Failed to get Google auth URL");
@@ -517,7 +600,11 @@ app.get("/dashboard", async (req, res, next) => {
 app.get("/connected", async (req, res, next) => {
   try {
     const nameFromQuery = (req.query.name && String(req.query.name).trim()) || "";
-    const accountId = (req.query.accountId && String(req.query.accountId).trim()) || null;
+    let accountId = (req.query.accountId && String(req.query.accountId).trim()) || null;
+    if (accountId && !canAccessAccount(req, accountId)) {
+      const returnTo = encodeURIComponent(req.originalUrl || "/connected");
+      return res.redirect(`/auth/google?return_to=${returnTo}`);
+    }
     const justSubscribed = req.query.subscribed === "1";
     let currentContact = "";
     let currentAutoReply = false;
@@ -528,6 +615,7 @@ app.get("/connected", async (req, res, next) => {
     let subscribedAt = null;
     let trialEndedNoSubscription = false;
     let isPro = false;
+    let gratisAccess = false;
     if (accountId) {
       let business = await getBusiness(accountId);
       // Backfill trial for existing businesses that connected before trial existed
@@ -546,8 +634,14 @@ app.get("/connected", async (req, res, next) => {
         trialEndDateFormatted = end.toLocaleDateString("en-US", { weekday: "short", year: "numeric", month: "short", day: "numeric" });
       }
       isPro = !!(business && business.isPro);
+      gratisAccess = isGratisAccount(accountId);
       trialEndedNoSubscription =
-        trialEndsAt != null && trialDaysLeft != null && trialDaysLeft < 0 && !subscribedAt;
+        !gratisAccess &&
+        !isPro &&
+        trialEndsAt != null &&
+        trialDaysLeft != null &&
+        trialDaysLeft < 0 &&
+        !subscribedAt;
       if (trialEndedNoSubscription && business && business.autoReplyEnabled) {
         await upsertBusiness({ ...business, autoReplyEnabled: false });
         currentAutoReply = false;
@@ -570,8 +664,14 @@ app.get("/connected", async (req, res, next) => {
       trialDaysLeft <= 7;
     const trialBarPct = trialEndsAt != null && trialDaysLeft != null && trialDaysLeft >= 0 ? Math.min(100, (trialDaysLeft / 30) * 100) : 0;
     const trialCard =
-      trialEndsAt != null
+      gratisAccess && accountId
         ? `<div class="card trial-card">
+  <div class="card-label">Your account</div>
+  <div class="trial-days" style="color:var(--accent)">Complimentary access</div>
+  <div class="trial-ends">You have full access to Replyr auto-reply at no charge.</div>
+</div>`
+        : trialEndsAt != null
+          ? `<div class="card trial-card">
   <div class="card-label">Your 30-day free trial</div>
   ${trialEndedNoSubscription ? `<div class="trial-days" style="color:var(--muted);font-size:24px">Trial ended</div><div class="trial-ends">Subscribe to re-enable auto-reply.</div><div class="upgrade-link"><a href="/subscribe${accountId ? "?accountId=" + encodeURIComponent(accountId) : ""}">View plans →</a></div>` : `<div class="trial-days">${trialDaysLeft != null && trialDaysLeft >= 0 ? escapeHtml(String(trialDaysLeft)) : "0"} <span>days left</span></div>
   <div class="trial-ends">${trialDaysLeft != null && trialDaysLeft >= 0 ? "Ends " : "Ended "}${escapeHtml(trialEndDateFormatted)}</div>
@@ -579,7 +679,7 @@ app.get("/connected", async (req, res, next) => {
   <div class="trial-bar"><div class="trial-bar-fill" style="width:${trialBarPct}%"></div></div>
   <div class="upgrade-link">Upgrade to keep auto-reply after your trial. <a href="/subscribe${accountId ? "?accountId=" + encodeURIComponent(accountId) : ""}">View plans →</a></div>
 </div>`}`
-        : "";
+          : "";
     const autoReplyCard = accountId
       ? `<div class="card auto-reply-section" data-account-id="${escapeHtml(accountId)}" data-trial-ended="${trialEndedNoSubscription ? "1" : "0"}">
   <div class="card-title">Auto-reply</div>
@@ -604,8 +704,8 @@ app.get("/connected", async (req, res, next) => {
       : "";
     const contactCard = accountId
       ? `<div class="card contact-section" data-account-id="${escapeHtml(accountId)}">
-  <div class="card-title">Contact for 1–2 star replies</div>
-  <div class="card-desc">If a customer leaves a low rating, we'll suggest they reach out. Add your phone or email so the reply uses your real contact.</div>
+  <div class="card-title">Contact for 1–3 star replies</div>
+  <div class="card-desc">If a customer leaves a low or mixed rating (1–3 stars), we'll suggest they reach out. Add your phone or email so the reply uses your real contact.</div>
   <div class="contact-input-row">
     <input type="text" id="contact-input" value="${escapeHtml(currentContact)}" placeholder="Phone or email">
     <button type="button" id="contact-save-btn" class="btn-save">Save</button>
@@ -616,29 +716,39 @@ app.get("/connected", async (req, res, next) => {
     const proCard = accountId
       ? `<div class="card card-full" id="pro-contacts-section" data-account-id="${escapeHtml(accountId)}" data-is-pro="${isPro ? "1" : "0"}">
   <div class="pro-card-header">
-    <div><div class="card-title" style="margin-bottom:4px">Replyr Pro – Customer list</div><div class="card-desc" style="margin-bottom:0">Upload a CSV of customers for future promos and birthday messages.</div></div>
-    <div style="display:flex;flex-direction:column;gap:8px;align-items:flex-end">
+    <div class="pro-card-intro">
+      <div class="card-title">Replyr Pro – Customer list</div>
+      <div class="card-desc" style="margin-bottom:0">Upload a CSV of customers for future promos and birthday messages.</div>
+    </div>
+    <div class="pro-stat-badges">
       <span class="contacts-badge" id="pro-contacts-count">0 contacts</span>
       <span class="contacts-badge" id="pro-sms-usage-badge">SMS this month: --/--</span>
     </div>
   </div>
   <p id="pro-sms-usage-msg" class="connected-msg" aria-live="polite" style="margin-top:10px"></p>
   ${isPro
-    ? `<div class="field-specs"><strong>Required:</strong> <code>email</code> &nbsp;·&nbsp; <strong>Recommended:</strong> <code>first_name</code> or <code>name</code>, <code>birthday</code> or <code>birth_date</code> (YYYY-MM-DD or MM/DD) &nbsp;·&nbsp; <strong>Optional:</strong> <code>phone</code><br><span style="margin-top:6px;display:inline-block">Max 5MB. Uploading replaces your current list. <a href="/compliance" style="color:var(--accent2);text-decoration:none">Compliance →</a></span></div>
+    ? `<div class="field-specs"><ul class="field-specs-list"><li><strong>Required:</strong> column <code>email</code></li><li><strong>Recommended:</strong> <code>first_name</code> or <code>name</code>; <code>birthday</code> or <code>birth_date</code> (YYYY-MM-DD or MM/DD)</li><li><strong>Optional:</strong> <code>phone</code> (for SMS)</li></ul><p class="field-specs-foot">Max 5MB. Each upload replaces your current list. <a href="/compliance" style="color:var(--accent2);text-decoration:none">Compliance →</a></p></div>
   <label class="csv-zone"><input type="file" id="pro-csv-input" accept=".csv,text/csv,text/plain" aria-label="Choose CSV"> <div class="csv-icon">📂</div><div class="csv-zone-title">Drop your CSV here or click to browse</div><div class="csv-zone-sub">No file chosen · Max 5MB</div></label>
   <div id="pro-mapping-wrap" class="pro-mapping-wrap" style="display:none;"><p class="pro-mapping-label">Map your columns:</p><div class="pro-mapping-row"><label>Email *</label><select id="pro-map-email" data-field="email"></select></div><div class="pro-mapping-row"><label>First name</label><select id="pro-map-first_name" data-field="first_name"><option value="">— Don't use —</option></select></div><div class="pro-mapping-row"><label>Birthday</label><select id="pro-map-birthday" data-field="birthday"><option value="">— Don't use —</option></select></div><div class="pro-mapping-row"><label>Phone</label><select id="pro-map-phone" data-field="phone"><option value="">— Don't use —</option></select></div></div>
   <button type="button" id="pro-upload-btn" class="btn btn-ghost" style="max-width:180px"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M8 2v9M4 8l4 4 4-4"/><path d="M2 14h12"/></svg>Upload CSV</button>
   <p id="pro-upload-msg" class="connected-msg" aria-live="polite"></p>
   <div style="margin-top:12px"><button type="button" id="pro-view-customers-btn" class="btn btn-ghost" style="font-size:13px">View customers</button></div>
   <div id="pro-customers-list-wrap" style="display:none;margin-top:16px;overflow-x:auto"><table class="pro-customers-table" id="pro-customers-table"><thead><tr><th>Email</th><th>First name</th><th>Birthday</th><th>Phone</th><th>Status</th></tr></thead><tbody id="pro-customers-tbody"></tbody></table><div id="pro-customers-pagination" style="margin-top:10px;font-size:13px;color:var(--muted)"></div></div>
-  <div style="text-align:center;margin-top:16px"><a href="/pro?accountId=${encodeURIComponent(accountId)}" class="manage-link">🗓 Manage campaigns <span style="color:var(--muted);font-weight:400">(birthday, events, one-off)</span> →</a></div>`
+  <div class="pro-manage-row"><a href="/pro?accountId=${encodeURIComponent(accountId)}" class="manage-link manage-link-block">🗓 Manage campaigns <span class="manage-link-sub">(birthday, events, one-off)</span> →</a></div>`
     : `<div class="card-desc" style="margin-bottom:12px">Replyr Pro turns your customer list into automated, personal outreach. This is included in <strong>Replyr Pro</strong>.</div>
   <ul class="pro-benefits"><li><strong>Customer database</strong> — Upload a CSV (email, name, birthday, phone). We store it securely per business.</li><li><strong>Birthday messages</strong> — We automatically email and text customers on their birthday. Add a coupon or any offer you choose.</li><li><strong>Holiday & event campaigns</strong> — Mothers Day, Fathers Day, and more by email and SMS. You pick the discount or message.</li><li><strong>Your voice or ours</strong> — Curate the message yourself or let Replyr write it.</li><li><strong>Sent on your behalf</strong> — Messages go out with your business name (email and SMS); replies go to your contact email.</li></ul>
   <p class="card-desc" style="margin-bottom:8px">By uploading and sending you confirm you have permission to email and text those contacts. We send email to contacts with an address; if SMS is enabled, we also send a short text to contacts with a mobile number. <a href="/compliance" style="color:var(--accent2)">Compliance</a>.</p>
   <p><a href="/subscribe?accountId=${encodeURIComponent(accountId)}" class="manage-link">Upgrade to Pro →</a> to unlock the customer list and automated campaigns.</p>`}
 </div>`
       : "";
-    const freeReplySection = accountId ? `<div class="grid">${trialCard}${autoReplyCard}</div><div class="grid">${tryItCard}${contactCard}</div>${proCard}` : "";
+    const freeReplySection = accountId
+      ? `<div class="connected-body">
+  <aside class="connected-sidebar" aria-label="Account and review tools">
+    <div class="connected-stack">${trialCard}${autoReplyCard}${tryItCard}${contactCard}</div>
+  </aside>
+  <div class="connected-pro-wrap">${proCard}</div>
+</div>`
+      : "";
     res.set("Content-Type", "text/html; charset=utf-8");
     res.send(`
 <!DOCTYPE html>
@@ -653,24 +763,27 @@ app.get("/connected", async (req, res, next) => {
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { background: var(--bg); color: var(--text); font-family: 'DM Sans', sans-serif; font-size: 15px; min-height: 100vh; overflow-x: hidden; }
   body::before { content: ''; position: fixed; top: -200px; left: 50%; transform: translateX(-50%); width: 800px; height: 500px; background: radial-gradient(ellipse, rgba(124,106,247,0.12) 0%, transparent 70%); pointer-events: none; z-index: 0; }
-  .wrapper { width: 100%; max-width: 760px; margin: 0 auto; padding: 48px 24px 80px; position: relative; z-index: 1; }
+  .wrapper { width: 100%; max-width: 1120px; margin: 0 auto; padding: 48px 24px 80px; position: relative; z-index: 1; }
   .hero-card { background: var(--surface); border: 1px solid var(--border); border-radius: 24px; padding: 40px 32px; text-align: center; margin-bottom: 20px; animation: fadeUp 0.4s ease both; position: relative; overflow: hidden; }
   .hero-card::after { content: ''; position: absolute; bottom: 0; left: 0; right: 0; height: 2px; background: linear-gradient(90deg, transparent, var(--accent2), var(--accent), transparent); opacity: 0.5; }
   .logo-mark { display: inline-flex; align-items: center; gap: 8px; margin-bottom: 16px; font-size: 15px; font-weight: 600; color: var(--muted); letter-spacing: 0.02em; }
   .logo-icon { width: 28px; height: 28px; background: linear-gradient(135deg, var(--accent2), var(--accent)); border-radius: 8px; display: flex; align-items: center; justify-content: center; font-size: 14px; }
   .hero-title { font-family: 'Fraunces', serif; font-size: 32px; font-weight: 400; color: var(--text); margin-bottom: 10px; }
   .hero-title span { color: var(--accent); font-style: italic; }
-  .hero-desc { color: var(--muted); font-size: 14px; line-height: 1.6; max-width: 380px; margin: 0 auto 6px; }
+  .hero-desc { color: var(--muted); font-size: 14px; line-height: 1.6; max-width: 460px; margin: 0 auto 6px; }
   .hero-desc a { color: var(--accent2); text-decoration: none; }
   .hero-desc a:hover { text-decoration: underline; }
   .connected-badge { display: inline-flex; align-items: center; gap: 6px; background: rgba(74,158,255,0.12); border: 1px solid rgba(74,158,255,0.25); border-radius: 20px; padding: 5px 12px; font-size: 12px; font-weight: 600; color: var(--accent); letter-spacing: 0.06em; text-transform: uppercase; margin-bottom: 20px; }
   .connected-badge::before { content: ''; width: 6px; height: 6px; background: var(--accent); border-radius: 50%; animation: pulse 2s infinite; }
   @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
-  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 16px; }
-  @media (max-width: 540px) { .grid { grid-template-columns: 1fr; } }
-  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 20px; padding: 24px; animation: fadeUp 0.4s ease both; transition: border-color 0.2s; min-width: 0; }
+  .connected-body { display: grid; grid-template-columns: minmax(0, 340px) minmax(0, 1fr); gap: 24px; align-items: start; margin-bottom: 8px; }
+  @media (max-width: 900px) { .connected-body { grid-template-columns: 1fr; } }
+  .connected-stack { display: flex; flex-direction: column; gap: 16px; }
+  .connected-sidebar .card { min-height: 0; }
+  .connected-pro-wrap .card-full { margin-top: 0; }
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 20px; padding: 24px; animation: fadeUp 0.4s ease both; transition: border-color 0.2s; min-width: 0; display: flex; flex-direction: column; }
   .card:hover { border-color: rgba(255,255,255,0.12); }
-  .card:nth-child(1) { animation-delay: 0.05s; } .card:nth-child(2) { animation-delay: 0.10s; } .card:nth-child(3) { animation-delay: 0.15s; } .card:nth-child(4) { animation-delay: 0.20s; }
+  .connected-stack .card:nth-child(1) { animation-delay: 0.05s; } .connected-stack .card:nth-child(2) { animation-delay: 0.08s; } .connected-stack .card:nth-child(3) { animation-delay: 0.11s; } .connected-stack .card:nth-child(4) { animation-delay: 0.14s; }
   @keyframes fadeUp { from { opacity: 0; transform: translateY(16px); } to { opacity: 1; transform: translateY(0); } }
   .trial-card { background: linear-gradient(135deg, rgba(124,106,247,0.12), rgba(74,158,255,0.08)); border-color: rgba(124,106,247,0.25); }
   .card-label { font-size: 11px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); margin-bottom: 12px; }
@@ -679,9 +792,11 @@ app.get("/connected", async (req, res, next) => {
   .trial-ends { font-size: 13px; color: var(--muted); margin-bottom: 16px; }
   .trial-bar { height: 4px; background: rgba(255,255,255,0.08); border-radius: 4px; margin-bottom: 16px; overflow: hidden; }
   .trial-bar-fill { height: 100%; background: linear-gradient(90deg, var(--accent2), var(--accent)); border-radius: 4px; transition: width 0.3s; }
-  .upgrade-link { font-size: 13px; color: var(--muted); }
+  .upgrade-link { font-size: 13px; color: var(--muted); padding-top: 12px; }
   .upgrade-link a { color: var(--accent); text-decoration: none; font-weight: 600; }
   .upgrade-link a:hover { text-decoration: underline; }
+  .connected-sidebar .card > .connected-msg { margin-top: auto; padding-top: 14px; }
+  .connected-sidebar .trial-card .upgrade-link { margin-top: auto; }
   .card-title { font-family: 'Fraunces', serif; font-size: 17px; font-weight: 400; color: var(--text); margin-bottom: 16px; }
   .card-desc { font-size: 13px; color: var(--muted); line-height: 1.6; margin-bottom: 18px; }
   .toggle-row { display: flex; align-items: center; gap: 10px; padding: 12px 14px; background: var(--surface2); border-radius: 12px; border: 1px solid var(--border); }
@@ -706,12 +821,19 @@ app.get("/connected", async (req, res, next) => {
   .btn-save { background: var(--accent2); color: #fff; border: none; border-radius: 10px; font-family: 'DM Sans', sans-serif; font-size: 14px; font-weight: 600; cursor: pointer; padding: 11px 18px; transition: all 0.2s; white-space: nowrap; }
   .btn-save:hover:not(:disabled) { background: #9084f9; transform: translateY(-1px); box-shadow: 0 4px 16px rgba(124,106,247,0.3); }
   .btn-save:disabled { opacity: 0.7; cursor: not-allowed; }
-  .card-full { animation-delay: 0.25s; min-width: 0; }
-  .pro-card-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin-bottom: 16px; }
+  .card-full { animation-delay: 0.2s; min-width: 0; width: 100%; }
+  .pro-card-header { display: grid; grid-template-columns: 1fr auto; gap: 16px 20px; align-items: center; margin-bottom: 20px; }
+  @media (max-width: 600px) { .pro-card-header { grid-template-columns: 1fr; align-items: start; } .pro-stat-badges { flex-direction: row; flex-wrap: wrap; justify-content: flex-start; width: 100%; } }
+  .pro-card-intro .card-title { margin-bottom: 8px; }
+  .pro-stat-badges { display: flex; flex-direction: column; gap: 8px; align-items: stretch; justify-self: end; }
+  .pro-stat-badges .contacts-badge { text-align: left; min-width: 0; max-width: 100%; line-height: 1.35; padding: 8px 12px; font-size: 10px; }
   .contacts-badge { font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); background: var(--surface2); padding: 5px 10px; border-radius: 8px; border: 1px solid var(--border); }
-  .field-specs { background: var(--surface2); border-radius: 12px; padding: 14px 16px; font-size: 13px; color: var(--muted); line-height: 1.7; margin-bottom: 16px; }
+  .field-specs { background: var(--surface2); border-radius: 12px; padding: 16px 18px; font-size: 13px; color: var(--muted); line-height: 1.65; margin-bottom: 16px; border: 1px solid var(--border); }
   .field-specs strong { color: var(--text); }
   .field-specs code { background: rgba(255,255,255,0.07); border-radius: 4px; padding: 1px 6px; font-size: 12px; color: var(--accent); }
+  .field-specs-list { margin: 0; padding-left: 18px; list-style: disc; }
+  .field-specs-list li { margin-bottom: 8px; }
+  .field-specs-foot { margin: 12px 0 0; padding-top: 12px; border-top: 1px solid var(--border); font-size: 12px; color: var(--muted); }
   .csv-zone { border: 1.5px dashed rgba(255,255,255,0.1); border-radius: 14px; padding: 24px; text-align: center; margin: 16px 0; cursor: pointer; transition: border-color 0.2s, background 0.2s; display: block; }
   .csv-zone:hover { border-color: rgba(74,158,255,0.35); background: rgba(74,158,255,0.04); }
   .csv-zone input[type="file"] { display: none; }
@@ -730,6 +852,9 @@ app.get("/connected", async (req, res, next) => {
   .pro-customers-table td { color: var(--text); }
   .manage-link { display: inline-flex; align-items: center; gap: 6px; margin-top: 12px; color: var(--accent2); font-size: 13px; font-weight: 500; text-decoration: none; transition: color 0.2s; }
   .manage-link:hover { color: #a099f7; }
+  .pro-manage-row { margin-top: 20px; padding-top: 18px; border-top: 1px solid var(--border); text-align: center; }
+  .manage-link-block { margin-top: 0; justify-content: center; flex-wrap: wrap; text-align: center; }
+  .manage-link-sub { color: var(--muted); font-weight: 400; }
   .stars-row { display: flex; gap: 2px; margin-bottom: 6px; }
   .star { color: #f59e0b; font-size: 13px; }
   .connected-msg { margin-top: 8px; font-size: 13px; min-height: 1.4em; }
@@ -738,6 +863,9 @@ app.get("/connected", async (req, res, next) => {
   .pro-benefits { margin: 12px 0; padding-left: 20px; font-size: 13px; color: var(--muted); line-height: 1.6; }
   .pro-benefits li { margin-bottom: 6px; }
   .thanks-msg { margin-bottom: 12px; padding: 10px 14px; background: rgba(74,158,255,0.12); border-radius: 10px; color: var(--accent); font-size: 14px; }
+  .connected-page-footer { margin-top: 40px; padding-top: 28px; border-top: 1px solid var(--border); text-align: center; font-size: 13px; color: var(--muted); }
+  .connected-page-footer a { color: var(--accent2); text-decoration: none; }
+  .connected-page-footer a:hover { text-decoration: underline; }
 </style>
 </head>
 <body>
@@ -753,7 +881,7 @@ app.get("/connected", async (req, res, next) => {
     ${nextStepLine ? `<p class="hero-desc" style="margin-top:8px">${nextStepLine}</p>` : ""}
   </div>
   ${freeReplySection}
-  <p class="connected-footer" style="text-align:center;margin-top:32px;font-size:13px;color:var(--muted);"><a href="/contact" style="color:var(--accent2);text-decoration:none;">Contact us</a> — questions or concerns?</p>
+  <footer class="connected-page-footer"><a href="/contact">Contact us</a> — questions or concerns?</footer>
 </div>
 <script src="/connected.js"></script>
 </body>
@@ -836,7 +964,7 @@ app.get("/subscribe", (req, res) => {
       ${hasStripe ? "" : '<p class="plan-price-note">We\'ll send you a secure payment link.</p>'}
       <ul class="plan-features">
         <li>Auto-reply to new 1–5 star reviews</li>
-        <li>Your contact in 1–2 star replies</li>
+        <li>Your contact in 1–3 star replies</li>
         <li>Replies show as “[Your business] (Owner)”</li>
         <li>One connection, no extra setup</li>
       </ul>
@@ -955,6 +1083,7 @@ app.get("/subscribe.js", (req, res) => {
       if (plan) body.plan = plan;
       fetch("/create-checkout-session", {
         method: "POST",
+        credentials: "same-origin",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body)
       }).then(function(r) { return r.json().then(function(data) { return { ok: r.ok, data: data }; }).catch(function() { return { ok: false, data: null }; }); }).then(function(result) {
@@ -995,6 +1124,7 @@ app.get("/connected.js", (req, res) => {
         autoReplyMsg.classList.remove("ok", "err");
         fetch("/businesses/" + encodeURIComponent(autoReplyAccountId), {
           method: "PATCH",
+          credentials: "same-origin",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ autoReplyEnabled: enabled })
         })
@@ -1029,6 +1159,7 @@ app.get("/connected.js", (req, res) => {
       msg.classList.remove("ok", "err");
       fetch("/free-reply", {
         method: "POST",
+        credentials: "same-origin",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ accountId: accountId })
       })
@@ -1065,6 +1196,7 @@ app.get("/connected.js", (req, res) => {
         contactMsg.classList.remove("ok", "err");
         fetch("/businesses/" + encodeURIComponent(aid), {
           method: "PATCH",
+          credentials: "same-origin",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ contact: contact || "" })
         })
@@ -1075,7 +1207,7 @@ app.get("/connected.js", (req, res) => {
               contactMsg.textContent = data.error;
               contactMsg.classList.add("err");
             } else {
-              contactMsg.textContent = "Saved. We'll use this for 1–2 star replies.";
+              contactMsg.textContent = "Saved. We'll use this for 1–3 star replies.";
               contactMsg.classList.add("ok");
             }
           })
@@ -1089,7 +1221,7 @@ app.get("/connected.js", (req, res) => {
   }
 
   // Sync UI from latest server state (handles back button / cached pages)
-  fetch("/businesses/" + encodeURIComponent(accountId))
+  fetch("/businesses/" + encodeURIComponent(accountId), { credentials: "same-origin" })
     .then(function(r) { return r.json(); })
     .then(function(data) {
       if (!data || data.error) return;
@@ -1149,12 +1281,12 @@ app.get("/connected.js", (req, res) => {
       }
     }
     function loadSmsUsage() {
-      fetch("/pro/sms-usage?accountId=" + encodeURIComponent(accountId))
+      fetch("/pro/sms-usage?accountId=" + encodeURIComponent(accountId), { credentials: "same-origin" })
         .then(function(r) { return r.json(); })
         .then(function(data) { showSmsUsage(data); })
         .catch(function() { showSmsUsage(null); });
     }
-    fetch("/pro/contacts?accountId=" + encodeURIComponent(accountId))
+    fetch("/pro/contacts?accountId=" + encodeURIComponent(accountId), { credentials: "same-origin" })
       .then(function(r) { return r.json(); })
       .then(function(data) {
         if (data.error) return;
@@ -1187,7 +1319,7 @@ app.get("/connected.js", (req, res) => {
         var fd = new FormData();
         fd.append("file", file);
         fd.append("accountId", accountId);
-        fetch("/pro/contacts/preview", { method: "POST", body: fd })
+        fetch("/pro/contacts/preview", { method: "POST", credentials: "same-origin", body: fd })
           .then(function(r) { return r.json(); })
           .then(function(data) {
             if (data.headers && data.headers.length) {
@@ -1232,7 +1364,7 @@ app.get("/connected.js", (req, res) => {
         fd.append("file", file);
         fd.append("accountId", accountId);
         if (Object.keys(mapping).length) fd.append("mapping", JSON.stringify(mapping));
-        fetch("/pro/contacts/upload", { method: "POST", body: fd })
+        fetch("/pro/contacts/upload", { method: "POST", credentials: "same-origin", body: fd })
           .then(function(r) { return r.json(); })
           .then(function(data) {
             if (data.ok) {
@@ -1241,7 +1373,7 @@ app.get("/connected.js", (req, res) => {
               proUploadMsg.classList.remove("err"); proUploadMsg.classList.add("ok");
               proCsvInput.value = "";
               if (proMappingWrap) proMappingWrap.style.display = "none";
-              fetch("/pro/contacts?accountId=" + encodeURIComponent(accountId))
+              fetch("/pro/contacts?accountId=" + encodeURIComponent(accountId), { credentials: "same-origin" })
                 .then(function(r2) { return r2.json(); })
                 .then(function(c) { if (!c.error) showProCount(c.total || 0, c.unsubscribed || 0, c.withEmail); })
                 .catch(function() { showProCount(data.total || data.imported || 0, 0, data.withEmail); });
@@ -1271,7 +1403,7 @@ app.get("/connected.js", (req, res) => {
     function loadProCustomersList(offset) {
       if (!accountId || !proListTbody) return;
       proListOffset = offset || 0;
-      fetch("/pro/contacts/list?accountId=" + encodeURIComponent(accountId) + "&limit=" + proListLimit + "&offset=" + proListOffset)
+      fetch("/pro/contacts/list?accountId=" + encodeURIComponent(accountId) + "&limit=" + proListLimit + "&offset=" + proListOffset, { credentials: "same-origin" })
         .then(function(r) { return r.json(); })
         .then(function(data) {
           if (data.error) return;
@@ -1312,9 +1444,11 @@ function escapeHtml(s) {
   return String(s).replace(/[&<>"]/g, (c) => d[c]);
 }
 
-app.get("/auth/google", async (req, res, next) => {
+app.get("/auth/google", authRouteLimiter, async (req, res, next) => {
   try {
-    const url = await getAuthUrl();
+    const returnToRaw = (req.query.return_to && String(req.query.return_to).trim()) || "";
+    const returnTo = returnToRaw.startsWith("/") && !returnToRaw.startsWith("//") ? returnToRaw : null;
+    const url = await getAuthUrl({ returnTo });
     res.redirect(url);
   } catch (err) {
     req.log.error(err, "Failed to get Google auth URL");
@@ -1322,14 +1456,15 @@ app.get("/auth/google", async (req, res, next) => {
   }
 });
 
-app.get("/auth/google/callback", async (req, res, next) => {
+app.get("/auth/google/callback", authRouteLimiter, async (req, res, next) => {
   try {
     const code = req.query.code;
     const state = req.query.state;
     if (!code) {
       return res.status(400).json({ error: "Missing code" });
     }
-    if (!validateState(state?.toString())) {
+    const stateResult = validateState(state?.toString());
+    if (!stateResult.ok) {
       return res.status(400).json({ error: "Invalid or expired OAuth state. Please try connecting again." });
     }
     let accountId, accountName;
@@ -1344,42 +1479,140 @@ app.get("/auth/google/callback", async (req, res, next) => {
       throw err;
     }
     const locations = await listLocations(accountId);
-    const firstLocation = locations[0];
-    const locationId = firstLocation?.name
-      ? firstLocation.name.split("/").pop()
-      : null;
-    const name = firstLocation?.title || accountName || null;
-    if (!locationId && (!locations || locations.length === 0)) {
+    if (!locations || locations.length === 0) {
       return res.redirect("/no-business?" + new URLSearchParams({ reason: "no_location", accountId }).toString());
     }
+    if (locations.length > 1) {
+      const t = signChooseLocationToken(accountId);
+      return res.redirect("/auth/choose-location?t=" + encodeURIComponent(t));
+    }
+    const firstLocation = locations[0];
+    const locationId = firstLocation?.name ? firstLocation.name.split("/").pop() : null;
+    const name = firstLocation?.title || accountName || null;
     await upsertBusiness({
       accountId,
       locationId: locationId || "",
       name
     });
+    setSessionCookie(res, accountId);
     const redirectName = name || "your business";
-    res.redirect("/connected?name=" + encodeURIComponent(redirectName) + "&accountId=" + encodeURIComponent(accountId));
+    let redirectPath =
+      "/connected?name=" + encodeURIComponent(redirectName) + "&accountId=" + encodeURIComponent(accountId);
+    if (stateResult.returnTo && String(stateResult.returnTo).trim().startsWith("/")) {
+      redirectPath = String(stateResult.returnTo).trim();
+    }
+    res.redirect(redirectPath);
   } catch (err) {
     req.log.error(err, "OAuth callback failed");
     next(err);
   }
 });
 
+// Pick Google Business location when the account has more than one (after OAuth, before session is fully established)
+app.get("/auth/choose-location", authRouteLimiter, async (req, res, next) => {
+  try {
+    const t = (req.query.t && String(req.query.t)) || "";
+    const accountId = verifyChooseLocationToken(t);
+    if (!accountId) {
+      return res.status(400).send("Invalid or expired link. Please connect again from the signup page.");
+    }
+    const locations = await listLocations(accountId);
+    if (!locations.length) {
+      return res.redirect("/no-business?" + new URLSearchParams({ reason: "no_location", accountId }).toString());
+    }
+    if (locations.length === 1) {
+      const loc = locations[0];
+      const locationId = loc?.name ? loc.name.split("/").pop() : "";
+      const name = loc?.title || "";
+      await upsertBusiness({ accountId, locationId, name });
+      setSessionCookie(res, accountId);
+      return res.redirect(
+        "/connected?name=" + encodeURIComponent(name || "your business") + "&accountId=" + encodeURIComponent(accountId)
+      );
+    }
+    const options = locations
+      .map((loc) => {
+        const id = loc?.name ? loc.name.split("/").pop() : "";
+        const title = escapeHtml(loc?.title || id || "Location");
+        return `<label class="pick-row"><input type="radio" name="locationId" value="${escapeHtml(id)}" required> <span>${title}</span></label>`;
+      })
+      .join("");
+    res.set("Content-Type", "text/html; charset=utf-8");
+    res.send(`<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Replyr – Choose location</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 520px; margin: 2rem auto; padding: 1rem; background: #f5f5f5; }
+  .card { background: #fff; padding: 1.5rem; border-radius: 12px; box-shadow: 0 1px 8px rgba(0,0,0,0.06); }
+  h1 { font-size: 1.2rem; margin: 0 0 1rem; }
+  .pick-row { display: block; margin: 0.5rem 0; cursor: pointer; }
+  button { margin-top: 1rem; padding: 0.6rem 1.2rem; background: #333; color: #fff; border: none; border-radius: 8px; cursor: pointer; font-size: 1rem; }
+</style></head>
+<body><div class="card">
+  <h1>Which location should Replyr use?</h1>
+  <p style="color:#555;font-size:14px">Your Google account has multiple business locations. Pick one to connect.</p>
+  <form method="post" action="/auth/choose-location">
+    <input type="hidden" name="t" value="${escapeHtml(t)}">
+    ${options}
+    <button type="submit">Continue</button>
+  </form>
+</div></body></html>`);
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.post("/auth/choose-location", authRouteLimiter, express.urlencoded({ extended: true }), async (req, res, next) => {
+  try {
+    const t = (req.body?.t && String(req.body.t)) || "";
+    const locationId = (req.body?.locationId && String(req.body.locationId).trim()) || "";
+    const accountId = verifyChooseLocationToken(t);
+    if (!accountId || !locationId) {
+      return res.status(400).send("Invalid request. Please start again from the signup page.");
+    }
+    const locations = await listLocations(accountId);
+    const allowed = new Set(
+      locations.map((loc) => (loc?.name ? loc.name.split("/").pop() : "")).filter(Boolean)
+    );
+    if (!allowed.has(locationId)) {
+      return res.status(400).send("That location is not available. Please try again.");
+    }
+    const picked = locations.find((loc) => (loc?.name ? loc.name.split("/").pop() : "") === locationId);
+    const name = picked?.title || "";
+    await upsertBusiness({ accountId, locationId, name });
+    setSessionCookie(res, accountId);
+    res.redirect(
+      "/connected?name=" + encodeURIComponent(name || "your business") + "&accountId=" + encodeURIComponent(accountId)
+    );
+  } catch (err) {
+    next(err);
+  }
+});
+
 app.get("/me/google", async (req, res, next) => {
   try {
-    const accountId = req.query.accountId || undefined;
-    const status = await getTokenStatus(accountId);
+    const q = (req.query.accountId && String(req.query.accountId).trim()) || "";
+    if (!q) {
+      return res.status(400).json({ error: "accountId is required" });
+    }
+    if (!canAccessAccount(req, q)) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
+    const status = await getTokenStatus(q);
     res.json(status);
   } catch (err) {
     next(err);
   }
 });
 
-app.post("/free-reply", async (req, res, next) => {
+app.post("/free-reply", freeReplyLimiter, async (req, res, next) => {
   try {
     const { accountId } = req.body || {};
     if (!accountId || typeof accountId !== "string") {
       return res.status(400).json({ error: "accountId is required" });
+    }
+    if (!canAccessAccount(req, accountId)) {
+      return res.status(403).json({ error: "Forbidden" });
     }
     const business = await getBusiness(accountId);
     if (!business) {
@@ -1417,9 +1650,28 @@ app.post("/free-reply", async (req, res, next) => {
 
 app.get("/businesses", async (req, res, next) => {
   try {
-    const list = await getAllBusinesses();
-    const businesses = Object.values(list);
-    res.json(businesses);
+    if (isValidAdminRequest(req)) {
+      const list = await getAllBusinesses();
+      const businesses = Object.values(list).map((b) => ({
+        ...b,
+        gratisAccess: isGratisAccount(b.accountId)
+      }));
+      return res.json(businesses);
+    }
+    const sessionAccount = readSessionAccountId(req);
+    if (!sessionAccount) {
+      return res.status(401).json({ error: "Sign in required" });
+    }
+    const business = await getBusiness(sessionAccount);
+    if (!business) {
+      return res.json([]);
+    }
+    res.json([
+      {
+        ...business,
+        gratisAccess: isGratisAccount(business.accountId)
+      }
+    ]);
   } catch (err) {
     next(err);
   }
@@ -1428,14 +1680,23 @@ app.get("/businesses", async (req, res, next) => {
 app.get("/businesses/:accountId", async (req, res, next) => {
   try {
     const { accountId } = req.params;
+    if (!canAccessAccount(req, accountId)) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
     const business = await getBusiness(accountId);
     if (!business) {
       return res.status(404).json({ error: "Business not found. Connect via /auth/google first." });
     }
     const trialEnded =
       business.trialEndsAt && new Date(business.trialEndsAt) < new Date();
-    const trialEndedNoSubscription = trialEnded && !business.subscribedAt;
-    res.json({ ...business, trialEndedNoSubscription: !!trialEndedNoSubscription });
+    const gratis = isGratisAccount(accountId);
+    const trialEndedNoSubscription =
+      !gratis && trialEnded && !business.subscribedAt && !business.isPro;
+    res.json({
+      ...business,
+      trialEndedNoSubscription: !!trialEndedNoSubscription,
+      gratisAccess: gratis
+    });
   } catch (err) {
     next(err);
   }
@@ -1444,28 +1705,41 @@ app.get("/businesses/:accountId", async (req, res, next) => {
 app.patch("/businesses/:accountId", async (req, res, next) => {
   try {
     const { accountId } = req.params;
+    if (!canAccessAccount(req, accountId)) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
     const existing = await getBusiness(accountId);
     if (!existing) {
       return res.status(404).json({ error: "Business not found. Connect via /auth/google first." });
     }
     const { autoReplyEnabled, contact, intervalMinutes, isPro, proTier } = req.body || {};
+    const admin = isValidAdminRequest(req);
+    const nextIsPro =
+      admin && typeof isPro === "boolean" ? !!isPro : !!existing.isPro;
     if (autoReplyEnabled === true) {
       const trialEnded =
         existing.trialEndsAt && new Date(existing.trialEndsAt) < new Date();
-      if (trialEnded && !existing.subscribedAt) {
+      if (
+        trialEnded &&
+        !existing.subscribedAt &&
+        !isGratisAccount(accountId) &&
+        !nextIsPro
+      ) {
         return res.status(403).json({
           error: "Trial ended. Subscribe to re-enable auto-reply.",
           code: "TRIAL_ENDED"
         });
       }
     }
+    const proPatch = {};
+    if (admin && typeof isPro === "boolean") proPatch.isPro = !!isPro;
+    if (admin && proTier !== undefined) proPatch.proTier = normalizeProTier(proTier);
     await upsertBusiness({
       ...existing,
       ...(typeof autoReplyEnabled === "boolean" && { autoReplyEnabled }),
       ...(contact !== undefined && { contact: String(contact) }),
       ...(intervalMinutes !== undefined && { intervalMinutes: Number(intervalMinutes) }),
-      ...(typeof isPro === "boolean" && { isPro }),
-      ...(proTier !== undefined && { proTier: normalizeProTier(proTier) })
+      ...proPatch
     });
     const updated = await getBusiness(accountId);
     res.json(updated);
@@ -1479,9 +1753,7 @@ app.patch("/businesses/:accountId", async (req, res, next) => {
 app.get("/pro/contacts", async (req, res, next) => {
   try {
     const accountId = (req.query.accountId || "").trim();
-    if (!accountId) {
-      return res.status(400).json({ error: "accountId is required" });
-    }
+    if (!guardBusinessAccess(req, res, accountId)) return;
     const business = await getBusiness(accountId);
     if (!business) {
       return res.status(404).json({ error: "Business not found" });
@@ -1501,7 +1773,7 @@ app.get("/pro/contacts/list", async (req, res, next) => {
     const accountId = (req.query.accountId || "").trim();
     const limit = Math.min(parseInt(req.query.limit, 10) || 100, 500);
     const offset = parseInt(req.query.offset, 10) || 0;
-    if (!accountId) return res.status(400).json({ error: "accountId required" });
+    if (!guardBusinessAccess(req, res, accountId)) return;
     const business = await getBusiness(accountId);
     if (!business?.isPro) return res.status(403).json({ error: "Replyr Pro required" });
     const list = await getProContactsList(accountId, limit, offset);
@@ -1516,6 +1788,7 @@ app.post("/pro/contacts/preview", proUpload.single("file"), async (req, res, nex
   try {
     const accountId = (req.body?.accountId ?? req.query?.accountId ?? "").trim();
     if (accountId) {
+      if (!guardBusinessAccess(req, res, accountId)) return;
       const business = await getBusiness(accountId);
       if (!business?.isPro) {
         return res.status(403).json({ error: "Replyr Pro required to use customer list." });
@@ -1535,9 +1808,7 @@ app.post("/pro/contacts/preview", proUpload.single("file"), async (req, res, nex
 app.post("/pro/contacts/upload", proUpload.single("file"), async (req, res, next) => {
   try {
     const accountId = (req.body?.accountId ?? req.query?.accountId ?? "").trim();
-    if (!accountId) {
-      return res.status(400).json({ error: "accountId is required" });
-    }
+    if (!guardBusinessAccess(req, res, accountId)) return;
     const business = await getBusiness(accountId);
     if (!business) {
       return res.status(404).json({ error: "Business not found" });
@@ -1573,7 +1844,7 @@ app.post("/pro/contacts/upload", proUpload.single("file"), async (req, res, next
 app.get("/pro/sms-usage", async (req, res, next) => {
   try {
     const accountId = (req.query.accountId || "").trim();
-    if (!accountId) return res.status(400).json({ error: "accountId required" });
+    if (!guardBusinessAccess(req, res, accountId)) return;
     const business = await getBusiness(accountId);
     if (!business?.isPro) return res.status(403).json({ error: "Replyr Pro required" });
     if (!db.useDb()) return res.status(503).json({ error: "Database required for campaigns" });
@@ -1596,7 +1867,7 @@ app.get("/pro/sms-usage", async (req, res, next) => {
 app.get("/pro/birthday-settings", async (req, res, next) => {
   try {
     const accountId = (req.query.accountId || "").trim();
-    if (!accountId) return res.status(400).json({ error: "accountId required" });
+    if (!guardBusinessAccess(req, res, accountId)) return;
     const business = await getBusiness(accountId);
     if (!business?.isPro) return res.status(403).json({ error: "Replyr Pro required" });
     if (!db.useDb()) return res.status(503).json({ error: "Database required for campaigns" });
@@ -1610,7 +1881,7 @@ app.get("/pro/birthday-settings", async (req, res, next) => {
 app.patch("/pro/birthday-settings", async (req, res, next) => {
   try {
     const { accountId, enabled, messageText, offerText, sendEmail, sendSms } = req.body || {};
-    if (!accountId) return res.status(400).json({ error: "accountId required" });
+    if (!guardBusinessAccess(req, res, accountId)) return;
     const business = await getBusiness(accountId);
     if (!business?.isPro) return res.status(403).json({ error: "Replyr Pro required" });
     if (!db.useDb()) return res.status(503).json({ error: "Database required for campaigns" });
@@ -1630,7 +1901,7 @@ app.get("/pro/events/:key/:year", async (req, res, next) => {
   try {
     const accountId = (req.query.accountId || "").trim();
     const { key, year } = req.params;
-    if (!accountId) return res.status(400).json({ error: "accountId required" });
+    if (!guardBusinessAccess(req, res, accountId)) return;
     const business = await getBusiness(accountId);
     if (!business?.isPro) return res.status(403).json({ error: "Replyr Pro required" });
     if (!db.useDb()) return res.status(503).json({ error: "Database required for campaigns" });
@@ -1646,7 +1917,7 @@ app.patch("/pro/events/:key/:year", async (req, res, next) => {
     const accountId = (req.body?.accountId || req.query.accountId || "").trim();
     const { key, year } = req.params;
     const { status, messageText, offerText, sendAtLocal, sendEmail, sendSms } = req.body || {};
-    if (!accountId) return res.status(400).json({ error: "accountId required" });
+    if (!guardBusinessAccess(req, res, accountId)) return;
     const business = await getBusiness(accountId);
     if (!business?.isPro) return res.status(403).json({ error: "Replyr Pro required" });
     if (!db.useDb()) return res.status(503).json({ error: "Database required for campaigns" });
@@ -1674,10 +1945,11 @@ app.patch("/pro/events/:key/:year", async (req, res, next) => {
   }
 });
 
-app.post("/pro/one-off", async (req, res, next) => {
+app.post("/pro/one-off", aiCampaignLimiter, async (req, res, next) => {
   try {
     const { accountId, sendDate, subject, body, sendEmail, sendSms } = req.body || {};
     if (!accountId || !sendDate || !subject) return res.status(400).json({ error: "accountId, sendDate, subject required" });
+    if (!guardBusinessAccess(req, res, accountId)) return;
     const business = await getBusiness(accountId);
     if (!business?.isPro) return res.status(403).json({ error: "Replyr Pro required" });
     if (!db.useDb()) return res.status(503).json({ error: "Database required for campaigns" });
@@ -1688,10 +1960,10 @@ app.post("/pro/one-off", async (req, res, next) => {
   }
 });
 
-app.post("/pro/generate-message", async (req, res, next) => {
+app.post("/pro/generate-message", aiCampaignLimiter, async (req, res, next) => {
   try {
     const { accountId, type, eventName, offerText, prompt } = req.body || {};
-    if (!accountId) return res.status(400).json({ error: "accountId required" });
+    if (!guardBusinessAccess(req, res, accountId)) return;
     const business = await getBusiness(accountId);
     if (!business?.isPro) return res.status(403).json({ error: "Replyr Pro required" });
     if (type === "one_off") {
@@ -1724,6 +1996,10 @@ app.get("/pro", async (req, res, next) => {
     if (!accountId) {
       res.redirect("/subscribe");
       return;
+    }
+    if (!canAccessAccount(req, accountId)) {
+      const returnTo = encodeURIComponent(req.originalUrl || `/pro?accountId=${encodeURIComponent(accountId)}`);
+      return res.redirect(`/auth/google?return_to=${returnTo}`);
     }
     const business = await getBusiness(accountId);
     if (!business?.isPro) {
@@ -2091,7 +2367,7 @@ app.get("/pro.js", (req, res) => {
 
   var eventEmoji = { valentines_day: "❤️", presidents_day: "🎩", lunar_new_year: "🧧", easter: "🐣", mothers_day: "🌷", memorial_day: "🎖️", fathers_day: "👔", independence_day: "🇺🇸", labor_day: "📋", halloween: "🎃", thanksgiving: "🦃", black_friday: "🛒", christmas: "🎄", new_year: "⭐" };
   function loadEvents() {
-    fetch("/pro/events").then(function(r) { return r.json(); }).then(function(events) {
+    fetch("/pro/events", { credentials: "same-origin" }).then(function(r) { return r.json(); }).then(function(events) {
       var el = document.getElementById("events-list");
       if (!el) return;
       function fmtDate(iso) {
@@ -2149,7 +2425,7 @@ app.get("/pro.js", (req, res) => {
           var sendSmsEl = document.getElementById("event-detail-send-sms");
           if (sendEmailEl) sendEmailEl.checked = true;
           if (sendSmsEl) sendSmsEl.checked = true;
-          fetch("/pro/events/" + key + "/" + year + "?accountId=" + encodeURIComponent(accountId))
+          fetch("/pro/events/" + key + "/" + year + "?accountId=" + encodeURIComponent(accountId), { credentials: "same-origin" })
             .then(function(r) { return r.json(); })
             .then(function(c) {
               if (c && c.messageText) { panelMessage.value = c.messageText; panelMessage.dispatchEvent(new Event("input")); }
@@ -2171,6 +2447,7 @@ app.get("/pro.js", (req, res) => {
           var year = btn.getAttribute("data-year");
           fetch("/pro/events/" + key + "/" + year + "?accountId=" + encodeURIComponent(accountId), {
             method: "PATCH",
+            credentials: "same-origin",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ accountId: accountId, status: "skipped" })
           }).then(function(r) { return r.json(); }).then(function() {
@@ -2188,6 +2465,7 @@ app.get("/pro.js", (req, res) => {
           var year = btn.getAttribute("data-year");
           fetch("/pro/events/" + key + "/" + year + "?accountId=" + encodeURIComponent(accountId), {
             method: "PATCH",
+            credentials: "same-origin",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ accountId: accountId, status: "pending" })
           }).then(function(r) { return r.json(); }).then(function() {
@@ -2224,7 +2502,7 @@ app.get("/pro.js", (req, res) => {
         if (!confirmBtn) return;
         var key = confirmBtn.getAttribute("data-key");
         var year = confirmBtn.getAttribute("data-year");
-        fetch("/pro/events/" + key + "/" + year + "?accountId=" + encodeURIComponent(accountId))
+        fetch("/pro/events/" + key + "/" + year + "?accountId=" + encodeURIComponent(accountId), { credentials: "same-origin" })
           .then(function(r) { return r.json().then(function(c) { return { ok: r.ok, c: c }; }); })
           .then(function(x) {
             if (!x.ok) return;
@@ -2250,6 +2528,7 @@ app.get("/pro.js", (req, res) => {
       eventDetailGenerate.innerHTML = eventDetailGenerateOrig.replace(/Generate with Replyr/g, "Thinking…");
       fetch("/pro/generate-message", {
         method: "POST",
+        credentials: "same-origin",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ accountId: accountId, type: "event", eventName: eventName, offerText: offerText, prompt: businessPrompt })
       }).then(function(r) { return r.json(); }).then(function(data) {
@@ -2279,6 +2558,7 @@ app.get("/pro.js", (req, res) => {
       if (msgEl) msgEl.textContent = "";
       fetch("/pro/events/" + key + "/" + year + "?accountId=" + encodeURIComponent(accountId), {
         method: "PATCH",
+        credentials: "same-origin",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ accountId: accountId, status: "confirmed", messageText: message, offerText: offer, sendAtLocal: sendAtLocal, sendEmail: sendEmail, sendSms: sendSms })
       }).then(function(r) {
@@ -2318,6 +2598,7 @@ app.get("/pro.js", (req, res) => {
       birthdayGenerate.innerHTML = birthdayGenerateOrig.replace(/Generate with Replyr/g, "Thinking…");
       fetch("/pro/generate-message", {
         method: "POST",
+        credentials: "same-origin",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ accountId: accountId, type: "birthday", offerText: offerText, prompt: businessPrompt })
       }).then(function(r) { return r.json(); }).then(function(data) {
@@ -2342,6 +2623,7 @@ app.get("/pro.js", (req, res) => {
       birthdaySave.disabled = true;
       fetch("/pro/birthday-settings", {
         method: "PATCH",
+        credentials: "same-origin",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ accountId: accountId, enabled: enabled, messageText: message, offerText: offer, sendEmail: sendEmail, sendSms: sendSms })
       }).then(function(r) { return r.json(); }).then(function() {
@@ -2363,6 +2645,7 @@ app.get("/pro.js", (req, res) => {
       oneoffGenerate.innerHTML = oneoffGenerateOrig.replace(/Generate with Replyr/g, "Thinking…");
       fetch("/pro/generate-message", {
         method: "POST",
+        credentials: "same-origin",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ accountId: accountId, type: "one_off", prompt: promptText })
       }).then(function(r) { return r.json(); }).then(function(data) {
@@ -2390,6 +2673,7 @@ app.get("/pro.js", (req, res) => {
       oneoffSchedule.disabled = true;
       fetch("/pro/one-off", {
         method: "POST",
+        credentials: "same-origin",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ accountId: accountId, sendDate: date, subject: subject, body: body, sendEmail: sendEmail, sendSms: sendSms })
       }).then(function(r) { return r.json(); }).then(function() {
@@ -2604,8 +2888,22 @@ app.get("/terms", (req, res) => {
 </body></html>`);
 });
 
-// Admin page: list businesses, edit contact and auto-reply
+// Admin page: list businesses, edit contact and auto-reply (requires ADMIN_SECRET via ?secret= or X-Admin-Secret)
 app.get("/admin", (req, res) => {
+  const adminConfigured = !!(process.env.ADMIN_SECRET || "").trim();
+  if (!adminConfigured) {
+    res.status(503);
+    return res.type("html").send(
+      "<!DOCTYPE html><html><body style=\"font-family:system-ui;padding:2rem\"><h1>Admin disabled</h1><p>Set <code>ADMIN_SECRET</code> in the server environment, then open <code>/admin?secret=…</code></p></body></html>"
+    );
+  }
+  if (!isValidAdminRequest(req)) {
+    res.status(401);
+    return res.type("html").send(
+      "<!DOCTYPE html><html><body style=\"font-family:system-ui;padding:2rem\"><h1>Unauthorized</h1><p>Add your admin secret to the URL: <code>/admin?secret=YOUR_ADMIN_SECRET</code></p></body></html>"
+    );
+  }
+  const adminSecretForScript = encodeURIComponent(getAdminSecretFromRequest(req));
   res.set("Content-Type", "text/html; charset=utf-8");
   res.send(`
 <!DOCTYPE html>
@@ -2638,29 +2936,84 @@ app.get("/admin", (req, res) => {
     .status-subscribed { color: #2e7d32; font-weight: 500; }
     .status-trial { color: #1565c0; }
     .status-expired { color: #c62828; }
+    .status-gratis { color: #2e7d32; }
+    .status-pro { color: #6a1b9a; font-weight: 500; }
   </style>
 </head>
 <body>
   <h1>Replyr – Admin</h1>
-  <p class="refresh"><a href="/admin">Refresh</a> · <a href="/businesses">JSON</a></p>
+  <p class="refresh"><a href="/admin" id="admin-refresh-link">Refresh</a> · <a href="/businesses" id="admin-json-link">JSON</a></p>
   <div id="loading">Loading businesses…</div>
   <div id="content" style="display: none;">
-    <div class="filter-row" id="filter-row" style="display: none;"><label for="status-filter">Status:</label><select id="status-filter"><option value="">All</option><option value="trial">Trial</option><option value="subscribed">Subscribed</option><option value="expired">Expired</option></select></div>
+    <div class="filter-row" id="filter-row" style="display: none;"><label for="status-filter">Status:</label><select id="status-filter"><option value="">All</option><option value="trial">Trial</option><option value="subscribed">Subscribed</option><option value="pro">Pro</option><option value="gratis">Complimentary</option><option value="expired">Expired</option></select></div>
   </div>
-  <script src="/admin.js"></script>
+  <script src="/admin.js?secret=${adminSecretForScript}"></script>
 </body>
 </html>
   `);
 });
 
-// Admin script (separate so CSP allows it)
+// Admin script (separate so CSP allows it) — secret must match ADMIN_SECRET (query or header)
 app.get("/admin.js", (req, res) => {
+  if (!(process.env.ADMIN_SECRET || "").trim()) {
+    return res.status(404).type("text/plain").send("Not found");
+  }
+  if (!isValidAdminRequest(req)) {
+    return res.status(401).type("text/plain").send("Unauthorized");
+  }
+  const adminShowProScaleTier = !!(process.env.STRIPE_PRO_SCALE_PRICE_ID || "").trim();
   res.set("Content-Type", "application/javascript; charset=utf-8");
   res.send(`
+var REPLYR_ADMIN_SECRET = (function() {
+  try {
+    var sc = document.currentScript && document.currentScript.src;
+    if (sc) return new URL(sc).searchParams.get("secret") || "";
+  } catch (e) {}
+  return new URLSearchParams(location.search).get("secret") || "";
+})();
+var REPLYR_ADMIN_SHOW_PRO_SCALE = ${JSON.stringify(adminShowProScaleTier)};
+function replyrAdminHeaders(json) {
+  var h = {};
+  if (json) h["Content-Type"] = "application/json";
+  if (REPLYR_ADMIN_SECRET) h["X-Admin-Secret"] = REPLYR_ADMIN_SECRET;
+  return h;
+}
+(function initAdminLinks() {
+  var s = REPLYR_ADMIN_SECRET;
+  if (!s) return;
+  var r = document.getElementById("admin-refresh-link");
+  if (r) r.href = "/admin?secret=" + encodeURIComponent(s);
+  var j = document.getElementById("admin-json-link");
+  if (j) {
+    j.href = "#";
+    j.addEventListener("click", function(e) {
+      e.preventDefault();
+      fetch("/businesses", { headers: replyrAdminHeaders(false), credentials: "same-origin" })
+        .then(function(r2) { return r2.json(); })
+        .then(function(data) {
+          var blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+          var u = URL.createObjectURL(blob);
+          window.open(u, "_blank");
+          setTimeout(function() { URL.revokeObjectURL(u); }, 60000);
+        })
+        .catch(function() { alert("Failed to load JSON"); });
+    });
+  }
+})();
+function proTierSelectInnerHtml(tier) {
+  var o = '<option value="starter"' + (tier === "starter" ? " selected" : "") + '>Starter — 500 SMS/mo</option>' +
+    '<option value="growth"' + (tier === "growth" ? " selected" : "") + '>Growth — 2,500 SMS/mo</option>';
+  if (REPLYR_ADMIN_SHOW_PRO_SCALE || tier === "scale") {
+    o += '<option value="scale"' + (tier === "scale" ? " selected" : "") + '>Scale — 10,000 SMS/mo</option>';
+  }
+  return o;
+}
 function escapeHtml(s) { const d = document.createElement("div"); d.textContent = s; return d.innerHTML; }
 function escapeAttr(s) { return escapeHtml(s).replace(/"/g, "&quot;"); }
 function getStatus(b) {
   if (b.subscribedAt) return { status: "subscribed", label: "Subscribed", className: "status-subscribed" };
+  if (b.gratisAccess) return { status: "gratis", label: "Complimentary", className: "status-gratis" };
+  if (b.isPro) return { status: "pro", label: "Pro", className: "status-pro" };
   if (b.trialEndsAt && new Date(b.trialEndsAt) < new Date()) return { status: "expired", label: "Expired", className: "status-expired" };
   return { status: "trial", label: "Trial", className: "status-trial" };
 }
@@ -2676,12 +3029,12 @@ async function load() {
   const content = document.getElementById("content");
   const filterRow = document.getElementById("filter-row");
   try {
-    const r = await fetch("/businesses");
+    const r = await fetch("/businesses", { headers: replyrAdminHeaders(false), credentials: "same-origin" });
     const list = await r.json();
     if (!Array.isArray(list) || list.length === 0) {
       content.innerHTML = "<p class=\\"empty\\">No businesses yet. Have them connect via the auth link.</p>";
     } else {
-      const tableHtml = "<table><thead><tr><th>Name</th><th>Contact (for 1–2 star replies)</th><th>Trial ends</th><th>Status</th><th>Pro</th><th>Tier</th><th>Auto-reply</th><th>Interval (min)</th><th>Actions</th></tr></thead><tbody></tbody></table>";
+      const tableHtml = "<table><thead><tr><th>Name</th><th>Contact (for 1–3 star replies)</th><th>Trial ends</th><th>Status</th><th>Pro</th><th>Pro tier (SMS/mo)</th><th>Auto-reply</th><th>Interval (min)</th><th>Actions</th></tr></thead><tbody></tbody></table>";
       content.insertAdjacentHTML("beforeend", tableHtml);
       const table = content.querySelector("table");
       if (filterRow) { content.insertBefore(filterRow, table); filterRow.style.display = "flex"; }
@@ -2700,7 +3053,7 @@ async function load() {
           "<td>" + escapeHtml(trialEndStr) + "</td>" +
           "<td><span class=\\"" + s.className + "\\">" + escapeHtml(s.label) + "</span></td>" +
           "<td><input type=\\"checkbox\\" " + (b.isPro ? "checked" : "") + " data-field=\\"isPro\\" title=\\"Pro (campaigns, CSV)\\"></td>" +
-          "<td><select data-field=\\"proTier\\"><option value=\\"starter\\" " + (tier === "starter" ? "selected" : "") + ">starter</option><option value=\\"growth\\" " + (tier === "growth" ? "selected" : "") + ">growth</option><option value=\\"scale\\" " + (tier === "scale" ? "selected" : "") + ">scale</option></select></td>" +
+          "<td><select data-field=\\"proTier\\" title=\\"Pro campaign SMS allowance (see /subscribe)\\">" + proTierSelectInnerHtml(tier) + "</select></td>" +
           "<td><input type=\\"checkbox\\" " + (b.autoReplyEnabled ? "checked" : "") + " data-field=\\"autoReplyEnabled\\"></td>" +
           "<td><input type=\\"number\\" min=\\"1\\" value=\\""
           + (b.intervalMinutes ?? 30)
@@ -2745,7 +3098,8 @@ async function saveRow(e) {
   try {
     const r = await fetch("/businesses/" + encodeURIComponent(accountId), {
       method: "PATCH",
-      headers: { "Content-Type": "application/json" },
+      headers: replyrAdminHeaders(true),
+      credentials: "same-origin",
       body: JSON.stringify({ contact, isPro, proTier, autoReplyEnabled, intervalMinutes })
     });
     const data = await r.json();
@@ -2775,7 +3129,8 @@ async function runNowRow(e) {
   try {
     const r = await fetch("/auto/process", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: replyrAdminHeaders(true),
+      credentials: "same-origin",
       body: JSON.stringify({ accountId, locationId })
     });
     const data = await r.json();
@@ -2801,6 +3156,7 @@ load();
 app.post("/google/reviews/:accountId/:locationId/:reviewId/reply", async (req, res, next) => {
   try {
     const { accountId, locationId, reviewId } = req.params;
+    if (!guardBusinessAccess(req, res, accountId)) return;
     const { comment } = req.body || {};
     if (!comment || typeof comment !== "string" || comment.trim().length === 0) {
       return res.status(400).json({ error: "comment is required" });
@@ -2815,7 +3171,9 @@ app.post("/google/reviews/:accountId/:locationId/:reviewId/reply", async (req, r
 
 app.get("/google/accounts", async (req, res, next) => {
   try {
-    const accounts = await listAccounts();
+    const accountId = (req.query.accountId && String(req.query.accountId).trim()) || "";
+    if (!guardBusinessAccess(req, res, accountId)) return;
+    const accounts = await listAccounts(accountId);
     res.json(accounts);
   } catch (err) {
     req.log.error(err, "Failed to list accounts");
@@ -2826,6 +3184,7 @@ app.get("/google/accounts", async (req, res, next) => {
 app.get("/google/accounts/:accountId/locations", async (req, res, next) => {
   try {
     const { accountId } = req.params;
+    if (!guardBusinessAccess(req, res, accountId)) return;
     const locations = await listLocations(accountId);
     res.json(locations);
   } catch (err) {
@@ -2837,6 +3196,7 @@ app.get("/google/accounts/:accountId/locations", async (req, res, next) => {
 app.get("/google/accounts/:accountId/locations/:locationId/reviews", async (req, res, next) => {
   try {
     const { accountId, locationId } = req.params;
+    if (!guardBusinessAccess(req, res, accountId)) return;
     const reviews = await listReviews(accountId, locationId);
     res.json(reviews);
   } catch (err) {
@@ -2853,6 +3213,14 @@ app.post("/auto/process", async (req, res, next) => {
     const l = locationId || process.env.AUTO_REPLY_LOCATION_ID;
     if (!a || !l) {
       return res.status(400).json({ error: "accountId and locationId required (body or env)" });
+    }
+    const usedBody = !!(accountId && locationId);
+    if (usedBody) {
+      if (!canAccessAccount(req, String(accountId))) {
+        return res.status(403).json({ error: "Forbidden" });
+      }
+    } else if (!isValidAdminRequest(req)) {
+      return res.status(403).json({ error: "Forbidden" });
     }
     const business = await getBusiness(a);
     const result = await processPendingReviews(a, l, {

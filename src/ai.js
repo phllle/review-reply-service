@@ -23,18 +23,19 @@ export async function generateReplyWithClaude(review, options = {}) {
   const reviewerName = (review?.reviewer?.displayName || "").trim();
   const name = reviewerName && !/google user/i.test(reviewerName) ? reviewerName.split(" ")[0] : "there";
 
-  const isLowRating = ratingNum === 1 || ratingNum === 2;
+  const useReachOutContact = ratingNum === 1 || ratingNum === 2 || ratingNum === 3;
+  const contactTrimmed = String(contact || "").trim();
   const systemPrompt = `You write short, professional replies to Google Business reviews. Rules:
 - Reply as the business owner. Keep it under ${MAX_REPLY_CHARS} characters.
-- Be warm and grateful for positive reviews; empathetic and solution-focused for negative ones.
+- Be warm and grateful for positive reviews; empathetic and solution-focused for negative or mixed (3-star) feedback.
 - Do not use markdown, bullet points, or hashtags. Output plain text only.
-- For 1- or 2-star reviews, you must invite the customer to reach out using the contact information provided. Include that contact in your reply.`;
+- For 1-, 2-, or 3-star reviews, you must invite the customer to reach out using the contact information provided below. Include that exact contact (phone, email, or URL) in your reply. If no contact is provided, you may refer to the Google Business listing.`;
 
   const userPrompt = `Business name: ${businessName}
 Star rating: ${ratingNum} out of 5
 Reviewer's first name: ${name}
 Review text: "${reviewText}"
-${isLowRating ? `Contact for the customer to reach out: ${contact}` : ""}
+${useReachOutContact ? (contactTrimmed ? `Contact for the customer to reach out: ${contactTrimmed}` : "No phone/email on file for this business — invite them to reach out via the Google Business listing.") : ""}
 
 Write a single, short reply to this review. Output only the reply text, nothing else.`;
 
