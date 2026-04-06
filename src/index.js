@@ -926,10 +926,21 @@ app.get("/subscribe", (req, res) => {
     (req.query.accountId && String(req.query.accountId).trim()) ||
     (req.query.accountid && String(req.query.accountid).trim()) ||
     "";
+  const baseCheckoutConfigured = Boolean(process.env.STRIPE_SECRET_KEY && getStripeCorePriceId());
   const hasStripe =
-    (process.env.STRIPE_SECRET_KEY && getStripeCorePriceId()) || subscribeUrl.startsWith("http");
+    baseCheckoutConfigured || subscribeUrl.startsWith("http");
   const hasBillingPortal = billingPortalUrl.startsWith("http");
-  const ctaHref = subscribeUrl.startsWith("http") ? subscribeUrl : (contact.startsWith("http") ? contact : (contact ? "mailto:" + contact : "#"));
+  // When API Checkout is set up, base plan must use /create-checkout-session (accountId + webhook).
+  // Do not send unsigned users to SUBSCRIBE_URL — Payment Links often go stale ("link is no longer active").
+  const ctaHref = baseCheckoutConfigured
+    ? "#"
+    : subscribeUrl.startsWith("http")
+      ? subscribeUrl
+      : contact.startsWith("http")
+        ? contact
+        : contact
+          ? "mailto:" + contact
+          : "#";
   const ctaText = hasStripe ? "Subscribe to Replyr" : "Contact us to subscribe";
   res.set("Content-Type", "text/html; charset=utf-8");
   res.send(`
@@ -967,7 +978,7 @@ app.get("/subscribe", (req, res) => {
   </style>
 </head>
 <body>
-  <div class="subscribe-page" data-account-id="${escapeHtml(accountId)}" data-fallback-url="${escapeHtml(ctaHref)}" data-pro-url="${escapeHtml(subscribeProUrl)}" data-pro-use-checkout="${hasProPrice ? "1" : "0"}">
+  <div class="subscribe-page" data-account-id="${escapeHtml(accountId)}" data-fallback-url="${escapeHtml(ctaHref)}" data-base-requires-account="${baseCheckoutConfigured ? "1" : "0"}" data-pro-url="${escapeHtml(subscribeProUrl)}" data-pro-use-checkout="${hasProPrice ? "1" : "0"}">
     <div class="brand">
       <div class="logo" aria-hidden="true"><svg viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg"><rect x="8" y="6" width="24" height="14" rx="4" fill="#2160F3"/><polygon points="12,20 20,20 16,27" fill="#2160F3"/><line x1="12" y1="12" x2="28" y2="12" stroke="#fff" stroke-width="2" stroke-linecap="round"/></svg></div>
       <span class="brand-name">Replyr</span>
@@ -1059,6 +1070,7 @@ app.get("/subscribe.js", (req, res) => {
   if (!page) return;
   var accountId = (page.getAttribute("data-account-id") || "").trim();
   var fallbackUrl = (page.getAttribute("data-fallback-url") || "").trim() || "#";
+  var baseRequiresAccount = page.getAttribute("data-base-requires-account") === "1";
   function go(url, openInNewTab, msgEl) {
     if (!url || url === "#" || url.indexOf("http") !== 0) {
       if (msgEl) { msgEl.textContent = "Subscribe link not set up. Add STRIPE_SECRET_KEY and STRIPE_PRICE_ID (or STRIPE_BASE_PRICE_ID) for Checkout."; }
@@ -1093,7 +1105,14 @@ app.get("/subscribe.js", (req, res) => {
         if (msgEl) msgEl.textContent = "Sign in via Dashboard first so we can link Pro to your business.";
         return;
       }
-      if (!accountId && !plan) { go(fallbackUrl, false, msgEl); return; }
+      if (!accountId && !plan) {
+        if (baseRequiresAccount) {
+          if (msgEl) msgEl.textContent = "Sign in with Google from the home page, connect your business, then open Subscribe from your dashboard so checkout links to your account.";
+          return;
+        }
+        go(fallbackUrl, false, msgEl);
+        return;
+      }
       btn.disabled = true;
       if (msgEl) msgEl.textContent = "Redirecting to checkout…";
       var body = { accountId: accountId };
