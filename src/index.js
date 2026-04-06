@@ -521,7 +521,7 @@ app.post("/create-checkout-session", aiCampaignLimiter, async (req, res, next) =
       return res.status(503).json({
         error: isPro
           ? "Replyr Pro tier pricing is not configured (set STRIPE_PRO_STARTER_PRICE_ID / STRIPE_PRO_GROWTH_PRICE_ID / STRIPE_PRO_SCALE_PRICE_ID)."
-          : "Stripe not configured. Use the Subscribe link below."
+          : "Set STRIPE_PRICE_ID (or STRIPE_BASE_PRICE_ID) for the $19 plan on the server — same Stripe account as your Pro prices."
       });
     }
     if (!accountId || typeof accountId !== "string") {
@@ -927,20 +927,26 @@ app.get("/subscribe", (req, res) => {
     (req.query.accountid && String(req.query.accountid).trim()) ||
     "";
   const baseCheckoutConfigured = Boolean(process.env.STRIPE_SECRET_KEY && getStripeCorePriceId());
+  const subscribeUrlTrim = subscribeUrl.trim();
+  const subscribeIsStripePaymentLink = /^https?:\/\/buy\.stripe\.com\//i.test(subscribeUrlTrim);
   const hasStripe =
-    baseCheckoutConfigured || subscribeUrl.startsWith("http");
+    baseCheckoutConfigured || subscribeUrlTrim.startsWith("http");
   const hasBillingPortal = billingPortalUrl.startsWith("http");
   // When API Checkout is set up, base plan must use /create-checkout-session (accountId + webhook).
-  // Do not send unsigned users to SUBSCRIBE_URL — Payment Links often go stale ("link is no longer active").
+  // Never use buy.stripe.com Payment Links as fallback — they get deactivated ("link is no longer active")
+  // and the client used to redirect there after a failed Checkout API call.
+  const basePlanNeedsSignIn = baseCheckoutConfigured || subscribeIsStripePaymentLink;
   const ctaHref = baseCheckoutConfigured
     ? "#"
-    : subscribeUrl.startsWith("http")
-      ? subscribeUrl
-      : contact.startsWith("http")
-        ? contact
-        : contact
-          ? "mailto:" + contact
-          : "#";
+    : subscribeIsStripePaymentLink
+      ? "#"
+      : subscribeUrlTrim.startsWith("http")
+        ? subscribeUrlTrim
+        : contact.startsWith("http")
+          ? contact
+          : contact
+            ? "mailto:" + contact
+            : "#";
   const ctaText = hasStripe ? "Subscribe to Replyr" : "Contact us to subscribe";
   res.set("Content-Type", "text/html; charset=utf-8");
   res.send(`
@@ -978,7 +984,7 @@ app.get("/subscribe", (req, res) => {
   </style>
 </head>
 <body>
-  <div class="subscribe-page" data-account-id="${escapeHtml(accountId)}" data-fallback-url="${escapeHtml(ctaHref)}" data-base-requires-account="${baseCheckoutConfigured ? "1" : "0"}" data-pro-url="${escapeHtml(subscribeProUrl)}" data-pro-use-checkout="${hasProPrice ? "1" : "0"}">
+  <div class="subscribe-page" data-account-id="${escapeHtml(accountId)}" data-fallback-url="${escapeHtml(ctaHref)}" data-base-requires-account="${basePlanNeedsSignIn ? "1" : "0"}" data-pro-url="${escapeHtml(subscribeProUrl)}" data-pro-use-checkout="${hasProPrice ? "1" : "0"}">
     <div class="brand">
       <div class="logo" aria-hidden="true"><svg viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg"><rect x="8" y="6" width="24" height="14" rx="4" fill="#2160F3"/><polygon points="12,20 20,20 16,27" fill="#2160F3"/><line x1="12" y1="12" x2="28" y2="12" stroke="#fff" stroke-width="2" stroke-linecap="round"/></svg></div>
       <span class="brand-name">Replyr</span>
@@ -1124,11 +1130,13 @@ app.get("/subscribe.js", (req, res) => {
         body: JSON.stringify(body)
       }).then(function(r) { return r.json().then(function(data) { return { ok: r.ok, data: data }; }).catch(function() { return { ok: false, data: null }; }); }).then(function(result) {
         if (result.data && result.data.url) { go(result.data.url, false, msgEl); return; }
-        if (!result.ok && result.data && result.data.error && msgEl) msgEl.textContent = result.data.error;
-        go(fallbackUrl, false, msgEl);
+        if (msgEl) {
+          msgEl.textContent = (result.data && result.data.error)
+            ? result.data.error
+            : "Could not start checkout. Try again or contact support.";
+        }
       }).catch(function() {
-        if (msgEl) msgEl.textContent = "Request failed. Redirecting…";
-        go(fallbackUrl, false, msgEl);
+        if (msgEl) msgEl.textContent = "Request failed. Check your connection and try again.";
       }).finally(function() { btn.disabled = false; });
     });
   }
