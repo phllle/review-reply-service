@@ -9,6 +9,15 @@ const BUSINESSES_PATH = path.resolve(__dirname, "..", "businesses.json");
 
 const DEFAULT_CONTACT = "us using the contact details on our Google Business listing";
 
+/** Comma/space-separated Google account IDs that get base Replyr without trial/subscription (set REPLYR_GRATIS_ACCOUNT_IDS). */
+export function isGratisAccount(accountId) {
+  if (!accountId) return false;
+  const raw = (process.env.REPLYR_GRATIS_ACCOUNT_IDS || "").trim();
+  if (!raw) return false;
+  const ids = new Set(raw.split(/[\s,]+/).map((s) => s.trim()).filter(Boolean));
+  return ids.has(String(accountId).trim());
+}
+
 function getTrialEndsAtForNewBusiness() {
   const d = new Date();
   d.setUTCDate(d.getUTCDate() + 30);
@@ -112,7 +121,7 @@ function isSubscribed(b) {
   return !!(b.subscribedAt);
 }
 
-/** Get all businesses that have auto-reply enabled and are allowed to run (trial active or subscribed) */
+/** Get all businesses that have auto-reply enabled and are allowed to run (trial active, base subscription, Pro, or gratis list) */
 export async function getEnabledBusinesses() {
   const all = await readBusinesses();
   return Object.values(all).filter(
@@ -120,7 +129,7 @@ export async function getEnabledBusinesses() {
       b.autoReplyEnabled === true &&
       b.accountId &&
       b.locationId &&
-      (isTrialActive(b) || isSubscribed(b))
+      (isTrialActive(b) || isSubscribed(b) || isGratisAccount(b.accountId) || b.isPro)
   );
 }
 

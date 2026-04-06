@@ -50,7 +50,7 @@ On Railway (or any host with ephemeral filesystem), set **DATABASE_URL** to a Po
 - **Option B – Checkout Session:** Set **STRIPE_PRO_PRICE_ID** (the Price ID for your Pro product) and **SUBSCRIBE_PRO_PRICE**. The button will create a Checkout session and the webhook will set `is_pro` when they complete payment. You can use both: if **STRIPE_PRO_PRICE_ID** is set, Pro uses Checkout (and `is_pro` is set); otherwise **SUBSCRIBE_PRO_URL** is used.
 
 ### AI replies (Anthropic Claude)
-To use Claude for generating review replies instead of templates, set **ANTHROPIC_API_KEY** (from [Anthropic Console](https://console.anthropic.com)). Optional: **ANTHROPIC_MODEL** (default `claude-sonnet-4-20250514`). Replies are based on star rating; for 1–2 star reviews Claude is prompted to include the business’s contact info (from the connected page). Replies are Claude-only; if the key is unset or the API fails for a review, that review is skipped (no reply posted).
+To use Claude for generating review replies instead of templates, set **ANTHROPIC_API_KEY** (from [Anthropic Console](https://console.anthropic.com)). Optional: **ANTHROPIC_MODEL** (default `claude-sonnet-4-20250514`). Replies are based on star rating; for 1–3 star reviews Claude is prompted to include the business’s contact info (from the connected page). Replies are Claude-only; if the key is unset or the API fails for a review, that review is skipped (no reply posted).
 
 ### Failure alerts (email & SMS)
 When the scheduled auto-reply run throws or any reply fails, you can get notified:
@@ -59,3 +59,16 @@ When the scheduled auto-reply run throws or any reply fails, you can get notifie
 - **SMS:** Set **ALERT_PHONE** (e.g. `+15551234567`), **TWILIO_ACCOUNT_SID**, **TWILIO_AUTH_TOKEN**, and **TWILIO_FROM_NUMBER** (from [Twilio](https://twilio.com)).
 
 You can set only one or both. Alerts are sent when the scheduler tick throws (e.g. API error) or when any reply in a run fails (e.g. Claude or Google API failure).
+
+### Security & sessions
+- **REPLYR_SESSION_SECRET** – Required in production. After Google OAuth, Replyr sets an HttpOnly session cookie so API routes (`/businesses`, `/free-reply`, Pro endpoints, etc.) only work for the signed-in Google account.
+- **ADMIN_SECRET** – Protects `/admin` and `/admin.js`. Open **`/admin?secret=YOUR_SECRET`** (or send header `X-Admin-Secret`). Full JSON export uses the same secret on `GET /businesses`.
+- **BASE_URL** – Set to your public origin (e.g. `https://replyr.pro`) so Twilio can verify webhook signatures for `POST /webhooks/twilio/sms`.
+
+### Twilio: A2P 10DLC & spending (operator checklist)
+These are **Twilio Console** steps (not env vars):
+1. **A2P 10DLC** – For US long-code SMS to customers, complete **Standard** brand registration and a suitable **campaign** (platform sending on behalf of multiple businesses). Sole Proprietor registration is not appropriate for multi-tenant campaign SMS.
+2. **Spending limit** – In Twilio → Billing → **Spending limits**, set a monthly or all-time cap so unexpected volume cannot drain the account.
+3. **Campaign SMS flag** – Set **`CAMPAIGN_SMS_ENABLED=true`** only when you intend to send Pro campaign SMS; metering and caps apply per business tier in the database.
+
+Replyr uses **pay-as-you-go** Twilio pricing (per message); there is no separate “plan” to subscribe to beyond registration and carrier fees.

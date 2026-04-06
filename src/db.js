@@ -611,3 +611,36 @@ export async function incrementProSmsUsage(accountId, monthKey, amount = 1) {
   );
   return Number(res.rows[0]?.sms_count || 0);
 }
+
+/**
+ * Atomically add one SMS segment only if current count is strictly below maxSegments.
+ * @returns {number|null} new count after increment, or null if cap already reached
+ */
+export async function incrementProSmsUsageIfUnderCap(accountId, monthKey, maxSegments) {
+  const cap = Math.max(0, Number(maxSegments) || 0);
+  const res = await getPool().query(
+    `INSERT INTO pro_sms_usage (account_id, month_key, sms_count, updated_at)
+     VALUES ($1, $2, 1, NOW())
+     ON CONFLICT (account_id, month_key)
+     DO UPDATE SET
+       sms_count = pro_sms_usage.sms_count + 1,
+       updated_at = NOW()
+     WHERE pro_sms_usage.sms_count < $3
+     RETURNING sms_count`,
+    [accountId, monthKey, cap]
+  );
+  if (!res.rows.length) return null;
+  return Number(res.rows[0].sms_count);
+}
+
+/** Decrement by 1 (floor at 0). Used when Twilio send fails after a reserved segment. */
+export async function decrementProSmsUsage(accountId, monthKey, amount = 1) {
+  const dec = Math.max(0, Number(amount) || 0);
+  if (!dec) return getProSmsUsage(accountId, monthKey);
+  await getPool().query(
+    `UPDATE pro_sms_usage SET sms_count = GREATEST(0, sms_count - $3), updated_at = NOW()
+     WHERE account_id = $1 AND month_key = $2`,
+    [accountId, monthKey, dec]
+  );
+  return getProSmsUsage(accountId, monthKey);
+}

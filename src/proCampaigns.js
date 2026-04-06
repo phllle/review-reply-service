@@ -5,9 +5,8 @@
 
 import * as db from "./db.js";
 import { sendCampaignEmail } from "./campaignEmail.js";
-import { sendCampaignSms, isSmsConfigured } from "./campaignSms.js";
+import { sendCampaignSms, sendProCampaignSms, isCampaignSmsFeatureEnabled, isSmsConfigured } from "./campaignSms.js";
 import { getBusiness } from "./businesses.js";
-import { getCurrentMonthKey, getIncludedSmsForTier, normalizeProTier } from "./proPlan.js";
 
 // Major US events: key, name, and a function (year) -> send date (YYYY-MM-DD)
 const EVENT_RULES = [
@@ -217,21 +216,6 @@ function toSmsFriendly(longText, maxChars = 280) {
   return truncated.replace(/\s+$/, "") + "…";
 }
 
-async function getSmsUsageState(accountId, business) {
-  const monthKey = getCurrentMonthKey();
-  const tier = normalizeProTier(business?.proTier);
-  const includedSms = getIncludedSmsForTier(tier);
-  const usedSms = await db.getProSmsUsage(accountId, monthKey);
-  return { monthKey, tier, includedSms, usedSms };
-}
-
-async function tryConsumeOneSms(accountId, usageState) {
-  if (!usageState) return true;
-  if (usageState.usedSms >= usageState.includedSms) return false;
-  usageState.usedSms = await db.incrementProSmsUsage(accountId, usageState.monthKey, 1);
-  return true;
-}
-
 /** Send birthday emails for one business (called by scheduler). Optional asOfDate (YYYY-MM-DD) for testing. */
 export async function sendBirthdayCampaignsForAccount(accountId, logger = console, asOfDate = null) {
   if (!db.useDb()) return { sent: 0 };
@@ -248,8 +232,7 @@ export async function sendBirthdayCampaignsForAccount(accountId, logger = consol
   const replyTo = business.contact?.match(/\S+@\S+/) ? business.contact : undefined;
   let sent = 0;
   const sendEmail = settings.sendEmail !== false;
-  const sendSms = settings.sendSms !== false;
-  const smsUsage = sendSms ? await getSmsUsageState(accountId, business) : null;
+  const sendSms = settings.sendSms !== false && isCampaignSmsFeatureEnabled();
   for (const c of birthdayContacts) {
     try {
       const body = personalizeBirthdayMessage(settings.messageText, settings.offerText, c.firstName);
@@ -266,17 +249,14 @@ export async function sendBirthdayCampaignsForAccount(accountId, logger = consol
         logger?.info?.({ accountId, email: c.email }, "Birthday email sent");
       }
       if (sendSms && c.phone && isSmsConfigured()) {
-        const hasQuota = await tryConsumeOneSms(accountId, smsUsage);
-        if (!hasQuota) {
-          logger?.warn?.({ accountId, tier: smsUsage?.tier, includedSms: smsUsage?.includedSms }, "Birthday SMS skipped: monthly SMS limit reached");
-          continue;
-        }
         const footer = " Reply STOP to opt out.";
         const fullSmsBody = toSmsFriendly(formatBodyForSms(body), 160 - footer.length) + footer;
         try {
-          await sendCampaignSms(c.phone, fullSmsBody);
-          sent++;
-          logger?.info?.({ accountId, phone: c.phone }, "Birthday SMS sent");
+          const ok = await sendProCampaignSms(accountId, c.phone, fullSmsBody, logger);
+          if (ok) {
+            sent++;
+            logger?.info?.({ accountId, phone: c.phone }, "Birthday SMS sent");
+          }
         } catch (smsErr) {
           logger?.error?.({ err: smsErr, accountId, phone: c.phone }, "Birthday SMS failed");
         }
@@ -308,8 +288,7 @@ export async function sendEventCampaignForAccount(accountId, eventKey, eventYear
   const subject = `${businessName} – ${eventName}`;
   let sent = 0;
   const sendEmail = campaign.sendEmail !== false;
-  const sendSms = campaign.sendSms !== false;
-  const smsUsage = sendSms ? await getSmsUsageState(accountId, business) : null;
+  const sendSms = campaign.sendSms !== false && isCampaignSmsFeatureEnabled();
   const footer = " Reply STOP to opt out.";
   for (const c of contacts) {
     try {
@@ -319,16 +298,13 @@ export async function sendEventCampaignForAccount(accountId, eventKey, eventYear
         sent++;
       }
       if (sendSms && c.phone && isSmsConfigured()) {
-        const hasQuota = await tryConsumeOneSms(accountId, smsUsage);
-        if (!hasQuota) {
-          logger?.warn?.({ accountId, eventKey, tier: smsUsage?.tier, includedSms: smsUsage?.includedSms }, "Event SMS skipped: monthly SMS limit reached");
-          continue;
-        }
         const smsBody = toSmsFriendly(formatBodyForSms(personalized), 160 - footer.length) + footer;
         try {
-          await sendCampaignSms(c.phone, smsBody);
-          sent++;
-          logger?.info?.({ accountId, phone: c.phone }, "Event SMS sent");
+          const ok = await sendProCampaignSms(accountId, c.phone, smsBody, logger);
+          if (ok) {
+            sent++;
+            logger?.info?.({ accountId, phone: c.phone }, "Event SMS sent");
+          }
         } catch (smsErr) {
           logger?.error?.({ err: smsErr, accountId, phone: c.phone }, "Event SMS failed");
         }
@@ -398,7 +374,7 @@ export async function sendProEventCampaignTest(accountId, eventKey, eventYear, o
     } else {
       const smsBody = toSmsFriendly("(TEST)\n\n" + formatBodyForSms(personalized), 160 - footer.length) + footer;
       try {
-        await sendCampaignSms(phoneTo, smsBody);
+        await sendCampaignSms(phoneTo, smsBody, { bypassCampaignSmsEnabled: true });
         smsSent = true;
         logger?.info?.({ accountId, eventKey, phoneTo }, "Event test SMS sent");
       } catch (err) {
@@ -423,8 +399,7 @@ export async function sendOneOffCampaign(id, accountId, subject, body, logger = 
   const businessName = business.name || "This business";
   const replyTo = business.contact?.match(/\S+@\S+/) ? business.contact : undefined;
   const sendEmail = campaignRow.send_email !== false;
-  const sendSms = campaignRow.send_sms !== false;
-  const smsUsage = sendSms ? await getSmsUsageState(accountId, business) : null;
+  const sendSms = campaignRow.send_sms !== false && isCampaignSmsFeatureEnabled();
   const footer = " Reply STOP to opt out.";
   let sent = 0;
   for (const c of contacts) {
@@ -435,16 +410,13 @@ export async function sendOneOffCampaign(id, accountId, subject, body, logger = 
         sent++;
       }
       if (sendSms && c.phone && isSmsConfigured()) {
-        const hasQuota = await tryConsumeOneSms(accountId, smsUsage);
-        if (!hasQuota) {
-          logger?.warn?.({ accountId, id, tier: smsUsage?.tier, includedSms: smsUsage?.includedSms }, "One-off SMS skipped: monthly SMS limit reached");
-          continue;
-        }
         const smsBody = toSmsFriendly(formatBodyForSms(personalized), 160 - footer.length) + footer;
         try {
-          await sendCampaignSms(c.phone, smsBody);
-          sent++;
-          logger?.info?.({ accountId, phone: c.phone }, "One-off SMS sent");
+          const ok = await sendProCampaignSms(accountId, c.phone, smsBody, logger);
+          if (ok) {
+            sent++;
+            logger?.info?.({ accountId, phone: c.phone }, "One-off SMS sent");
+          }
         } catch (smsErr) {
           logger?.error?.({ err: smsErr, accountId, phone: c.phone }, "One-off SMS failed");
         }
