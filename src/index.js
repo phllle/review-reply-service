@@ -79,6 +79,11 @@ function getTwilioWebhookUrl(req) {
   return `${req.protocol}://${req.get("host") || "localhost"}/webhooks/twilio/sms`;
 }
 
+/** Base Replyr ($19) Checkout price — `STRIPE_PRICE_ID` or optional alias `STRIPE_BASE_PRICE_ID`. */
+function getStripeCorePriceId() {
+  return (process.env.STRIPE_PRICE_ID || process.env.STRIPE_BASE_PRICE_ID || "").trim();
+}
+
 /** @returns {boolean} false if response already sent */
 function guardBusinessAccess(req, res, accountId) {
   const id = (accountId && String(accountId).trim()) || "";
@@ -164,6 +169,14 @@ async function start() {
   const port = Number(process.env.PORT || 3000);
   app.listen(port, () => {
     logger.info({ port }, "Server started");
+    logger.info(
+      {
+        stripeBasePriceIdSet: Boolean(getStripeCorePriceId()),
+        stripeProStarterSet: Boolean((process.env.STRIPE_PRO_STARTER_PRICE_ID || "").trim()),
+        stripeProGrowthSet: Boolean((process.env.STRIPE_PRO_GROWTH_PRICE_ID || "").trim())
+      },
+      "Stripe: base Replyr uses STRIPE_PRICE_ID or STRIPE_BASE_PRICE_ID; Pro uses STRIPE_PRO_*"
+    );
     startScheduler(logger);
     if (db.useDb()) {
       runCampaignScheduler();
@@ -482,7 +495,7 @@ app.post("/create-checkout-session", aiCampaignLimiter, async (req, res, next) =
   try {
     const { accountId, plan } = req.body || {};
     const secret = process.env.STRIPE_SECRET_KEY;
-    const stripeCorePriceId = (process.env.STRIPE_PRICE_ID || "").trim();
+    const stripeCorePriceId = getStripeCorePriceId();
     const stripeProPriceId = (process.env.STRIPE_PRO_PRICE_ID || "").trim(); // legacy fallback
     const stripeProStarterPriceId = (process.env.STRIPE_PRO_STARTER_PRICE_ID || "").trim();
     const stripeProGrowthPriceId = (process.env.STRIPE_PRO_GROWTH_PRICE_ID || "").trim();
@@ -909,8 +922,12 @@ app.get("/subscribe", (req, res) => {
   const hasProPaymentLink = subscribeProUrl.startsWith("http");
   const hasPro = hasProPrice || hasProPaymentLink;
   const billingPortalUrl = (process.env.STRIPE_CUSTOMER_PORTAL_URL || "").trim();
-  const accountId = (req.query.accountId && String(req.query.accountId).trim()) || "";
-  const hasStripe = (process.env.STRIPE_SECRET_KEY && process.env.STRIPE_PRICE_ID) || subscribeUrl.startsWith("http");
+  const accountId =
+    (req.query.accountId && String(req.query.accountId).trim()) ||
+    (req.query.accountid && String(req.query.accountid).trim()) ||
+    "";
+  const hasStripe =
+    (process.env.STRIPE_SECRET_KEY && getStripeCorePriceId()) || subscribeUrl.startsWith("http");
   const hasBillingPortal = billingPortalUrl.startsWith("http");
   const ctaHref = subscribeUrl.startsWith("http") ? subscribeUrl : (contact.startsWith("http") ? contact : (contact ? "mailto:" + contact : "#"));
   const ctaText = hasStripe ? "Subscribe to Replyr" : "Contact us to subscribe";
@@ -1044,7 +1061,7 @@ app.get("/subscribe.js", (req, res) => {
   var fallbackUrl = (page.getAttribute("data-fallback-url") || "").trim() || "#";
   function go(url, openInNewTab, msgEl) {
     if (!url || url === "#" || url.indexOf("http") !== 0) {
-      if (msgEl) { msgEl.textContent = "Subscribe link not set up. Add STRIPE_SECRET_KEY + STRIPE_PRICE_ID for Checkout."; }
+      if (msgEl) { msgEl.textContent = "Subscribe link not set up. Add STRIPE_SECRET_KEY and STRIPE_PRICE_ID (or STRIPE_BASE_PRICE_ID) for Checkout."; }
       return;
     }
     if (openInNewTab) {
