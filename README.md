@@ -29,6 +29,15 @@ Minimal Node/Express service that authenticates with Google and replies to Googl
 3. Start: npm run dev
 4. Connect Google at http://localhost:3000/auth/google
 
+### Local dev shortcut (skip Google OAuth)
+For UI work where you don't want to set up Google OAuth credentials, set `REPLYR_DEV_LOGIN=1` in `.env` and visit:
+
+- `http://localhost:3000/dev/login` — mints a session cookie for `accountId=dev-local` and redirects to `/connected`.
+- `http://localhost:3000/dev/login?pro=1` — same, but flips `isPro=true` so you can exercise Pro UI.
+- `http://localhost:3000/dev/login?return_to=/subscribe` — land on any path with a session.
+
+The route 404s unless **both** `NODE_ENV !== production` **and** `REPLYR_DEV_LOGIN=1`, so it cannot ship live by accident. Pro page itself still requires `DATABASE_URL` for full functionality (otherwise it shows the no-DB fallback).
+
 ### Tests
 Run unit tests with `npm test` (uses Node's built-in `node:test` runner; no extra deps). Watch mode: `npm run test:watch`.
 
