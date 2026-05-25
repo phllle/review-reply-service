@@ -67,6 +67,16 @@ async function writeTokens(data) {
   await fs.writeFile(TOKENS_PATH, JSON.stringify(data, null, 2), "utf8");
 }
 
+async function writeTokenForAccount(accountId, tokenData) {
+  if (db.useDb()) {
+    await db.writeToken(accountId, tokenData);
+    return;
+  }
+  const data = await readTokens();
+  data[accountId] = tokenData;
+  await writeTokens(data);
+}
+
 /** Get accountId to use when none specified (first key or legacy "google") */
 function getDefaultAccountId(tokens) {
   if (tokens.google && (tokens.google.refresh_token || tokens.google.access_token)) {
@@ -144,13 +154,13 @@ export async function handleOAuthCallback(code) {
     throw new Error("Could not determine account ID");
   }
   const existing = await readTokens();
-  existing[accountId] = {
+  const tokenData = {
     access_token: tokens.access_token,
     refresh_token: tokens.refresh_token || existing[accountId]?.refresh_token || null,
     scope: tokens.scope,
     expiry_date: tokens.expiry_date || null
   };
-  await writeTokens(existing);
+  await writeTokenForAccount(accountId, tokenData);
   return { accountId, accountName: first.accountName };
 }
 
@@ -190,12 +200,12 @@ async function getAccessToken(accountId) {
   const tokenData = key ? data[key] : null;
   const newAccessToken = typeof accessTokenResponse === "string" ? accessTokenResponse : accessTokenResponse?.token;
   if (newAccessToken && key && tokenData) {
-    data[key] = {
+    const updatedTokenData = {
       ...tokenData,
       access_token: newAccessToken,
       expiry_date: client.credentials.expiry_date || tokenData.expiry_date || null
     };
-    await writeTokens(data);
+    await writeTokenForAccount(key, updatedTokenData);
     return newAccessToken;
   }
   if (tokenData?.access_token) {

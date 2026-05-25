@@ -270,16 +270,19 @@ export async function getTokens() {
   return out;
 }
 
+export async function writeToken(accountId, tokenData) {
+  if (!accountId || !tokenData || !(tokenData.refresh_token || tokenData.access_token)) {
+    return;
+  }
+  await getPool().query(
+    "INSERT INTO tokens (account_id, data) VALUES ($1, $2) ON CONFLICT (account_id) DO UPDATE SET data = $2",
+    [accountId, JSON.stringify(tokenData)]
+  );
+}
+
 export async function writeTokens(data) {
-  const client = getPool();
-  await client.query("DELETE FROM tokens");
-  for (const [accountId, tokenData] of Object.entries(data)) {
-    if (tokenData && (tokenData.refresh_token || tokenData.access_token)) {
-      await client.query(
-        "INSERT INTO tokens (account_id, data) VALUES ($1, $2) ON CONFLICT (account_id) DO UPDATE SET data = $2",
-        [accountId, JSON.stringify(tokenData)]
-      );
-    }
+  for (const [accountId, tokenData] of Object.entries(data || {})) {
+    await writeToken(accountId, tokenData);
   }
 }
 
