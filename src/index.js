@@ -28,7 +28,8 @@ import {
   getBusiness,
   upsertBusiness,
   getAccountIdByStripeCustomerId,
-  isGratisAccount
+  isGratisAccount,
+  setNotificationEmailIfEmpty
 } from "./businesses.js";
 import { replaceProContacts, getProContactsCount, getProContactsList, setProContactUnsubscribed } from "./proContacts.js";
 import { parseProCsv, validateFile } from "./csvPro.js";
@@ -1684,11 +1685,12 @@ app.get("/auth/google/callback", authRouteLimiter, async (req, res, next) => {
     if (!stateResult.ok) {
       return res.status(400).json({ error: "Invalid or expired OAuth state. Please try connecting again." });
     }
-    let accountId, accountName;
+    let accountId, accountName, ownerEmail;
     try {
       const result = await handleOAuthCallback(code.toString());
       accountId = result.accountId;
       accountName = result.accountName;
+      ownerEmail = result.email || null;
     } catch (err) {
       if (err.message && err.message.includes("No Google Business accounts")) {
         return res.redirect("/no-business?" + new URLSearchParams({ reason: "no_account" }).toString());
@@ -1700,6 +1702,8 @@ app.get("/auth/google/callback", authRouteLimiter, async (req, res, next) => {
       return res.redirect("/no-business?" + new URLSearchParams({ reason: "no_location", accountId }).toString());
     }
     if (locations.length > 1) {
+      // Multi-location accounts go through the picker; email auto-fill skipped
+      // here (the row doesn't exist yet). Owner can still set it on /connected.
       const t = signChooseLocationToken(accountId);
       return res.redirect("/auth/choose-location?t=" + encodeURIComponent(t));
     }
@@ -1711,6 +1715,13 @@ app.get("/auth/google/callback", authRouteLimiter, async (req, res, next) => {
       locationId: locationId || "",
       name
     });
+    if (ownerEmail) {
+      try {
+        await setNotificationEmailIfEmpty(accountId, ownerEmail);
+      } catch (err) {
+        req.log?.warn(err, "OAuth email auto-fill failed");
+      }
+    }
     setSessionCookie(res, accountId);
     const redirectName = name || "your business";
     let redirectPath =

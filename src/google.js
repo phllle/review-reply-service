@@ -4,6 +4,7 @@ import fs from "fs/promises";
 import path from "path";
 import { fileURLToPath } from "url";
 import * as db from "./db.js";
+import { extractEmailFromTokenResponse } from "./googleEmail.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -114,7 +115,14 @@ function createOAuthClient() {
 /** @param {{ returnTo?: string|null }} [options] - relative path + query only, e.g. /connected?accountId=1&subscribed=1 */
 export async function getAuthUrl(options = {}) {
   const client = createOAuthClient();
-  const scopes = ["https://www.googleapis.com/auth/business.manage"];
+  // openid + email yield an id_token whose payload includes the user's email.
+  // We use the email to pre-fill the auto-reply preview notification address
+  // so owners don't have to re-type it on /connected.
+  const scopes = [
+    "https://www.googleapis.com/auth/business.manage",
+    "openid",
+    "email"
+  ];
   const returnTo = options.returnTo && String(options.returnTo).trim().startsWith("/") ? String(options.returnTo).trim() : null;
   const url = client.generateAuthUrl({
     access_type: "offline",
@@ -161,7 +169,11 @@ export async function handleOAuthCallback(code) {
     expiry_date: tokens.expiry_date || null
   };
   await writeTokenForAccount(accountId, tokenData);
-  return { accountId, accountName: first.accountName };
+  // Best-effort email capture from the id_token. Returned to the caller so it
+  // can save it to notification_email on first connect (without overwriting
+  // any value the owner already set manually).
+  const email = extractEmailFromTokenResponse(tokens);
+  return { accountId, accountName: first.accountName, email };
 }
 
 async function getAuthorizedClient(accountId) {

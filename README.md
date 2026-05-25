@@ -36,7 +36,9 @@ Run unit tests with `npm test` (uses Node's built-in `node:test` runner; no extr
 Set `SENTRY_DSN` to enable error reporting from Express request handlers, the auto-reply scheduler, the campaign scheduler, the Stripe webhook, and the Twilio SMS webhook. Leave it unset to disable — the app runs identically without it.
 
 ### Auto-reply preview mode
-Each business has an `auto_reply_mode`: `'instant'` (default — current behavior) or `'delayed'`. In delayed mode, AI replies for low-star reviews (1–3 stars by default) are queued for 15 minutes and the business owner gets an email with a one-click cancel link before the reply posts to Google. 4–5 star replies still post instantly. Requires `RESEND_API_KEY`, `REPLYR_SESSION_SECRET` (signs the cancel token), and a saved owner email per business. Toggle from the connected page.
+Each business has an `auto_reply_mode`: `'instant'` (default — current behavior) or `'delayed'`. In delayed mode, AI replies for low-star reviews (1–3 stars by default) are queued for 15 minutes and the business owner gets an email with a one-click cancel link before the reply posts to Google. 4–5 star replies still post instantly. Requires `RESEND_API_KEY`, `REPLYR_SESSION_SECRET` (signs the cancel token), and a saved owner email per business.
+
+The owner's email is auto-filled at OAuth time when the user grants the `openid email` scopes (asked alongside `business.manage`). Existing users who connected before this scope was requested can still set the email manually on `/connected`.
 
 ### Admin metrics
 `/admin/metrics` (HTML) and `/admin/metrics.json` (same data as JSON) — gated by `ADMIN_SECRET`. Shows MRR, plans by tier, 30-day funnel (trials started, trial→paid conversion, active trials, trial-end attrition), and current activity (connected businesses, auto-reply enabled, queued replies, Pro SMS this month). MRR is computed locally from the `businesses` table using `STRIPE_*_AMOUNT_CENTS` env vars; if the Stripe webhook drifts, MRR will surface that drift.
