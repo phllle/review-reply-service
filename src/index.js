@@ -348,6 +348,10 @@ async function twilioSmsWebhook(req, res) {
     const authToken = process.env.TWILIO_AUTH_TOKEN?.trim();
     const signature = req.headers["x-twilio-signature"];
     const isProd = process.env.NODE_ENV === "production";
+    if (isProd && !authToken) {
+      req.log?.error?.("TWILIO_AUTH_TOKEN is required to process SMS webhooks in production");
+      return res.status(403).send("Forbidden");
+    }
     if (authToken && signature) {
       const url = getTwilioWebhookUrl(req);
       const valid = twilio.validateRequest(authToken, signature, url, req.body || {});
