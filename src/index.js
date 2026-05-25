@@ -670,6 +670,35 @@ app.get("/no-business", (req, res) => {
   }));
 });
 
+// Dev-only fake-auth shortcut. Mints a session cookie + ensures a business
+// record exists so /connected and /pro work without real Google OAuth. Requires
+// REPLYR_DEV_LOGIN=1 AND NODE_ENV !== production — both must hold or the route
+// 404s. Never enable in production.
+app.get("/dev/login", async (req, res, next) => {
+  try {
+    if (process.env.NODE_ENV === "production" || process.env.REPLYR_DEV_LOGIN !== "1") {
+      return res.status(404).send("Not found");
+    }
+    const accountId = (req.query.accountId && String(req.query.accountId).trim()) || "dev-local";
+    const wantPro = req.query.pro === "1";
+    const existing = await getBusiness(accountId);
+    await upsertBusiness({
+      accountId,
+      locationId: existing?.locationId || "dev-location",
+      name: existing?.name || "Dev Local Business",
+      isPro: wantPro || !!existing?.isPro
+    });
+    setSessionCookie(res, accountId);
+    const returnToRaw = (req.query.return_to && String(req.query.return_to).trim()) || "";
+    const returnTo = returnToRaw.startsWith("/") && !returnToRaw.startsWith("//")
+      ? returnToRaw
+      : `/connected?accountId=${encodeURIComponent(accountId)}`;
+    res.redirect(returnTo);
+  } catch (err) {
+    next(err);
+  }
+});
+
 // Dashboard: re-run Google sign-in and land back on /connected
 app.get("/dashboard", authRouteLimiter, async (req, res, next) => {
   try {
