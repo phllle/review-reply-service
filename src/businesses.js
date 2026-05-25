@@ -57,7 +57,7 @@ export async function getBusiness(accountId) {
   return all[accountId] || null;
 }
 
-/** Create or update a business. Config: { accountId, locationId, name?, contact?, autoReplyEnabled?, intervalMinutes? } */
+/** Create or update a business. Config: { accountId, locationId, name?, contact?, autoReplyEnabled?, intervalMinutes?, autoReplyMode? } */
 export async function upsertBusiness(config) {
   if (db.useDb()) {
     const all = await readBusinesses();
@@ -75,7 +75,9 @@ export async function upsertBusiness(config) {
       subscribedAt: config.subscribedAt ?? existing.subscribedAt ?? null,
       stripeCustomerId: config.stripeCustomerId ?? existing.stripeCustomerId ?? null,
       isPro: config.isPro ?? existing.isPro ?? false,
-      proTier: config.proTier ?? existing.proTier ?? "starter"
+      proTier: config.proTier ?? existing.proTier ?? "starter",
+      autoReplyMode: config.autoReplyMode ?? existing.autoReplyMode ?? "instant",
+      notificationEmail: config.notificationEmail ?? existing.notificationEmail ?? null
     };
     return await db.upsertBusinessInDb(merged);
   }
@@ -95,6 +97,8 @@ export async function upsertBusiness(config) {
     stripeCustomerId: config.stripeCustomerId ?? existing.stripeCustomerId ?? null,
     isPro: config.isPro ?? existing.isPro ?? false,
     proTier: config.proTier ?? existing.proTier ?? "starter",
+    autoReplyMode: config.autoReplyMode ?? existing.autoReplyMode ?? "instant",
+    notificationEmail: config.notificationEmail ?? existing.notificationEmail ?? null,
     updatedAt: new Date().toISOString()
   };
   await writeBusinesses(all);

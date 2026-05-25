@@ -52,6 +52,7 @@ import {
   subscriptionHasProPrice as proPriceMatches,
   getProTierFromSubscription as proTierFromSub
 } from "./stripePricing.js";
+import { verifyCancelToken } from "./replyDelay.js";
 
 const app = express();
 app.set("trust proxy", 1);
@@ -235,6 +236,75 @@ const proUpload = multer({
 app.get("/healthz", (req, res) => {
   res.json({ ok: true });
 });
+
+// Public one-click cancel link from the auto-reply preview email.
+// Token is HMAC-signed (REPLYR_SESSION_SECRET) and bound to (account, location, review).
+app.get("/auto-reply/cancel", async (req, res, next) => {
+  try {
+    const token = String(req.query.token || "").trim();
+    const secret = (process.env.REPLYR_SESSION_SECRET || "").trim();
+    const verified = secret ? verifyCancelToken(token, secret) : null;
+    if (!verified) {
+      return res
+        .status(400)
+        .type("html")
+        .send(renderCancelPage({ ok: false, message: "This cancel link is invalid or expired." }));
+    }
+    if (!db.useDb()) {
+      return res
+        .status(503)
+        .type("html")
+        .send(renderCancelPage({ ok: false, message: "Cancel is unavailable in file-store mode." }));
+    }
+    const cancelled = await db.cancelPendingReply(verified.accountId, verified.locationId, verified.reviewId);
+    if (!cancelled) {
+      return res
+        .status(200)
+        .type("html")
+        .send(
+          renderCancelPage({
+            ok: false,
+            message: "This reply was already sent or cancelled. Nothing to do."
+          })
+        );
+    }
+    res
+      .status(200)
+      .type("html")
+      .send(
+        renderCancelPage({
+          ok: true,
+          message: "Reply cancelled. Replyr will not post this reply to Google."
+        })
+      );
+  } catch (err) {
+    req.log?.error(err, "Cancel reply failed");
+    sentry.captureException(err, { kind: "cancel-reply" });
+    next(err);
+  }
+});
+
+function renderCancelPage({ ok, message }) {
+  const color = ok ? "#2e7d32" : "#c62828";
+  const safeMessage = String(message || "").replace(/[<>&]/g, (c) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;" })[c]);
+  return `<!doctype html>
+<html><head><meta charset="utf-8"><title>Replyr — Cancel reply</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+  body { font-family: -apple-system, system-ui, sans-serif; padding: 2.5rem 1.5rem; max-width: 520px; margin: 0 auto; color: #222; }
+  .card { padding: 1.5rem; border: 1px solid #e0e0e0; border-radius: 8px; }
+  h1 { margin: 0 0 0.5rem 0; font-size: 1.25rem; color: ${color}; }
+  p { margin: 0.5rem 0; line-height: 1.45; }
+  a { color: #0366d6; }
+</style></head>
+<body>
+  <div class="card">
+    <h1>${ok ? "Cancelled" : "Couldn't cancel"}</h1>
+    <p>${safeMessage}</p>
+    <p style="margin-top:1.25rem;font-size:0.9em;color:#666;">— Replyr</p>
+  </div>
+</body></html>`;
+}
 
 // Test failure alert (sends a sample email/SMS). Set TEST_ALERT_SECRET in env, then: GET /test-alert?secret=YOUR_SECRET
 app.get("/test-alert", async (req, res, next) => {
@@ -628,6 +698,8 @@ app.get("/connected", async (req, res, next) => {
     const justSubscribed = req.query.subscribed === "1";
     let currentContact = "";
     let currentAutoReply = false;
+    let currentAutoReplyMode = "instant";
+    let currentNotificationEmail = "";
     let businessName = "";
     let trialEndsAt = null;
     let trialDaysLeft = null;
@@ -645,6 +717,8 @@ app.get("/connected", async (req, res, next) => {
         business = { ...business, trialEndsAt: endsAt };
       }
       currentContact = (business && business.contact) ? String(business.contact) : "";
+      currentAutoReplyMode = (business && business.autoReplyMode) ? String(business.autoReplyMode) : "instant";
+      currentNotificationEmail = (business && business.notificationEmail) ? String(business.notificationEmail) : "";
       businessName = (business && business.name) ? String(business.name) : "";
       subscribedAt = business?.subscribedAt ?? null;
       if (business && business.trialEndsAt) {
@@ -714,6 +788,24 @@ app.get("/connected", async (req, res, next) => {
   <p id="auto-reply-msg" class="connected-msg" aria-live="polite"></p>
 </div>`
       : "";
+    const previewModeCard = accountId
+      ? `<div class="card reply-preview-section" data-account-id="${escapeHtml(accountId)}">
+  <div class="card-title">Reply preview (low-star reviews)</div>
+  <div class="card-desc">For 1–3 star reviews, hold the AI-generated reply for 15 minutes and email you a cancel link before it posts. 4–5 star replies still post immediately.</div>
+  <div class="toggle-row" style="margin-top:14px">
+    <label class="toggle">
+      <input type="checkbox" id="reply-preview-toggle" ${currentAutoReplyMode === "delayed" ? "checked" : ""}>
+      <div class="toggle-track"></div>
+    </label>
+    <span class="toggle-label">Email me before low-star replies post</span>
+  </div>
+  <div class="contact-input-row" style="margin-top:14px">
+    <input type="email" id="notification-email-input" value="${escapeHtml(currentNotificationEmail)}" placeholder="you@example.com">
+    <button type="button" id="notification-email-save-btn" class="btn-save">Save</button>
+  </div>
+  <p id="reply-preview-msg" class="connected-msg" aria-live="polite"></p>
+</div>`
+      : "";
     const tryItCard = accountId
       ? `<div class="card" id="free-reply-section" data-account-id="${escapeHtml(accountId)}">
   <div class="card-title">Try it now</div>
@@ -764,7 +856,7 @@ app.get("/connected", async (req, res, next) => {
     const freeReplySection = accountId
       ? `<div class="connected-body">
   <aside class="connected-sidebar" aria-label="Account and review tools">
-    <div class="connected-stack">${trialCard}${autoReplyCard}${tryItCard}${contactCard}</div>
+    <div class="connected-stack">${trialCard}${autoReplyCard}${previewModeCard}${tryItCard}${contactCard}</div>
   </aside>
   <div class="connected-pro-wrap">${proCard}</div>
 </div>`
@@ -1271,6 +1363,70 @@ app.get("/connected.js", (req, res) => {
     }
   }
 
+  // Reply preview mode toggle + notification email
+  var previewSection = document.querySelector(".reply-preview-section");
+  if (previewSection) {
+    var previewAccountId = previewSection.getAttribute("data-account-id") || accountId;
+    var previewToggle = document.getElementById("reply-preview-toggle");
+    var previewMsg = document.getElementById("reply-preview-msg");
+    var emailInput = document.getElementById("notification-email-input");
+    var emailSaveBtn = document.getElementById("notification-email-save-btn");
+    function setPreviewMsg(text, kind) {
+      if (!previewMsg) return;
+      previewMsg.textContent = text || "";
+      previewMsg.classList.remove("ok", "err");
+      if (kind) previewMsg.classList.add(kind);
+    }
+    function patchBusiness(payload) {
+      return fetch("/businesses/" + encodeURIComponent(previewAccountId), {
+        method: "PATCH",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+      }).then(function(r) { return r.json().then(function(d) { return { status: r.status, data: d }; }); });
+    }
+    if (previewAccountId && previewToggle) {
+      previewToggle.addEventListener("change", function() {
+        var nextMode = previewToggle.checked ? "delayed" : "instant";
+        setPreviewMsg("");
+        patchBusiness({ autoReplyMode: nextMode })
+          .then(function(res) {
+            if (res.data && res.data.error) {
+              setPreviewMsg(res.data.error, "err");
+              previewToggle.checked = !previewToggle.checked;
+            } else {
+              setPreviewMsg(nextMode === "delayed"
+                ? "Preview mode on. We'll email you 15 minutes before low-star replies post."
+                : "Preview mode off. Replies post immediately.",
+                "ok"
+              );
+            }
+          })
+          .catch(function() {
+            setPreviewMsg("Something went wrong.", "err");
+            previewToggle.checked = !previewToggle.checked;
+          });
+      });
+    }
+    if (previewAccountId && emailSaveBtn && emailInput) {
+      emailSaveBtn.addEventListener("click", function() {
+        var email = emailInput.value.trim();
+        emailSaveBtn.disabled = true;
+        setPreviewMsg("");
+        patchBusiness({ notificationEmail: email })
+          .then(function(res) {
+            if (res.data && res.data.error) {
+              setPreviewMsg(res.data.error, "err");
+            } else {
+              setPreviewMsg(email ? "Saved. We'll email " + email + " before low-star replies post." : "Email cleared.", "ok");
+            }
+          })
+          .catch(function() { setPreviewMsg("Something went wrong.", "err"); })
+          .finally(function() { emailSaveBtn.disabled = false; });
+      });
+    }
+  }
+
   // Sync UI from latest server state (handles back button / cached pages)
   fetch("/businesses/" + encodeURIComponent(accountId), { credentials: "same-origin" })
     .then(function(r) { return r.json(); })
@@ -1283,6 +1439,10 @@ app.get("/connected.js", (req, res) => {
       }
       var ci = document.getElementById("contact-input");
       if (ci && data.contact !== undefined && data.contact !== null) ci.value = String(data.contact);
+      var pt = document.getElementById("reply-preview-toggle");
+      if (pt) pt.checked = data.autoReplyMode === "delayed";
+      var ne = document.getElementById("notification-email-input");
+      if (ne && data.notificationEmail != null) ne.value = String(data.notificationEmail || "");
     })
     .catch(function() {});
 
@@ -1763,7 +1923,7 @@ app.patch("/businesses/:accountId", async (req, res, next) => {
     if (!existing) {
       return res.status(404).json({ error: "Business not found. Connect via /auth/google first." });
     }
-    const { autoReplyEnabled, contact, intervalMinutes, isPro, proTier } = req.body || {};
+    const { autoReplyEnabled, contact, intervalMinutes, isPro, proTier, autoReplyMode, notificationEmail } = req.body || {};
     const admin = isValidAdminRequest(req);
     const nextIsPro =
       admin && typeof isPro === "boolean" ? !!isPro : !!existing.isPro;
@@ -1785,12 +1945,44 @@ app.patch("/businesses/:accountId", async (req, res, next) => {
     const proPatch = {};
     if (admin && typeof isPro === "boolean") proPatch.isPro = !!isPro;
     if (admin && proTier !== undefined) proPatch.proTier = normalizeProTier(proTier);
+
+    // Auto-reply preview mode + notification email validation
+    const modePatch = {};
+    if (autoReplyMode !== undefined) {
+      const next = String(autoReplyMode).trim().toLowerCase();
+      if (next !== "instant" && next !== "delayed") {
+        return res.status(400).json({ error: "autoReplyMode must be 'instant' or 'delayed'" });
+      }
+      modePatch.autoReplyMode = next;
+    }
+    if (notificationEmail !== undefined) {
+      const raw = notificationEmail == null ? "" : String(notificationEmail).trim();
+      if (raw && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(raw)) {
+        return res.status(400).json({ error: "notificationEmail is not a valid email address" });
+      }
+      modePatch.notificationEmail = raw || null;
+    }
+    // Guard: enabling delayed mode requires a notification email (resulting state).
+    const willBeDelayed =
+      (modePatch.autoReplyMode ?? existing.autoReplyMode ?? "instant") === "delayed";
+    const willHaveEmail =
+      modePatch.notificationEmail !== undefined
+        ? !!modePatch.notificationEmail
+        : !!existing.notificationEmail;
+    if (willBeDelayed && !willHaveEmail) {
+      return res.status(400).json({
+        error: "Delayed mode requires a notification email so we can send you the cancel link.",
+        code: "DELAYED_MODE_REQUIRES_EMAIL"
+      });
+    }
+
     await upsertBusiness({
       ...existing,
       ...(typeof autoReplyEnabled === "boolean" && { autoReplyEnabled }),
       ...(contact !== undefined && { contact: String(contact) }),
       ...(intervalMinutes !== undefined && { intervalMinutes: Number(intervalMinutes) }),
-      ...proPatch
+      ...proPatch,
+      ...modePatch
     });
     const updated = await getBusiness(accountId);
     res.json(updated);

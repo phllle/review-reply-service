@@ -104,6 +104,40 @@ async function initSchema() {
   } catch (err) {
     if (err.code !== "42701") throw err;
   }
+  try {
+    await client.query("ALTER TABLE businesses ADD COLUMN auto_reply_mode TEXT NOT NULL DEFAULT 'instant'");
+  } catch (err) {
+    if (err.code !== "42701") throw err;
+  }
+  try {
+    await client.query("ALTER TABLE businesses ADD COLUMN notification_email TEXT");
+  } catch (err) {
+    if (err.code !== "42701") throw err;
+  }
+  // Auto-reply preview mode: when business has auto_reply_mode='delayed', low-star
+  // replies are queued here until send_after passes (or cancelled_at is set).
+  await client.query(`
+    CREATE TABLE IF NOT EXISTS pending_replies (
+      id BIGSERIAL PRIMARY KEY,
+      account_id TEXT NOT NULL,
+      location_id TEXT NOT NULL,
+      review_id TEXT NOT NULL,
+      rating INTEGER,
+      reviewer_name TEXT,
+      review_comment TEXT,
+      generated_reply TEXT NOT NULL,
+      send_after TIMESTAMPTZ NOT NULL,
+      cancelled_at TIMESTAMPTZ,
+      sent_at TIMESTAMPTZ,
+      send_error TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_pending_replies_review
+      ON pending_replies(account_id, location_id, review_id);
+    CREATE INDEX IF NOT EXISTS idx_pending_replies_due
+      ON pending_replies(send_after)
+      WHERE cancelled_at IS NULL AND sent_at IS NULL;
+  `);
   // Replyr Pro: contacts per business (all CSV rows; email optional for storage, required for sending)
   await client.query(`
     CREATE TABLE IF NOT EXISTS pro_contacts (
@@ -288,38 +322,10 @@ export async function writeTokens(data) {
 
 // --- Businesses ---
 
-export async function getAllBusinessesFromDb() {
-  const res = await getPool().query(
-    "SELECT account_id, location_id, name, contact, auto_reply_enabled, interval_minutes, updated_at, free_reply_used, trial_ends_at, subscribed_at, stripe_customer_id, is_pro, pro_tier FROM businesses"
-  );
-  const out = {};
-  for (const row of res.rows) {
-    out[row.account_id] = {
-      accountId: row.account_id,
-      locationId: row.location_id,
-      name: row.name,
-      contact: row.contact,
-      autoReplyEnabled: row.auto_reply_enabled,
-      intervalMinutes: row.interval_minutes,
-      updatedAt: row.updated_at,
-      freeReplyUsed: row.free_reply_used ?? false,
-      trialEndsAt: row.trial_ends_at ? new Date(row.trial_ends_at).toISOString() : null,
-      subscribedAt: row.subscribed_at ? new Date(row.subscribed_at).toISOString() : null,
-      stripeCustomerId: row.stripe_customer_id ?? null,
-      isPro: row.is_pro ?? false,
-      proTier: row.pro_tier || "starter"
-    };
-  }
-  return out;
-}
+const BUSINESS_COLUMNS =
+  "account_id, location_id, name, contact, auto_reply_enabled, interval_minutes, updated_at, free_reply_used, trial_ends_at, subscribed_at, stripe_customer_id, is_pro, pro_tier, auto_reply_mode, notification_email";
 
-export async function getBusinessFromDb(accountId) {
-  const res = await getPool().query(
-    "SELECT account_id, location_id, name, contact, auto_reply_enabled, interval_minutes, updated_at, free_reply_used, trial_ends_at, subscribed_at, stripe_customer_id, is_pro, pro_tier FROM businesses WHERE account_id = $1",
-    [accountId]
-  );
-  const row = res.rows[0];
-  if (!row) return null;
+function rowToBusiness(row) {
   return {
     accountId: row.account_id,
     locationId: row.location_id,
@@ -333,8 +339,29 @@ export async function getBusinessFromDb(accountId) {
     subscribedAt: row.subscribed_at ? new Date(row.subscribed_at).toISOString() : null,
     stripeCustomerId: row.stripe_customer_id ?? null,
     isPro: row.is_pro ?? false,
-    proTier: row.pro_tier || "starter"
+    proTier: row.pro_tier || "starter",
+    autoReplyMode: row.auto_reply_mode || "instant",
+    notificationEmail: row.notification_email || null
   };
+}
+
+export async function getAllBusinessesFromDb() {
+  const res = await getPool().query(`SELECT ${BUSINESS_COLUMNS} FROM businesses`);
+  const out = {};
+  for (const row of res.rows) {
+    out[row.account_id] = rowToBusiness(row);
+  }
+  return out;
+}
+
+export async function getBusinessFromDb(accountId) {
+  const res = await getPool().query(
+    `SELECT ${BUSINESS_COLUMNS} FROM businesses WHERE account_id = $1`,
+    [accountId]
+  );
+  const row = res.rows[0];
+  if (!row) return null;
+  return rowToBusiness(row);
 }
 
 export async function upsertBusinessInDb(config) {
@@ -345,6 +372,8 @@ export async function upsertBusinessInDb(config) {
   const stripeCustomerId = config.stripeCustomerId !== undefined ? config.stripeCustomerId : existing?.stripeCustomerId ?? null;
   const isPro = config.isPro !== undefined ? config.isPro : existing?.isPro ?? false;
   const proTier = config.proTier !== undefined ? config.proTier : existing?.proTier ?? "starter";
+  const autoReplyMode = config.autoReplyMode !== undefined ? config.autoReplyMode : existing?.autoReplyMode ?? "instant";
+  const notificationEmail = config.notificationEmail !== undefined ? config.notificationEmail : existing?.notificationEmail ?? null;
   const row = {
     account_id: config.accountId,
     location_id: config.locationId,
@@ -358,30 +387,18 @@ export async function upsertBusinessInDb(config) {
     subscribed_at: subscribedAt,
     stripe_customer_id: stripeCustomerId,
     is_pro: isPro,
-    pro_tier: proTier || "starter"
+    pro_tier: proTier || "starter",
+    auto_reply_mode: autoReplyMode || "instant",
+    notification_email: notificationEmail
   };
   await getPool().query(
-    `INSERT INTO businesses (account_id, location_id, name, contact, auto_reply_enabled, interval_minutes, updated_at, free_reply_used, trial_ends_at, subscribed_at, stripe_customer_id, is_pro, pro_tier)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+    `INSERT INTO businesses (account_id, location_id, name, contact, auto_reply_enabled, interval_minutes, updated_at, free_reply_used, trial_ends_at, subscribed_at, stripe_customer_id, is_pro, pro_tier, auto_reply_mode, notification_email)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
      ON CONFLICT (account_id) DO UPDATE SET
-       location_id = $2, name = $3, contact = $4, auto_reply_enabled = $5, interval_minutes = $6, updated_at = $7, free_reply_used = $8, trial_ends_at = $9, subscribed_at = $10, stripe_customer_id = $11, is_pro = $12, pro_tier = $13`,
-    [row.account_id, row.location_id, row.name, row.contact, row.auto_reply_enabled, row.interval_minutes, row.updated_at, row.free_reply_used, row.trial_ends_at, row.subscribed_at, row.stripe_customer_id, row.is_pro, row.pro_tier]
+       location_id = $2, name = $3, contact = $4, auto_reply_enabled = $5, interval_minutes = $6, updated_at = $7, free_reply_used = $8, trial_ends_at = $9, subscribed_at = $10, stripe_customer_id = $11, is_pro = $12, pro_tier = $13, auto_reply_mode = $14, notification_email = $15`,
+    [row.account_id, row.location_id, row.name, row.contact, row.auto_reply_enabled, row.interval_minutes, row.updated_at, row.free_reply_used, row.trial_ends_at, row.subscribed_at, row.stripe_customer_id, row.is_pro, row.pro_tier, row.auto_reply_mode, row.notification_email]
   );
-  return {
-    accountId: row.account_id,
-    locationId: row.location_id,
-    name: row.name,
-    contact: row.contact,
-    autoReplyEnabled: row.auto_reply_enabled,
-    intervalMinutes: row.interval_minutes,
-    updatedAt: row.updated_at,
-    freeReplyUsed: row.free_reply_used,
-    trialEndsAt: row.trial_ends_at ? new Date(row.trial_ends_at).toISOString() : null,
-    subscribedAt: row.subscribed_at ? new Date(row.subscribed_at).toISOString() : null,
-    stripeCustomerId: row.stripe_customer_id ?? null,
-    isPro: row.is_pro ?? false,
-    proTier: row.pro_tier || "starter"
-  };
+  return rowToBusiness(row);
 }
 
 /** Return accountId for a business with this stripe_customer_id, or null */
@@ -714,4 +731,102 @@ export async function decrementProSmsUsage(accountId, monthKey, amount = 1) {
     [accountId, monthKey, dec]
   );
   return getProSmsUsage(accountId, monthKey);
+}
+
+// --- Pending replies (auto-reply preview/delay mode) ---
+
+const PENDING_REPLY_COLUMNS =
+  "id, account_id, location_id, review_id, rating, reviewer_name, review_comment, generated_reply, send_after, cancelled_at, sent_at, send_error, created_at";
+
+function rowToPendingReply(row) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    accountId: row.account_id,
+    locationId: row.location_id,
+    reviewId: row.review_id,
+    rating: row.rating,
+    reviewerName: row.reviewer_name,
+    reviewComment: row.review_comment,
+    generatedReply: row.generated_reply,
+    sendAfter: row.send_after ? new Date(row.send_after).toISOString() : null,
+    cancelledAt: row.cancelled_at ? new Date(row.cancelled_at).toISOString() : null,
+    sentAt: row.sent_at ? new Date(row.sent_at).toISOString() : null,
+    sendError: row.send_error,
+    createdAt: row.created_at ? new Date(row.created_at).toISOString() : null
+  };
+}
+
+/**
+ * Insert a pending reply. Returns null if a pending row already exists for
+ * (account, location, review) — caller should treat that as "already queued".
+ */
+export async function insertPendingReply({
+  accountId,
+  locationId,
+  reviewId,
+  rating,
+  reviewerName,
+  reviewComment,
+  generatedReply,
+  sendAfter
+}) {
+  const res = await getPool().query(
+    `INSERT INTO pending_replies
+       (account_id, location_id, review_id, rating, reviewer_name, review_comment, generated_reply, send_after)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+     ON CONFLICT (account_id, location_id, review_id) DO NOTHING
+     RETURNING ${PENDING_REPLY_COLUMNS}`,
+    [accountId, locationId, reviewId, rating, reviewerName, reviewComment, generatedReply, sendAfter]
+  );
+  return rowToPendingReply(res.rows[0]);
+}
+
+/** True if there is an open (non-cancelled, non-sent) pending row for this review. */
+export async function hasOpenPendingReply(accountId, locationId, reviewId) {
+  const res = await getPool().query(
+    `SELECT 1 FROM pending_replies
+     WHERE account_id = $1 AND location_id = $2 AND review_id = $3
+       AND cancelled_at IS NULL AND sent_at IS NULL`,
+    [accountId, locationId, reviewId]
+  );
+  return res.rows.length > 0;
+}
+
+export async function getPendingRepliesDueToSend(now = new Date()) {
+  const res = await getPool().query(
+    `SELECT ${PENDING_REPLY_COLUMNS} FROM pending_replies
+     WHERE cancelled_at IS NULL AND sent_at IS NULL AND send_after <= $1
+     ORDER BY send_after ASC
+     LIMIT 200`,
+    [now]
+  );
+  return res.rows.map(rowToPendingReply);
+}
+
+/** Mark a pending reply cancelled. Returns the updated row, or null if not found / already terminal. */
+export async function cancelPendingReply(accountId, locationId, reviewId) {
+  const res = await getPool().query(
+    `UPDATE pending_replies
+       SET cancelled_at = NOW()
+     WHERE account_id = $1 AND location_id = $2 AND review_id = $3
+       AND cancelled_at IS NULL AND sent_at IS NULL
+     RETURNING ${PENDING_REPLY_COLUMNS}`,
+    [accountId, locationId, reviewId]
+  );
+  return rowToPendingReply(res.rows[0]);
+}
+
+export async function markPendingReplySent(id) {
+  await getPool().query(
+    "UPDATE pending_replies SET sent_at = NOW(), send_error = NULL WHERE id = $1",
+    [id]
+  );
+}
+
+export async function markPendingReplyError(id, errorMessage) {
+  await getPool().query(
+    "UPDATE pending_replies SET send_error = $2 WHERE id = $1",
+    [id, String(errorMessage || "").slice(0, 1000)]
+  );
 }

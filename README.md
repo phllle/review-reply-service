@@ -35,6 +35,9 @@ Run unit tests with `npm test` (uses Node's built-in `node:test` runner; no extr
 ### Error tracking (Sentry)
 Set `SENTRY_DSN` to enable error reporting from Express request handlers, the auto-reply scheduler, the campaign scheduler, the Stripe webhook, and the Twilio SMS webhook. Leave it unset to disable — the app runs identically without it.
 
+### Auto-reply preview mode
+Each business has an `auto_reply_mode`: `'instant'` (default — current behavior) or `'delayed'`. In delayed mode, AI replies for low-star reviews (1–3 stars by default) are queued for 15 minutes and the business owner gets an email with a one-click cancel link before the reply posts to Google. 4–5 star replies still post instantly. Requires `RESEND_API_KEY`, `REPLYR_SESSION_SECRET` (signs the cancel token), and a saved owner email per business. Toggle from the connected page.
+
 ### Reply example
 POST /google/reviews/{ACCOUNT_ID}/{LOCATION_ID}/{REVIEW_ID}/reply with { "comment": "Thank you!" }.
 

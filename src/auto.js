@@ -4,6 +4,12 @@ import { fileURLToPath } from "url";
 import * as db from "./db.js";
 import { listReviews, replyToReview } from "./google.js";
 import * as sentry from "./sentry.js";
+import {
+  shouldDelayReply,
+  getDelayMinutes,
+  normalizeMode
+} from "./replyDelay.js";
+import { sendReplyPreviewEmail, isPreviewEmailConfigured } from "./replyPreviewEmail.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -81,7 +87,13 @@ export async function getReplyText(review, options = {}) {
 }
 
 export async function processPendingReviews(accountId, locationId, options = {}) {
-  const { contact: contactOverride, businessName, logger = console } = options;
+  const {
+    contact: contactOverride,
+    businessName,
+    logger = console,
+    autoReplyMode = "instant",
+    ownerEmail = null
+  } = options;
   const state = await readState(accountId, locationId);
   const alreadyReplied = new Set(state.repliedReviewIds || []);
 
@@ -99,17 +111,87 @@ export async function processPendingReviews(accountId, locationId, options = {})
     return !hasReply && !alreadyReplied.has(id) && rating && allowedRatings.has(rating);
   });
 
-  const results = { attempted: 0, succeeded: 0, failed: 0, details: [] };
+  const mode = normalizeMode(autoReplyMode);
+  const previewConfigured = isPreviewEmailConfigured();
+  const useDelayed = mode === "delayed" && db.useDb();
+
+  const results = { attempted: 0, succeeded: 0, queued: 0, failed: 0, details: [] };
   for (const review of toReply) {
     const reviewId = review.reviewId || review.name;
     const rating = mapStarRatingToNumber(review.starRating);
     results.attempted += 1;
     try {
+      // Skip generating if a delayed reply is already pending for this review
+      // (e.g. the email was sent but the cancel window hasn't closed yet).
+      if (useDelayed) {
+        const open = await db.hasOpenPendingReply(accountId, locationId, reviewId);
+        if (open) {
+          results.details.push({ reviewId, rating, status: "queued", note: "already-queued" });
+          continue;
+        }
+      }
+
       const comment = await getReplyText(review, {
         contact: contactOverride,
         businessName,
         logger
       });
+
+      const decision = useDelayed
+        ? shouldDelayReply({
+            mode,
+            rating,
+            businessHasEmail: !!ownerEmail,
+            resendConfigured: previewConfigured
+          })
+        : "instant";
+
+      if (decision === "delayed") {
+        const delayMinutes = getDelayMinutes();
+        const sendAfter = new Date(Date.now() + delayMinutes * 60 * 1000);
+        const inserted = await db.insertPendingReply({
+          accountId,
+          locationId,
+          reviewId,
+          rating,
+          reviewerName: review.reviewer?.displayName || null,
+          reviewComment: review.comment || null,
+          generatedReply: comment,
+          sendAfter
+        });
+        if (!inserted) {
+          // Race: another tick queued it first. Treat as queued, not error.
+          results.details.push({ reviewId, rating, status: "queued", note: "race-skipped" });
+          continue;
+        }
+        try {
+          await sendReplyPreviewEmail({
+            toEmail: ownerEmail,
+            businessName: businessName || "your business",
+            accountId,
+            locationId,
+            reviewId,
+            rating,
+            reviewerName: review.reviewer?.displayName || null,
+            reviewComment: review.comment || null,
+            generatedReply: comment,
+            sendAfterIso: sendAfter.toISOString()
+          });
+        } catch (emailErr) {
+          // Email failure shouldn't block the queue — the reply will still post when due.
+          logger.warn?.(emailErr, "Reply preview email failed (reply still queued)");
+          sentry.captureException(emailErr, {
+            kind: "reply-preview-email",
+            accountId,
+            locationId,
+            reviewId
+          });
+        }
+        results.queued += 1;
+        results.details.push({ reviewId, rating, status: "queued", sendAfter: sendAfter.toISOString() });
+        continue;
+      }
+
       await replyToReview(accountId, locationId, reviewId, comment);
       alreadyReplied.add(reviewId);
       results.succeeded += 1;
@@ -124,6 +206,42 @@ export async function processPendingReviews(accountId, locationId, options = {})
   state.repliedReviewIds = Array.from(alreadyReplied);
   await writeState(accountId, locationId, state);
   return results;
+}
+
+/**
+ * Process queued (delayed) replies whose send_after has passed and that
+ * weren't cancelled. Posts to Google, marks the row sent, adds to auto-state.
+ */
+export async function processQueuedReplies(logger = console) {
+  if (!db.useDb()) return { processed: 0 };
+  const due = await db.getPendingRepliesDueToSend();
+  if (!due.length) return { processed: 0 };
+  let processed = 0;
+  let failed = 0;
+  for (const row of due) {
+    try {
+      await replyToReview(row.accountId, row.locationId, row.reviewId, row.generatedReply);
+      await db.markPendingReplySent(row.id);
+      await addRepliedReviewId(row.accountId, row.locationId, row.reviewId);
+      processed += 1;
+    } catch (err) {
+      failed += 1;
+      const msg = err?.message || String(err);
+      logger.error?.({ err, id: row.id, accountId: row.accountId }, "Queued reply post failed");
+      sentry.captureException(err, {
+        kind: "queued-reply-post",
+        pendingId: row.id,
+        accountId: row.accountId,
+        reviewId: row.reviewId
+      });
+      try {
+        await db.markPendingReplyError(row.id, msg);
+      } catch {
+        /* swallow — we'll see it via Sentry */
+      }
+    }
+  }
+  return { processed, failed };
 }
 
 export function startScheduler(appLogger = console) {
@@ -164,7 +282,9 @@ export function startScheduler(appLogger = console) {
       processPendingReviews(biz.accountId, biz.locationId, {
         contact: biz.contact,
         businessName: biz.name || "our business",
-        logger: appLogger
+        logger: appLogger,
+        autoReplyMode: biz.autoReplyMode || "instant",
+        ownerEmail: biz.notificationEmail || null
       })
         .then(async (result) => {
           if (result.failed > 0) {
@@ -187,6 +307,13 @@ export function startScheduler(appLogger = console) {
           });
         });
     }
+    // Always process the queued (delayed) replies whose send_after has passed.
+    // Independent of which businesses ticked above — a queued reply might belong
+    // to a business that disabled auto-reply between queue and send.
+    processQueuedReplies(appLogger).catch((err) => {
+      appLogger.error?.(err, "Queued-reply tick failed");
+      sentry.captureException(err, { kind: "queued-reply-tick" });
+    });
     } catch (err) {
       appLogger.error?.(err, "Auto-reply scheduler tick failed (database or config)");
       sentry.captureException(err, { kind: "auto-reply-scheduler" });
