@@ -136,6 +136,7 @@ export function startScheduler(appLogger = console) {
 
   appLogger.info?.({ intervalMinutes }, "Starting auto-reply scheduler (multi-tenant)");
   const handle = setInterval(async () => {
+    try {
     const { getEnabledBusinesses, DEFAULT_CONTACT } = await import("./businesses.js");
     let businesses = await getEnabledBusinesses();
     // Legacy env fallback is only for local file mode. In DB mode, per-business
@@ -183,6 +184,9 @@ export function startScheduler(appLogger = console) {
             error: err
           });
         });
+    }
+    } catch (err) {
+      appLogger.error?.(err, "Auto-reply scheduler tick failed (database or config)");
     }
   }, intervalMs);
   return handle;

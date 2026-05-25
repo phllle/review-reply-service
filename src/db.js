@@ -4,17 +4,54 @@ const { Pool } = pg;
 
 let pool = null;
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** Pool options for Railway / hosted Postgres (SSL, timeouts). */
+function poolOptionsFromUrl(url) {
+  const opts = {
+    connectionString: url,
+    max: Number(process.env.PG_POOL_MAX || 10),
+    idleTimeoutMillis: 30_000,
+    connectionTimeoutMillis: Number(process.env.PG_CONNECT_TIMEOUT_MS || 15_000)
+  };
+  const forceSsl =
+    String(process.env.DATABASE_SSL || "").toLowerCase() === "true" ||
+    String(process.env.PGSSLMODE || "").toLowerCase() === "require";
+  let sslmode = "";
+  try {
+    const normalized = url.replace(/^postgres:/i, "postgresql:");
+    sslmode = (new URL(normalized).searchParams.get("sslmode") || "").toLowerCase();
+  } catch {
+    /* ignore malformed URL; pg may still connect */
+  }
+  const needsSsl =
+    forceSsl ||
+    sslmode === "require" ||
+    sslmode === "verify-ca" ||
+    sslmode === "verify-full" ||
+    (process.env.NODE_ENV === "production" && /railway\.app|rlwy\.net/i.test(url));
+  if (needsSsl && sslmode !== "disable") {
+    opts.ssl = { rejectUnauthorized: sslmode === "verify-full" };
+  }
+  return opts;
+}
+
 function getPool() {
   if (!pool) {
     const url = process.env.DATABASE_URL;
     if (!url) throw new Error("DATABASE_URL is not set");
-    pool = new Pool({ connectionString: url });
+    pool = new Pool(poolOptionsFromUrl(url));
+    pool.on("error", (err) => {
+      console.error("PostgreSQL pool idle client error:", err.message || err);
+    });
   }
   return pool;
 }
 
 /** Create tables if they don't exist. Call once at startup when using DB. */
-export async function init() {
+async function initSchema() {
   const client = getPool();
   await client.query(`
     CREATE TABLE IF NOT EXISTS tokens (
@@ -189,6 +226,37 @@ export async function init() {
       PRIMARY KEY (account_id, month_key)
     );
   `);
+}
+
+/** Create tables if they don't exist. Retries transient connection errors (Railway Postgres wake-up). */
+export async function init() {
+  const attempts = Math.max(1, Number(process.env.DB_INIT_RETRIES || 5));
+  let lastErr;
+  for (let i = 1; i <= attempts; i++) {
+    try {
+      await initSchema();
+      return;
+    } catch (err) {
+      lastErr = err;
+      const retryable =
+        err.code === "ECONNRESET" ||
+        err.code === "ECONNREFUSED" ||
+        err.code === "ETIMEDOUT" ||
+        err.code === "57P03" ||
+        err.code === "53300";
+      if (!retryable || i === attempts) break;
+      const delayMs = Math.min(15_000, 2000 * i);
+      console.warn(
+        `Database init attempt ${i}/${attempts} failed (${err.code || err.message}); retrying in ${delayMs}ms`
+      );
+      await sleep(delayMs);
+    }
+  }
+  const hint =
+    "Check Railway: Postgres plugin running, DATABASE_URL on the web service (reference variable), and use the private URL if both services are in the same project.";
+  const wrapped = new Error(`${lastErr?.message || lastErr}. ${hint}`);
+  wrapped.cause = lastErr;
+  throw wrapped;
 }
 
 // --- Tokens (keyed by accountId) ---

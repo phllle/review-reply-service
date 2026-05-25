@@ -3285,6 +3285,9 @@ app.use((err, req, res, next) => {
 });
 
 start().catch((err) => {
-  logger.fatal(err, "Startup failed");
+  const dbHint = db.useDb()
+    ? " (PostgreSQL: verify DATABASE_URL on this Railway service and that the Postgres service is running)"
+    : "";
+  logger.fatal(err, `Startup failed${dbHint}`);
   process.exit(1);
 });
