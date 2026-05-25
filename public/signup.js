@@ -6,6 +6,28 @@
   var cloneEl = document.getElementById("pro-showcase-lightbox-clone");
   var closeBtn = lightbox && lightbox.querySelector(".pro-showcase-lightbox-close");
 
+  // Focus state captured at open time so we can restore it on close.
+  var lastFocused = null;
+
+  function focusableInLightbox() {
+    if (!contentBox) return [];
+    return Array.prototype.slice.call(
+      contentBox.querySelectorAll('a[href], button:not([disabled]), [tabindex]:not([tabindex="-1"])')
+    ).filter(function(el) {
+      return el.offsetWidth > 0 || el.offsetHeight > 0 || el === document.activeElement;
+    });
+  }
+
+  function onOpen() {
+    lastFocused = document.activeElement;
+    lightbox.classList.add("open");
+    document.body.style.overflow = "hidden";
+    if (closeBtn && typeof closeBtn.focus === "function") {
+      // Defer so the lightbox is painted before focus moves.
+      setTimeout(function() { closeBtn.focus(); }, 0);
+    }
+  }
+
   function open(src, cap) {
     if (!lightbox || !img) return;
     if (contentBox) contentBox.classList.remove("has-clone");
@@ -13,8 +35,7 @@
     img.alt = cap || "";
     if (caption) caption.textContent = cap || "";
     if (cloneEl) cloneEl.innerHTML = "";
-    lightbox.classList.add("open");
-    document.body.style.overflow = "hidden";
+    onOpen();
   }
 
   function openWithContent(html) {
@@ -23,16 +44,20 @@
     cloneEl.innerHTML = html;
     img.src = "";
     if (caption) caption.textContent = "";
-    lightbox.classList.add("open");
-    document.body.style.overflow = "hidden";
+    onOpen();
   }
 
   function close() {
     if (!lightbox) return;
+    var wasOpen = lightbox.classList.contains("open");
     lightbox.classList.remove("open");
     if (contentBox) contentBox.classList.remove("has-clone");
     if (cloneEl) cloneEl.innerHTML = "";
     document.body.style.overflow = "";
+    if (wasOpen && lastFocused && typeof lastFocused.focus === "function") {
+      lastFocused.focus();
+    }
+    lastFocused = null;
   }
 
   if (lightbox) {
@@ -41,7 +66,24 @@
     });
     if (closeBtn) closeBtn.addEventListener("click", close);
     document.addEventListener("keydown", function(e) {
-      if (e.key === "Escape") close();
+      if (!lightbox.classList.contains("open")) return;
+      if (e.key === "Escape") { close(); return; }
+      if (e.key !== "Tab") return;
+      var items = focusableInLightbox();
+      if (items.length === 0) {
+        e.preventDefault();
+        if (closeBtn) closeBtn.focus();
+        return;
+      }
+      var first = items[0];
+      var last = items[items.length - 1];
+      if (e.shiftKey && document.activeElement === first) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && document.activeElement === last) {
+        e.preventDefault();
+        first.focus();
+      }
     });
   }
 
