@@ -1883,6 +1883,54 @@ ${bodyHtml}
 </html>`;
 }
 
+// Shared base CSS for /admin and /admin/metrics. Same dark brand as the rest of
+// the app, but a wider wrapper than darkShellHtml since admin tables need room.
+function adminBaseCss() {
+  return `
+  :root { --bg: #0f0f11; --surface: #17171a; --surface2: #1e1e22; --border: rgba(255,255,255,0.07); --accent: #4a9eff; --accent2: #7c6af7; --text: #f0ede8; --muted: #7a7880; --danger: #ff6b6b; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--text); font-family: 'DM Sans', sans-serif; font-size: 14px; min-height: 100vh; padding: 32px 24px 80px; overflow-x: hidden; line-height: 1.55; }
+  body::before { content: ''; position: fixed; top: -200px; left: 50%; transform: translateX(-50%); width: 800px; height: 500px; background: radial-gradient(ellipse, rgba(124,106,247,0.12) 0%, transparent 70%); pointer-events: none; z-index: 0; }
+  .admin-wrap { max-width: 1280px; margin: 0 auto; position: relative; z-index: 1; }
+  .admin-nav { display: flex; align-items: center; gap: 18px; margin-bottom: 32px; flex-wrap: wrap; }
+  .admin-brand { display: inline-flex; align-items: center; gap: 9px; text-decoration: none; color: var(--text); }
+  .admin-brand-icon { width: 28px; height: 28px; background: linear-gradient(135deg, var(--accent2), var(--accent)); border-radius: 8px; display: flex; align-items: center; justify-content: center; font-size: 14px; }
+  .admin-brand-name { font-size: 15px; font-weight: 700; letter-spacing: -0.01em; }
+  .admin-tabs { display: inline-flex; gap: 4px; padding: 4px; background: var(--surface); border: 1px solid var(--border); border-radius: 12px; }
+  .admin-tab { display: inline-flex; align-items: center; gap: 6px; padding: 7px 14px; border-radius: 8px; font-size: 13px; font-weight: 600; color: var(--muted); text-decoration: none; transition: all 0.18s; }
+  .admin-tab:hover { color: var(--text); background: rgba(255,255,255,0.04); }
+  .admin-tab.active { color: var(--text); background: linear-gradient(135deg, rgba(124,106,247,0.18), rgba(74,158,255,0.14)); border: 1px solid rgba(124,106,247,0.35); padding: 6px 13px; }
+  .admin-page { animation: fadeUp 0.4s ease both; }
+  .admin-header { margin-bottom: 24px; }
+  .admin-header h1 { font-family: 'Fraunces', serif; font-size: 32px; font-weight: 300; letter-spacing: -0.02em; line-height: 1.1; margin-bottom: 6px; }
+  .admin-header h1 em { color: var(--accent); font-style: italic; }
+  .admin-subtitle { color: var(--muted); font-size: 13px; max-width: 720px; line-height: 1.6; margin-bottom: 12px; }
+  .admin-subtitle strong { color: var(--text); font-weight: 600; }
+  .admin-tools { font-size: 13px; color: var(--muted); }
+  .admin-tools a { color: var(--accent2); text-decoration: none; font-weight: 500; }
+  .admin-tools a:hover { color: #a099f7; text-decoration: underline; }
+  code { background: rgba(255,255,255,0.06); border-radius: 4px; padding: 1px 6px; font-size: 12px; color: var(--accent); font-family: ui-monospace, SFMono-Regular, monospace; }
+  @keyframes fadeUp { from { opacity: 0; transform: translateY(16px); } to { opacity: 1; transform: translateY(0); } }
+  `;
+}
+
+// Shared top nav for /admin and /admin/metrics. activeTab is "businesses" or
+// "metrics" — controls which tab pill is highlighted.
+function adminNavHtml(activeTab, encodedSecret) {
+  const s = encodedSecret || "";
+  const cls = (id) => `admin-tab${activeTab === id ? " active" : ""}`;
+  return `<nav class="admin-nav" aria-label="Admin">
+      <a href="/admin?secret=${s}" class="admin-brand">
+        <span class="admin-brand-icon" aria-hidden="true">💬</span>
+        <span class="admin-brand-name">Replyr admin</span>
+      </a>
+      <div class="admin-tabs" role="tablist">
+        <a href="/admin?secret=${s}" class="${cls("businesses")}" role="tab" aria-selected="${activeTab === "businesses"}">Businesses</a>
+        <a href="/admin/metrics?secret=${s}" class="${cls("metrics")}" role="tab" aria-selected="${activeTab === "metrics"}">Metrics</a>
+      </div>
+    </nav>`;
+}
+
 app.get("/auth/google", authRouteLimiter, async (req, res, next) => {
   try {
     const returnToRaw = (req.query.return_to && String(req.query.return_to).trim()) || "";
@@ -3535,16 +3583,22 @@ app.get("/admin/metrics.json", async (req, res, next) => {
 app.get("/admin/metrics", async (req, res, next) => {
   try {
     if (!(process.env.ADMIN_SECRET || "").trim()) {
-      res.status(503);
-      return res.type("html").send(
-        "<!DOCTYPE html><html><body style=\"font-family:system-ui;padding:2rem\"><h1>Admin disabled</h1><p>Set <code>ADMIN_SECRET</code> in the server environment.</p></body></html>"
-      );
+      res.status(503).set("Content-Type", "text/html; charset=utf-8");
+      return res.send(darkShellHtml({
+        title: "Replyr – Admin disabled",
+        bodyHtml: `    <h1>Admin <em>disabled</em></h1>
+    <p>Set <code>ADMIN_SECRET</code> in the server environment to enable admin pages.</p>`,
+        narrow: true
+      }));
     }
     if (!isValidAdminRequest(req)) {
-      res.status(401);
-      return res.type("html").send(
-        "<!DOCTYPE html><html><body style=\"font-family:system-ui;padding:2rem\"><h1>Unauthorized</h1><p>Add your admin secret to the URL: <code>/admin/metrics?secret=YOUR_ADMIN_SECRET</code></p></body></html>"
-      );
+      res.status(401).set("Content-Type", "text/html; charset=utf-8");
+      return res.send(darkShellHtml({
+        title: "Replyr – Unauthorized",
+        bodyHtml: `    <h1>Unauthorized</h1>
+    <p>Add your admin secret to the URL: <code>/admin/metrics?secret=YOUR_ADMIN_SECRET</code> — or send it as the <code>X-Admin-Secret</code> header.</p>`,
+        narrow: true
+      }));
     }
     const data = await buildAdminMetrics();
     const adminSecret = getAdminSecretFromRequest(req);
@@ -3561,7 +3615,7 @@ function renderAdminMetricsHtml(data, adminSecret) {
   const cents = (c) => formatCentsAsUsd(c);
   const counts = data.mrr.countsByPlan;
   const planRow = (label, key) =>
-    `<tr><td>${label}</td><td style="text-align:right">${counts[key] || 0}</td><td style="text-align:right">${cents(data.mrr.byPlanCents[key] || 0)}</td></tr>`;
+    `<tr><td>${label}</td><td class="num">${counts[key] || 0}</td><td class="num">${cents(data.mrr.byPlanCents[key] || 0)}</td></tr>`;
   const planConfigWarnings = [
     !data.planAmountsConfigured.base && "STRIPE_BASE_PRICE_AMOUNT_CENTS",
     !data.planAmountsConfigured.proStarter && "STRIPE_PRO_STARTER_AMOUNT_CENTS",
@@ -3571,85 +3625,120 @@ function renderAdminMetricsHtml(data, adminSecret) {
   const warningHtml = planConfigWarnings.length
     ? `<div class="warn">⚠ MRR may be undercounted — these env vars aren't set: ${planConfigWarnings.map((s) => `<code>${s}</code>`).join(", ")}</div>`
     : "";
+  const encodedSecret = encodeURIComponent(adminSecret || "");
   return `<!DOCTYPE html>
 <html lang="en"><head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Replyr – Admin metrics</title>
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,wght@0,300;0,400;0,600;1,300&family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
+<style>${adminBaseCss()}</style>
 <style>
-  * { box-sizing: border-box; }
-  body { font-family: system-ui, sans-serif; max-width: 960px; margin: 0 auto; padding: 1.5rem; background: #f5f5f5; color: #222; }
-  h1 { margin: 0 0 0.25rem; font-size: 1.4rem; }
-  .ts { color: #888; font-size: 0.8rem; margin-bottom: 1.25rem; }
-  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; margin-bottom: 1.5rem; }
-  .card { background: #fff; border-radius: 10px; padding: 1rem 1.25rem; box-shadow: 0 1px 3px rgba(0,0,0,0.06); }
-  .card .label { color: #666; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.04em; }
-  .card .value { font-size: 1.6rem; font-weight: 600; margin-top: 0.25rem; color: #111; }
-  .card .sub { color: #666; font-size: 0.8rem; margin-top: 0.4rem; }
-  table { width: 100%; border-collapse: collapse; background: #fff; border-radius: 10px; overflow: hidden; box-shadow: 0 1px 3px rgba(0,0,0,0.06); margin-bottom: 1.25rem; }
-  th, td { padding: 0.6rem 1rem; border-bottom: 1px solid #eee; }
-  th { background: #fafafa; font-weight: 600; color: #555; font-size: 0.78rem; text-transform: uppercase; text-align: left; }
-  th:nth-child(2), th:nth-child(3) { text-align: right; }
-  td:nth-child(2), td:nth-child(3) { text-align: right; }
-  h2 { font-size: 0.9rem; text-transform: uppercase; letter-spacing: 0.04em; color: #555; margin: 1.5rem 0 0.75rem; }
-  .warn { background: #fff8e1; border: 1px solid #f4c430; padding: 0.75rem 1rem; border-radius: 8px; font-size: 0.85rem; color: #6b5500; margin-bottom: 1.25rem; }
-  code { background: #eee; padding: 0.1rem 0.35rem; border-radius: 3px; font-size: 0.85em; }
-  .footer { margin-top: 2rem; font-size: 0.8rem; color: #888; }
-  .footer a { color: #4a9eff; }
+  .ts { color: var(--muted); font-size: 12px; letter-spacing: 0.04em; text-transform: uppercase; font-weight: 600; margin-bottom: 16px; }
+  .section-label { font-family: 'Fraunces', serif; font-size: 18px; font-weight: 400; color: var(--text); margin: 28px 0 14px; }
+  .section-label:first-of-type { margin-top: 0; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px; }
+  .stat-card {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 16px;
+    padding: 18px 20px; transition: border-color 0.18s, transform 0.18s;
+    animation: fadeUp 0.4s ease both;
+  }
+  .stat-card:hover { border-color: rgba(255,255,255,0.12); transform: translateY(-1px); }
+  .stat-label { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; font-weight: 600; }
+  .stat-value { font-family: 'Fraunces', serif; font-size: 32px; font-weight: 300; color: var(--text); margin-top: 6px; line-height: 1.1; letter-spacing: -0.01em; }
+  .stat-sub { color: var(--muted); font-size: 12px; margin-top: 6px; }
+  .table-wrap { background: var(--surface); border: 1px solid var(--border); border-radius: 16px; overflow: hidden; animation: fadeUp 0.4s ease both; }
+  table { width: 100%; border-collapse: collapse; }
+  thead th {
+    background: var(--surface2); color: var(--muted);
+    font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase;
+    text-align: left; padding: 12px 16px; border-bottom: 1px solid var(--border);
+  }
+  thead th.num, tbody td.num { text-align: right; }
+  tbody td { padding: 11px 16px; border-bottom: 1px solid var(--border); font-size: 13px; color: var(--text); }
+  tbody tr:last-child td { border-bottom: none; background: rgba(124,106,247,0.04); }
+  tbody tr:last-child td strong { color: var(--text); }
+  .warn {
+    background: linear-gradient(135deg, rgba(245,159,11,0.12), rgba(245,159,11,0.06));
+    border: 1px solid rgba(245,159,11,0.35); border-radius: 12px;
+    padding: 12px 16px; font-size: 13px; color: #f5a55c; margin-bottom: 18px;
+  }
+  .warn code { color: #f5a55c; background: rgba(245,159,11,0.15); }
+  .footer { margin-top: 32px; padding-top: 20px; border-top: 1px solid var(--border); font-size: 13px; color: var(--muted); }
+  .footer a { color: var(--accent2); text-decoration: none; font-weight: 500; }
+  .footer a:hover { color: #a099f7; text-decoration: underline; }
 </style>
-</head><body>
-<h1>Replyr – Admin metrics</h1>
-<div class="ts">As of ${data.generatedAt}</div>
+</head>
+<body>
+<div class="admin-wrap">
+  ${adminNavHtml("metrics", encodedSecret)}
+  <div class="admin-page">
+    <div class="admin-header">
+      <h1>Metrics</h1>
+      <p class="admin-subtitle">MRR, 30-day funnel, and current activity. MRR is computed locally from the <code>businesses</code> table using <code>STRIPE_*_AMOUNT_CENTS</code> env vars.</p>
+      <div class="ts">As of ${escapeHtml(data.generatedAt)}</div>
+    </div>
 
-${warningHtml}
+    ${warningHtml}
 
-<h2>Revenue</h2>
-<div class="grid">
-  <div class="card"><div class="label">MRR</div><div class="value">${cents(data.mrr.totalCents)}</div><div class="sub">${data.mrr.activeSubscribers} active subscribers</div></div>
-  <div class="card"><div class="label">Conversion (30d)</div><div class="value">${pct(data.funnel.conversionRate)}</div><div class="sub">${data.funnel.trialToPaid} of ${data.funnel.trialsStarted} trials in window</div></div>
-  <div class="card"><div class="label">Active trials</div><div class="value">${data.funnel.activeTrial}</div><div class="sub">connected, in trial, not subscribed</div></div>
-  <div class="card"><div class="label">Trial-end attrition</div><div class="value">${data.funnel.trialEndedNoSub}</div><div class="sub">trial ended, never subscribed</div></div>
+    <h2 class="section-label">Revenue</h2>
+    <div class="grid">
+      <div class="stat-card"><div class="stat-label">MRR</div><div class="stat-value">${cents(data.mrr.totalCents)}</div><div class="stat-sub">${data.mrr.activeSubscribers} active subscribers</div></div>
+      <div class="stat-card"><div class="stat-label">Conversion (30d)</div><div class="stat-value">${pct(data.funnel.conversionRate)}</div><div class="stat-sub">${data.funnel.trialToPaid} of ${data.funnel.trialsStarted} trials in window</div></div>
+      <div class="stat-card"><div class="stat-label">Active trials</div><div class="stat-value">${data.funnel.activeTrial}</div><div class="stat-sub">connected, in trial, not subscribed</div></div>
+      <div class="stat-card"><div class="stat-label">Trial-end attrition</div><div class="stat-value">${data.funnel.trialEndedNoSub}</div><div class="stat-sub">trial ended, never subscribed</div></div>
+    </div>
+
+    <h2 class="section-label">Plans</h2>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Plan</th><th class="num">Active</th><th class="num">MRR</th></tr></thead>
+        <tbody>
+          ${planRow("Base Replyr", "base")}
+          ${planRow("Pro Starter", "pro_starter")}
+          ${planRow("Pro Growth", "pro_growth")}
+          ${planRow("Pro Scale", "pro_scale")}
+          ${counts.pro_legacy ? planRow("Pro (legacy)", "pro_legacy") : ""}
+          <tr><td><strong>Total paid</strong></td><td class="num"><strong>${data.mrr.activeSubscribers}</strong></td><td class="num"><strong>${cents(data.mrr.totalCents)}</strong></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h2 class="section-label">Activity</h2>
+    <div class="grid">
+      <div class="stat-card"><div class="stat-label">Connected businesses</div><div class="stat-value">${data.funnel.totalConnected}</div></div>
+      <div class="stat-card"><div class="stat-label">Auto-reply enabled</div><div class="stat-value">${data.activity.autoReplyEnabledCount}</div></div>
+      <div class="stat-card"><div class="stat-label">Preview/delayed mode</div><div class="stat-value">${data.activity.delayedModeCount}</div></div>
+      <div class="stat-card"><div class="stat-label">Pending replies queued</div><div class="stat-value">${data.activity.pendingRepliesOpen}</div></div>
+      <div class="stat-card"><div class="stat-label">Pro SMS this month</div><div class="stat-value">${data.activity.proSmsThisMonth.toLocaleString()}</div><div class="stat-sub">${escapeHtml(data.activity.monthKey)} · across all Pro tiers</div></div>
+    </div>
+
+    <div class="footer">JSON view: <a href="/admin/metrics.json?secret=${encodedSecret}">/admin/metrics.json</a></div>
+  </div>
 </div>
-
-<h2>Plans</h2>
-<table>
-  <thead><tr><th>Plan</th><th>Active</th><th>MRR</th></tr></thead>
-  <tbody>
-    ${planRow("Base Replyr", "base")}
-    ${planRow("Pro Starter", "pro_starter")}
-    ${planRow("Pro Growth", "pro_growth")}
-    ${planRow("Pro Scale", "pro_scale")}
-    ${counts.pro_legacy ? planRow("Pro (legacy)", "pro_legacy") : ""}
-    <tr><td><strong>Total paid</strong></td><td><strong>${data.mrr.activeSubscribers}</strong></td><td><strong>${cents(data.mrr.totalCents)}</strong></td></tr>
-  </tbody>
-</table>
-
-<h2>Activity</h2>
-<div class="grid">
-  <div class="card"><div class="label">Connected businesses</div><div class="value">${data.funnel.totalConnected}</div></div>
-  <div class="card"><div class="label">Auto-reply enabled</div><div class="value">${data.activity.autoReplyEnabledCount}</div></div>
-  <div class="card"><div class="label">Preview/delayed mode</div><div class="value">${data.activity.delayedModeCount}</div></div>
-  <div class="card"><div class="label">Pending replies queued</div><div class="value">${data.activity.pendingRepliesOpen}</div></div>
-  <div class="card"><div class="label">Pro SMS this month</div><div class="value">${data.activity.proSmsThisMonth.toLocaleString()}</div><div class="sub">${data.activity.monthKey} · across all Pro tiers</div></div>
-</div>
-
-<div class="footer">JSON view: <a href="/admin/metrics.json?secret=${encodeURIComponent(adminSecret || "")}">/admin/metrics.json</a> · Admin home: <a href="/admin?secret=${encodeURIComponent(adminSecret || "")}">/admin</a></div>
 </body></html>`;
 }
 
 app.get("/admin", (req, res) => {
   const adminConfigured = !!(process.env.ADMIN_SECRET || "").trim();
   if (!adminConfigured) {
-    res.status(503);
-    return res.type("html").send(
-      "<!DOCTYPE html><html><body style=\"font-family:system-ui;padding:2rem\"><h1>Admin disabled</h1><p>Set <code>ADMIN_SECRET</code> in the server environment, then open <code>/admin?secret=…</code></p></body></html>"
-    );
+    res.status(503).set("Content-Type", "text/html; charset=utf-8");
+    return res.send(darkShellHtml({
+      title: "Replyr – Admin disabled",
+      bodyHtml: `    <h1>Admin <em>disabled</em></h1>
+    <p>Set <code>ADMIN_SECRET</code> in the server environment, then open <code>/admin?secret=…</code></p>`,
+      narrow: true
+    }));
   }
   if (!isValidAdminRequest(req)) {
-    res.status(401);
-    return res.type("html").send(
-      "<!DOCTYPE html><html><body style=\"font-family:system-ui;padding:2rem\"><h1>Unauthorized</h1><p>Add your admin secret to the URL: <code>/admin?secret=YOUR_ADMIN_SECRET</code></p></body></html>"
-    );
+    res.status(401).set("Content-Type", "text/html; charset=utf-8");
+    return res.send(darkShellHtml({
+      title: "Replyr – Unauthorized",
+      bodyHtml: `    <h1>Unauthorized</h1>
+    <p>Add your admin secret to the URL: <code>/admin?secret=YOUR_ADMIN_SECRET</code> — or send it as the <code>X-Admin-Secret</code> header.</p>`,
+      narrow: true
+    }));
   }
   const adminSecretForScript = encodeURIComponent(getAdminSecretFromRequest(req));
   res.set("Content-Type", "text/html; charset=utf-8");
@@ -3660,40 +3749,82 @@ app.get("/admin", (req, res) => {
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Replyr – Admin</title>
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,wght@0,300;0,400;0,600;1,300&family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
+  <style>${adminBaseCss()}</style>
   <style>
-    * { box-sizing: border-box; }
-    body { font-family: system-ui, sans-serif; max-width: 900px; margin: 0 auto; padding: 1.5rem; background: #f5f5f5; }
-    h1 { margin: 0 0 1rem; font-size: 1.25rem; color: #333; }
-    table { width: 100%; border-collapse: collapse; background: #fff; border-radius: 8px; overflow: hidden; box-shadow: 0 1px 3px rgba(0,0,0,0.08); }
-    th, td { padding: 0.75rem 1rem; text-align: left; border-bottom: 1px solid #eee; }
-    th { background: #fafafa; font-weight: 600; color: #555; font-size: 0.8rem; text-transform: uppercase; }
-    tr:last-child td { border-bottom: none; }
-    input[type="text"], input[type="number"] { width: 100%; padding: 0.5rem; border: 1px solid #ddd; border-radius: 4px; font-size: 0.9rem; }
-    input[type="checkbox"] { width: 1.1rem; height: 1.1rem; }
-    button { padding: 0.5rem 1rem; background: #333; color: #fff; border: none; border-radius: 4px; cursor: pointer; font-size: 0.85rem; }
-    button:hover { background: #555; }
-    button:disabled { opacity: 0.6; cursor: not-allowed; }
-    .msg { margin-top: 0.5rem; font-size: 0.85rem; }
-    .msg.ok { color: #0a0; }
-    .msg.err { color: #c00; }
-    .empty { color: #888; padding: 2rem; text-align: center; }
-    .refresh { margin-bottom: 1rem; }
-    .filter-row { margin-bottom: 0.75rem; display: flex; align-items: center; gap: 0.5rem; }
-    .filter-row label { font-size: 0.9rem; color: #555; }
-    .filter-row select { padding: 0.35rem 0.5rem; border: 1px solid #ddd; border-radius: 4px; font-size: 0.9rem; }
-    .status-subscribed { color: #2e7d32; font-weight: 500; }
-    .status-trial { color: #1565c0; }
-    .status-expired { color: #c62828; }
-    .status-gratis { color: #2e7d32; }
-    .status-pro { color: #6a1b9a; font-weight: 500; }
+    /* Businesses table — dense, scrolls horizontally if needed */
+    .table-wrap { background: var(--surface); border: 1px solid var(--border); border-radius: 16px; overflow: auto; animation: fadeUp 0.4s ease both; }
+    table { width: 100%; border-collapse: collapse; min-width: 880px; }
+    thead th {
+      position: sticky; top: 0; z-index: 1;
+      background: var(--surface2); color: var(--muted); font-size: 11px; font-weight: 600;
+      letter-spacing: 0.06em; text-transform: uppercase; text-align: left;
+      padding: 12px 14px; border-bottom: 1px solid var(--border);
+    }
+    tbody td { padding: 10px 14px; border-bottom: 1px solid var(--border); font-size: 13px; vertical-align: middle; }
+    tbody tr:last-child td { border-bottom: none; }
+    tbody tr:hover { background: rgba(255,255,255,0.02); }
+    input[type="text"], input[type="number"], select {
+      background: var(--surface2); border: 1px solid var(--border); border-radius: 8px;
+      color: var(--text); font-family: 'DM Sans', sans-serif; font-size: 13px; padding: 7px 10px;
+      transition: border-color 0.18s, box-shadow 0.18s; outline: none; min-width: 0;
+    }
+    input[type="text"] { width: 100%; }
+    input[type="number"] { width: 70px; }
+    select { cursor: pointer; }
+    input:focus, select:focus { border-color: rgba(74,158,255,0.5); box-shadow: 0 0 0 3px rgba(74,158,255,0.1); }
+    input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--accent); cursor: pointer; }
+    button {
+      background: var(--accent); color: #0f0f11; border: none; border-radius: 8px;
+      font-family: 'DM Sans', sans-serif; font-size: 12px; font-weight: 600; cursor: pointer;
+      padding: 7px 12px; transition: all 0.18s;
+    }
+    button:hover:not(:disabled) { background: #6bafff; transform: translateY(-1px); }
+    button:disabled { opacity: 0.6; cursor: not-allowed; transform: none; }
+    button[data-run-now] { background: var(--surface2); color: var(--muted); border: 1px solid var(--border); }
+    button[data-run-now]:hover:not(:disabled) { background: rgba(124,106,247,0.15); color: var(--text); border-color: rgba(124,106,247,0.4); }
+    [data-pro-link] { font-size: 12px; color: var(--accent2); text-decoration: none; padding: 6px 10px; border-radius: 8px; transition: background 0.18s; }
+    [data-pro-link]:hover { background: rgba(124,106,247,0.12); color: #a099f7; text-decoration: none; }
+    .actions-cell { display: inline-flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+    .msg { display: block; margin-top: 4px; font-size: 11px; min-height: 1em; }
+    .msg.ok { color: #6ee7a3; }
+    .msg.err { color: var(--danger); }
+    .empty {
+      background: var(--surface); border: 1px solid var(--border); border-radius: 16px;
+      padding: 48px 24px; text-align: center; color: var(--muted); font-size: 14px;
+    }
+    .filter-row {
+      display: flex; align-items: center; gap: 10px; margin-bottom: 14px;
+      background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 10px 14px;
+    }
+    .filter-row label { font-size: 12px; color: var(--muted); font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; }
+    .status-subscribed, .status-trial, .status-expired, .status-gratis, .status-pro {
+      display: inline-block; padding: 3px 10px; border-radius: 999px; font-size: 11px; font-weight: 600;
+      letter-spacing: 0.04em; text-transform: uppercase;
+    }
+    .status-subscribed { background: rgba(110,231,163,0.15); color: #6ee7a3; }
+    .status-trial { background: rgba(74,158,255,0.15); color: var(--accent); }
+    .status-expired { background: rgba(255,107,107,0.15); color: var(--danger); }
+    .status-gratis { background: rgba(110,231,163,0.15); color: #6ee7a3; }
+    .status-pro { background: rgba(124,106,247,0.18); color: #a099f7; }
+    .loading { color: var(--muted); padding: 32px 4px; text-align: center; font-size: 14px; }
   </style>
 </head>
 <body>
-  <h1>Replyr – Admin</h1>
-  <p class="refresh"><a href="/admin" id="admin-refresh-link">Refresh</a> · <a href="/businesses" id="admin-json-link">JSON</a></p>
-  <div id="loading">Loading businesses…</div>
-  <div id="content" style="display: none;">
-    <div class="filter-row" id="filter-row" style="display: none;"><label for="status-filter">Status:</label><select id="status-filter"><option value="">All</option><option value="trial">Trial</option><option value="subscribed">Subscribed</option><option value="pro">Pro</option><option value="gratis">Complimentary</option><option value="expired">Expired</option></select></div>
+  <div class="admin-wrap">
+    ${adminNavHtml("businesses", adminSecretForScript)}
+    <div class="admin-page">
+      <div class="admin-header">
+        <h1>Businesses</h1>
+        <p class="admin-subtitle">Edit contact, Pro tier, and auto-reply settings per business. Click <strong>Run now</strong> to trigger Claude auto-reply for that business immediately.</p>
+        <p class="admin-tools"><a href="/admin" id="admin-refresh-link">Refresh</a> · <a href="/businesses" id="admin-json-link">JSON export</a></p>
+      </div>
+      <div id="loading" class="loading">Loading businesses…</div>
+      <div id="content" style="display: none;">
+        <div class="filter-row" id="filter-row" style="display: none;"><label for="status-filter">Status</label><select id="status-filter"><option value="">All</option><option value="trial">Trial</option><option value="subscribed">Subscribed</option><option value="pro">Pro</option><option value="gratis">Complimentary</option><option value="expired">Expired</option></select></div>
+      </div>
+    </div>
   </div>
   <script src="/admin.js?secret=${adminSecretForScript}"></script>
 </body>
@@ -3782,10 +3913,10 @@ async function load() {
     if (!Array.isArray(list) || list.length === 0) {
       content.innerHTML = "<p class=\\"empty\\">No businesses yet. Have them connect via the auth link.</p>";
     } else {
-      const tableHtml = "<table><thead><tr><th>Name</th><th>Contact (for 1–3 star replies)</th><th>Trial ends</th><th>Status</th><th>Pro</th><th>Pro tier (SMS/mo)</th><th>Auto-reply</th><th>Interval (min)</th><th>Actions</th></tr></thead><tbody></tbody></table>";
+      const tableHtml = "<div class=\\"table-wrap\\"><table><thead><tr><th>Name</th><th>Contact (for 1–3 star replies)</th><th>Trial ends</th><th>Status</th><th>Pro</th><th>Pro tier (SMS/mo)</th><th>Auto-reply</th><th>Interval (min)</th><th>Actions</th></tr></thead><tbody></tbody></table></div>";
       content.insertAdjacentHTML("beforeend", tableHtml);
-      const table = content.querySelector("table");
-      if (filterRow) { content.insertBefore(filterRow, table); filterRow.style.display = "flex"; }
+      const tableWrap = content.querySelector(".table-wrap");
+      if (filterRow) { content.insertBefore(filterRow, tableWrap); filterRow.style.display = "flex"; }
       const tbody = content.querySelector("tbody");
       list.forEach(b => {
         const s = getStatus(b);
@@ -3805,8 +3936,8 @@ async function load() {
           "<td><input type=\\"checkbox\\" " + (b.autoReplyEnabled ? "checked" : "") + " data-field=\\"autoReplyEnabled\\"></td>" +
           "<td><input type=\\"number\\" min=\\"1\\" value=\\""
           + (b.intervalMinutes ?? 30)
-          + "\\" data-field=\\"intervalMinutes\\" style=\\"width:4rem\\"></td>" +
-          "<td><button type=\\"button\\" data-save>Save</button> <button type=\\"button\\" data-run-now title=\\"Run Claude auto-reply now\\">Run now</button> <a href=\\"#\\" data-pro-link title=\\"Open Pro campaigns page\\">Pro</a><span class=\\"msg\\" data-msg></span></td>";
+          + "\\" data-field=\\"intervalMinutes\\"></td>" +
+          "<td><div class=\\"actions-cell\\"><button type=\\"button\\" data-save>Save</button><button type=\\"button\\" data-run-now title=\\"Run Claude auto-reply now\\">Run now</button><a href=\\"#\\" data-pro-link title=\\"Open Pro campaigns page\\">Pro</a></div><span class=\\"msg\\" data-msg></span></td>";
         tbody.appendChild(tr);
       });
       content.querySelectorAll("[data-save]").forEach(btn => { btn.addEventListener("click", saveRow); });
