@@ -1052,10 +1052,12 @@ app.get("/subscribe", (req, res) => {
   const hasProPaymentLink = subscribeProUrl.startsWith("http");
   const hasPro = hasProPrice || hasProPaymentLink;
   const billingPortalUrl = (process.env.STRIPE_CUSTOMER_PORTAL_URL || "").trim();
-  const accountId =
+  const queryAccountId =
     (req.query.accountId && String(req.query.accountId).trim()) ||
     (req.query.accountid && String(req.query.accountid).trim()) ||
     "";
+  const sessionAccountId = readSessionAccountId(req) || "";
+  const accountId = queryAccountId || sessionAccountId;
   const baseCheckoutConfigured = Boolean(process.env.STRIPE_SECRET_KEY && getStripeCorePriceId());
   const subscribeUrlTrim = subscribeUrl.trim();
   const subscribeIsStripePaymentLink = /^https?:\/\/buy\.stripe\.com\//i.test(subscribeUrlTrim);
