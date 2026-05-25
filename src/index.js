@@ -3191,8 +3191,8 @@ app.get("/pro/unsubscribe", async (req, res, next) => {
 app.get("/contact", (req, res) => {
   const contactEmail = (process.env.ALERT_EMAIL || "").trim();
   const emailHtml = contactEmail
-    ? `<p>Email: <a href="mailto:${escapeHtml(contactEmail)}" class="contact-link">${escapeHtml(contactEmail)}</a></p>`
-    : "<p style=\"font-size:13px\">Set <code>ALERT_EMAIL</code> in your environment to show your contact email here.</p>";
+    ? `<p><a href="mailto:${escapeHtml(contactEmail)}" class="contact-link">Email Replyr Pro →</a></p>`
+    : "<p style=\"font-size:13px\">Set <code>ALERT_EMAIL</code> in your environment to enable the contact link.</p>";
   res.set("Content-Type", "text/html; charset=utf-8");
   res.send(darkShellHtml({
     title: "Replyr – Contact us",
