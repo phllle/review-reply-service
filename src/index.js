@@ -244,11 +244,44 @@ app.get("/healthz", (req, res) => {
   res.json({ ok: true });
 });
 
-// Public one-click cancel link from the auto-reply preview email.
+// Public cancel link from the auto-reply preview email.
 // Token is HMAC-signed (REPLYR_SESSION_SECRET) and bound to (account, location, review).
+//
+// GET only renders a confirm page — it does NOT perform the cancel. This stops
+// email link-prefetchers (Gmail, Apple Mail, Outlook safety scans) from
+// auto-cancelling a reply just by fetching the link. Actual cancellation
+// happens via POST from the form submit on that confirm page.
 app.get("/auto-reply/cancel", async (req, res, next) => {
   try {
     const token = String(req.query.token || "").trim();
+    const secret = (process.env.REPLYR_SESSION_SECRET || "").trim();
+    const verified = secret ? verifyCancelToken(token, secret) : null;
+    if (!verified) {
+      return res
+        .status(400)
+        .type("html")
+        .send(renderCancelPage({ ok: false, message: "This cancel link is invalid or expired." }));
+    }
+    if (!db.useDb()) {
+      return res
+        .status(503)
+        .type("html")
+        .send(renderCancelPage({ ok: false, message: "Cancel is unavailable in file-store mode." }));
+    }
+    res
+      .status(200)
+      .type("html")
+      .send(renderCancelConfirmPage({ token }));
+  } catch (err) {
+    req.log?.error(err, "Cancel reply confirmation failed");
+    sentry.captureException(err, { kind: "cancel-reply-confirm" });
+    next(err);
+  }
+});
+
+app.post("/auto-reply/cancel", express.urlencoded({ extended: false }), async (req, res, next) => {
+  try {
+    const token = String(req.body?.token || "").trim();
     const secret = (process.env.REPLYR_SESSION_SECRET || "").trim();
     const verified = secret ? verifyCancelToken(token, secret) : null;
     if (!verified) {
@@ -275,13 +308,16 @@ app.get("/auto-reply/cancel", async (req, res, next) => {
           })
         );
     }
+    // Mark the review as handled so the auto-reply scheduler doesn't queue
+    // another reply for it on the next tick.
+    await addRepliedReviewId(verified.accountId, verified.locationId, verified.reviewId);
     res
       .status(200)
       .type("html")
       .send(
         renderCancelPage({
           ok: true,
-          message: "Reply cancelled. Replyr will not post this reply to Google."
+          message: "Reply cancelled. Replyr will not post an auto-reply to this Google review."
         })
       );
   } catch (err) {
@@ -293,7 +329,7 @@ app.get("/auto-reply/cancel", async (req, res, next) => {
 
 function renderCancelPage({ ok, message }) {
   const color = ok ? "#2e7d32" : "#c62828";
-  const safeMessage = String(message || "").replace(/[<>&]/g, (c) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;" })[c]);
+  const safeMessage = escapeHtml(message || "");
   return `<!doctype html>
 <html><head><meta charset="utf-8"><title>Replyr — Cancel reply</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -308,6 +344,32 @@ function renderCancelPage({ ok, message }) {
   <div class="card">
     <h1>${ok ? "Cancelled" : "Couldn't cancel"}</h1>
     <p>${safeMessage}</p>
+    <p style="margin-top:1.25rem;font-size:0.9em;color:#666;">— Replyr</p>
+  </div>
+</body></html>`;
+}
+
+function renderCancelConfirmPage({ token }) {
+  const safeToken = escapeHtml(token || "");
+  return `<!doctype html>
+<html><head><meta charset="utf-8"><title>Replyr — Confirm cancel</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+  body { font-family: -apple-system, system-ui, sans-serif; padding: 2.5rem 1.5rem; max-width: 520px; margin: 0 auto; color: #222; }
+  .card { padding: 1.5rem; border: 1px solid #e0e0e0; border-radius: 8px; }
+  h1 { margin: 0 0 0.5rem 0; font-size: 1.25rem; color: #222; }
+  p { margin: 0.5rem 0; line-height: 1.45; }
+  button { margin-top: 1rem; padding: 0.65rem 1rem; border: 0; border-radius: 6px; background: #c0392b; color: #fff; font-weight: 600; cursor: pointer; font-size: 0.95rem; }
+  button:hover { background: #a93226; }
+</style></head>
+<body>
+  <div class="card">
+    <h1>Cancel this auto-reply?</h1>
+    <p>Replyr will not post an auto-reply to this Google review.</p>
+    <form method="post" action="/auto-reply/cancel">
+      <input type="hidden" name="token" value="${safeToken}">
+      <button type="submit">Cancel this reply</button>
+    </form>
     <p style="margin-top:1.25rem;font-size:0.9em;color:#666;">— Replyr</p>
   </div>
 </body></html>`;
