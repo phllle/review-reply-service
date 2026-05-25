@@ -46,6 +46,12 @@ import {
 import multer from "multer";
 import Stripe from "stripe";
 import { getCurrentMonthKey, getIncludedSmsForTier, normalizeProTier } from "./proPlan.js";
+import * as sentry from "./sentry.js";
+import {
+  getProPriceIds,
+  subscriptionHasProPrice as proPriceMatches,
+  getProTierFromSubscription as proTierFromSub
+} from "./stripePricing.js";
 
 const app = express();
 app.set("trust proxy", 1);
@@ -108,6 +114,7 @@ async function runCampaignScheduler() {
         await sendBirthdayCampaignsForAccount(accountId, logger);
       } catch (err) {
         logger.error({ err, accountId }, "Birthday campaign tick failed");
+        sentry.captureException(err, { kind: "birthday-campaign", accountId });
       }
     }
     const today = new Date().toISOString().slice(0, 10);
@@ -128,6 +135,7 @@ async function runCampaignScheduler() {
         await sendEventCampaignForAccount(accountId, eventKey, eventYear, logger);
       } catch (err) {
         logger.error({ err, accountId, eventKey }, "Event campaign send failed");
+        sentry.captureException(err, { kind: "event-campaign", accountId, eventKey, eventYear });
       }
     }
     const oneOffDue = await db.getProOneOffCampaignsDueToSend();
@@ -136,10 +144,12 @@ async function runCampaignScheduler() {
         await sendOneOffCampaign(row.id, row.account_id, row.subject, row.body, logger, row);
       } catch (err) {
         logger.error({ err, id: row.id }, "One-off campaign send failed");
+        sentry.captureException(err, { kind: "oneoff-campaign", id: row.id, accountId: row.account_id });
       }
     }
   } catch (err) {
     logger.error({ err }, "Campaign scheduler failed");
+    sentry.captureException(err, { kind: "campaign-scheduler" });
   }
 }
 
@@ -161,6 +171,10 @@ async function start() {
   if (process.env.NODE_ENV === "production" && !(process.env.REPLYR_SESSION_SECRET || "").trim()) {
     logger.fatal("REPLYR_SESSION_SECRET is required in production for secure sessions");
     process.exit(1);
+  }
+  if (sentry.isEnabled()) {
+    await sentry.init();
+    logger.info("Sentry initialized");
   }
   if (db.useDb()) {
     await db.init();
@@ -197,6 +211,7 @@ const corsOptions = {
   credentials: true
 };
 
+app.use(sentry.requestHandler());
 app.use(helmet());
 app.use(cors(corsOptions));
 app.use(pinoHttp({ logger }));
@@ -375,6 +390,7 @@ async function twilioSmsWebhook(req, res) {
     res.status(200).type("text/xml").send('<?xml version="1.0" encoding="UTF-8"?><Response></Response>');
   } catch (err) {
     req.log?.error?.(err, "Twilio SMS webhook error");
+    sentry.captureException(err, { kind: "twilio-sms-webhook" });
     res.status(200).type("text/xml").send('<?xml version="1.0" encoding="UTF-8"?><Response></Response>');
   }
 }
@@ -395,29 +411,15 @@ async function stripeWebhook(req, res) {
     req.log?.warn({ err: err.message }, "Stripe webhook signature verification failed");
     return res.status(400).send("Webhook signature verification failed");
   }
-  const stripeProPriceId = (process.env.STRIPE_PRO_PRICE_ID || "").trim();
-  const stripeProStarterPriceId = (process.env.STRIPE_PRO_STARTER_PRICE_ID || "").trim();
-  const stripeProGrowthPriceId = (process.env.STRIPE_PRO_GROWTH_PRICE_ID || "").trim();
-  const stripeProScalePriceId = (process.env.STRIPE_PRO_SCALE_PRICE_ID || "").trim();
-  const allProPriceIds = [
-    stripeProPriceId,
-    stripeProStarterPriceId,
-    stripeProGrowthPriceId,
-    stripeProScalePriceId
-  ].filter(Boolean);
+  const priceIds = getProPriceIds();
+  const allProPriceIds = priceIds.all;
 
   function subscriptionHasProPrice(subscription) {
-    if (!allProPriceIds.length || !subscription?.items?.data) return false;
-    return subscription.items.data.some((item) => allProPriceIds.includes(item.price?.id || item.price));
+    return proPriceMatches(subscription, priceIds);
   }
 
   function getProTierFromSubscription(subscription) {
-    const ids = (subscription?.items?.data || []).map((item) => item.price?.id || item.price).filter(Boolean);
-    if (stripeProScalePriceId && ids.includes(stripeProScalePriceId)) return "scale";
-    if (stripeProGrowthPriceId && ids.includes(stripeProGrowthPriceId)) return "growth";
-    if (stripeProStarterPriceId && ids.includes(stripeProStarterPriceId)) return "starter";
-    if (stripeProPriceId && ids.includes(stripeProPriceId)) return "starter";
-    return "starter";
+    return proTierFromSub(subscription, priceIds);
   }
 
   async function applySubscriptionState(accountId, subscribedAt, isPro, proTier) {
@@ -488,6 +490,7 @@ async function stripeWebhook(req, res) {
     }
   } catch (err) {
     req.log?.error({ err }, "Stripe webhook handler error");
+    sentry.captureException(err, { kind: "stripe-webhook", eventType: event?.type });
     return res.status(500).send("Webhook handler failed");
   }
   res.status(200).send();
@@ -3283,15 +3286,18 @@ app.post("/auto/process", async (req, res, next) => {
   }
 });
 
+app.use(sentry.errorHandler());
 app.use((err, req, res, next) => {
   const status = err.status || 500;
   res.status(status).json({ error: err.message || "Internal Server Error" });
 });
 
-start().catch((err) => {
+start().catch(async (err) => {
   const dbHint = db.useDb()
     ? " (PostgreSQL: verify DATABASE_URL on this Railway service and that the Postgres service is running)"
     : "";
   logger.fatal(err, `Startup failed${dbHint}`);
+  sentry.captureException(err, { kind: "startup" });
+  await sentry.flush();
   process.exit(1);
 });
