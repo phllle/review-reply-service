@@ -401,6 +401,21 @@ export async function upsertBusinessInDb(config) {
   return rowToBusiness(row);
 }
 
+/**
+ * Conditional-write: only sets notification_email when it's currently NULL or
+ * empty. Returns true if a row was updated, false otherwise.
+ */
+export async function setBusinessNotificationEmailIfEmpty(accountId, email) {
+  if (!accountId || !email) return false;
+  const res = await getPool().query(
+    `UPDATE businesses
+       SET notification_email = $2, updated_at = NOW()
+     WHERE account_id = $1 AND (notification_email IS NULL OR notification_email = '')`,
+    [accountId, email]
+  );
+  return (res.rowCount || 0) > 0;
+}
+
 /** Return accountId for a business with this stripe_customer_id, or null */
 export async function getAccountIdByStripeCustomerId(stripeCustomerId) {
   if (!stripeCustomerId) return null;

@@ -105,6 +105,29 @@ export async function upsertBusiness(config) {
   return all[config.accountId];
 }
 
+/**
+ * Set notification_email only when it's currently empty. Used to auto-fill from
+ * Google OAuth without overwriting a value the owner manually typed in.
+ *
+ * @returns {Promise<boolean>} true if the value was set; false otherwise
+ */
+export async function setNotificationEmailIfEmpty(accountId, email) {
+  if (!accountId || !email) return false;
+  const trimmed = String(email).trim().toLowerCase();
+  if (!trimmed) return false;
+  if (db.useDb()) {
+    const wrote = await db.setBusinessNotificationEmailIfEmpty(accountId, trimmed);
+    return wrote;
+  }
+  const all = await readBusinesses();
+  const existing = all[accountId];
+  if (!existing) return false;
+  if (existing.notificationEmail) return false;
+  all[accountId] = { ...existing, notificationEmail: trimmed, updatedAt: new Date().toISOString() };
+  await writeBusinesses(all);
+  return true;
+}
+
 /** Get accountId for a business with this stripeCustomerId (for webhook). */
 export async function getAccountIdByStripeCustomerId(stripeCustomerId) {
   if (!stripeCustomerId) return null;
