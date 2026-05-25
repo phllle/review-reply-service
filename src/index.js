@@ -2587,7 +2587,35 @@ app.get("/pro", async (req, res, next) => {
   .pro-msg { margin-top: 8px; font-size: 13px; color: var(--muted); }
   .pro-msg.ok { color: #6ee7a3; }
   .pro-msg.err { color: #f87171; }
+  /* Tabs across Birthday / Events / One-off — sticky at top of viewport on scroll. */
+  .pro-tabs {
+    position: sticky; top: 0; z-index: 10;
+    display: flex; gap: 4px; padding: 8px;
+    margin: 0 0 20px;
+    background: rgba(15, 15, 17, 0.85); -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px);
+    border: 1px solid var(--border); border-radius: 14px;
+  }
+  .pro-tab {
+    flex: 1; min-width: 0; display: inline-flex; align-items: center; justify-content: center; gap: 7px;
+    padding: 10px 12px; border: 1px solid transparent; border-radius: 10px;
+    background: transparent; color: var(--muted);
+    font-family: 'DM Sans', sans-serif; font-size: 13px; font-weight: 600; cursor: pointer;
+    transition: background 0.18s, color 0.18s, border-color 0.18s; letter-spacing: 0.01em;
+  }
+  .pro-tab .pro-tab-icon { font-size: 14px; line-height: 1; }
+  .pro-tab:hover { color: var(--text); background: rgba(255,255,255,0.04); }
+  .pro-tab.active {
+    color: var(--text);
+    background: linear-gradient(135deg, rgba(124,106,247,0.18), rgba(74,158,255,0.14));
+    border-color: rgba(124,106,247,0.35);
+  }
+  .pro-tab:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .pro-pane { display: none; }
+  .pro-pane.active { display: flex; flex-direction: column; }
   @media (max-width: 500px) { .form-row { grid-template-columns: 1fr; } }
+  @media (max-width: 420px) {
+    .pro-tab { padding: 9px 8px; font-size: 12px; gap: 5px; }
+  }
 </style>
 </head>
 <body>
@@ -2601,7 +2629,13 @@ app.get("/pro", async (req, res, next) => {
     <p class="compliance-note">By uploading and sending you confirm you have permission to email and text those contacts. We send email to contacts with an address; if SMS is enabled, we also send a short text to contacts with a mobile number (birthday, events, one-off). <a href="/compliance">Compliance →</a></p>
   </div>
 
-  <div class="card">
+  <div class="pro-tabs" role="tablist" aria-label="Campaign type">
+    <button type="button" class="pro-tab active" role="tab" aria-selected="true" aria-controls="tab-birthday" data-tab="birthday"><span class="pro-tab-icon">🎂</span>Birthday</button>
+    <button type="button" class="pro-tab" role="tab" aria-selected="false" aria-controls="tab-events" data-tab="events"><span class="pro-tab-icon">📅</span>Events</button>
+    <button type="button" class="pro-tab" role="tab" aria-selected="false" aria-controls="tab-oneoff" data-tab="oneoff"><span class="pro-tab-icon">⚡</span>One-off</button>
+  </div>
+
+  <div class="card pro-pane active" id="tab-birthday" role="tabpanel" aria-labelledby="tab-birthday-btn">
     <div class="card-header">
       <div class="card-icon blue">🎂</div>
       <div>
@@ -2656,7 +2690,7 @@ app.get("/pro", async (req, res, next) => {
     <span id="birthday-msg" class="pro-msg" aria-live="polite"></span>
   </div>
 
-  <div class="card">
+  <div class="card pro-pane" id="tab-events" role="tabpanel">
     <div class="card-header">
       <div class="card-icon purple">📅</div>
       <div>
@@ -2689,6 +2723,7 @@ app.get("/pro", async (req, res, next) => {
         <label class="field-label">When to send (Pacific Time - PST/PDT)</label>
         <input type="datetime-local" id="event-detail-send-at" class="field-input">
         <p class="field-hint">Pick the exact date and time in Pacific Time.</p>
+        <p id="event-detail-send-at-tz" class="field-hint" style="margin-top:4px;display:none"></p>
       </div>
       <div class="channel-toggles">
         <div class="toggle-row">
@@ -2712,7 +2747,7 @@ app.get("/pro", async (req, res, next) => {
     </div>
   </div>
 
-  <div class="card">
+  <div class="card pro-pane" id="tab-oneoff" role="tabpanel">
     <div class="card-header">
       <div class="card-icon pink">⚡</div>
       <div>
@@ -2788,6 +2823,99 @@ app.get("/pro.js", (req, res) => {
   if (!app) return;
   var accountId = (app.getAttribute("data-account-id") || "").trim();
   if (!accountId) return;
+
+  // Tabs — show one campaign type pane at a time, keep selection in URL hash
+  // so links like /pro#events deep-link straight to a section.
+  (function() {
+    var tabs = Array.prototype.slice.call(document.querySelectorAll(".pro-tab"));
+    var panes = Array.prototype.slice.call(document.querySelectorAll(".pro-pane"));
+    if (!tabs.length || !panes.length) return;
+    function show(name) {
+      tabs.forEach(function(t) {
+        var match = t.getAttribute("data-tab") === name;
+        t.classList.toggle("active", match);
+        t.setAttribute("aria-selected", match ? "true" : "false");
+        t.setAttribute("tabindex", match ? "0" : "-1");
+      });
+      panes.forEach(function(p) {
+        p.classList.toggle("active", p.id === "tab-" + name);
+      });
+    }
+    var initial = (window.location.hash || "").replace(/^#/, "");
+    if (!initial || !document.getElementById("tab-" + initial)) initial = "birthday";
+    show(initial);
+    tabs.forEach(function(t, i) {
+      t.addEventListener("click", function() {
+        var name = t.getAttribute("data-tab");
+        show(name);
+        if (history && history.replaceState) history.replaceState(null, "", "#" + name);
+      });
+      // Left/Right arrows move between tabs.
+      t.addEventListener("keydown", function(e) {
+        if (e.key !== "ArrowRight" && e.key !== "ArrowLeft") return;
+        e.preventDefault();
+        var next = (i + (e.key === "ArrowRight" ? 1 : tabs.length - 1)) % tabs.length;
+        tabs[next].focus();
+        tabs[next].click();
+      });
+    });
+  })();
+
+  // Show the user their local equivalent of the chosen Pacific-Time send time
+  // when they're not actually in PT. Florida shop owners should not have to do
+  // mental math on every event.
+  (function() {
+    var sendAtEl = document.getElementById("event-detail-send-at");
+    var tzHint = document.getElementById("event-detail-send-at-tz");
+    if (!sendAtEl || !tzHint) return;
+    var localTz = "";
+    try { localTz = Intl.DateTimeFormat().resolvedOptions().timeZone || ""; } catch (_) {}
+    if (!localTz || localTz === "America/Los_Angeles") return;
+
+    function ptToUtcMs(localStr) {
+      // Input: "YYYY-MM-DDTHH:MM" interpreted as Pacific Time (handles PST/PDT
+      // automatically via Intl.DateTimeFormat). Output: UTC ms.
+      var m = /^(\\d{4})-(\\d{2})-(\\d{2})T(\\d{2}):(\\d{2})$/.exec(localStr);
+      if (!m) return null;
+      var y = +m[1], mo = +m[2], d = +m[3], h = +m[4], mi = +m[5];
+      // Get PT offset for this wall-clock time. We approximate: build a UTC
+      // date with the wall-clock numbers, then ask Intl what time those UTC
+      // ms render as in LA, and shift by the difference.
+      var asUtc = Date.UTC(y, mo - 1, d, h, mi);
+      var dtf = new Intl.DateTimeFormat("en-US", {
+        timeZone: "America/Los_Angeles", hour12: false,
+        year: "numeric", month: "2-digit", day: "2-digit",
+        hour: "2-digit", minute: "2-digit"
+      });
+      var parts = dtf.formatToParts(new Date(asUtc));
+      function p(t) { var x = parts.find(function(q) { return q.type === t; }); return x ? +x.value : 0; }
+      var laUtc = Date.UTC(p("year"), p("month") - 1, p("day"), p("hour") % 24, p("minute"));
+      // diff = how many ms ahead UTC reads vs LA wall-clock at this instant.
+      var offsetMs = asUtc - laUtc;
+      // Wall-clock-in-LA = asUtc - offsetMs, so the actual UTC moment = asUtc + offsetMs.
+      return asUtc + offsetMs;
+    }
+    function render() {
+      var v = sendAtEl.value;
+      var utc = ptToUtcMs(v);
+      if (utc == null) { tzHint.style.display = "none"; tzHint.textContent = ""; return; }
+      var fmt = new Intl.DateTimeFormat(undefined, {
+        timeZone: localTz, weekday: "short", month: "short", day: "numeric",
+        hour: "numeric", minute: "2-digit", timeZoneName: "short"
+      });
+      tzHint.textContent = "In your timezone (" + localTz + "): " + fmt.format(new Date(utc));
+      tzHint.style.display = "";
+    }
+    sendAtEl.addEventListener("input", render);
+    sendAtEl.addEventListener("change", render);
+    // Render now in case a value was already populated by event-detail load.
+    render();
+    // Also re-render when the panel becomes visible / a new event is loaded.
+    var panel = document.getElementById("event-detail-panel");
+    if (panel && typeof MutationObserver !== "undefined") {
+      new MutationObserver(render).observe(panel, { attributes: true, attributeFilter: ["class"] });
+    }
+  })();
 
   var eventEmoji = { valentines_day: "❤️", presidents_day: "🎩", lunar_new_year: "🧧", easter: "🐣", mothers_day: "🌷", memorial_day: "🎖️", fathers_day: "👔", independence_day: "🇺🇸", labor_day: "📋", halloween: "🎃", thanksgiving: "🦃", black_friday: "🛒", christmas: "🎄", new_year: "⭐" };
   function loadEvents() {
