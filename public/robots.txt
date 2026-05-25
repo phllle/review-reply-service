@@ -1,0 +1,33 @@
+User-agent: *
+Allow: /$
+Allow: /subscribe
+Allow: /contact
+Allow: /privacy
+Allow: /terms
+Allow: /compliance
+
+Disallow: /admin
+Disallow: /admin.js
+Disallow: /admin/
+Disallow: /auth/
+Disallow: /auto-reply/
+Disallow: /businesses
+Disallow: /businesses/
+Disallow: /connected
+Disallow: /create-checkout-session
+Disallow: /dashboard
+Disallow: /dev/
+Disallow: /free-reply
+Disallow: /google/
+Disallow: /me/
+Disallow: /no-business
+Disallow: /pro
+Disallow: /pro/
+Disallow: /pro.js
+Disallow: /signup
+Disallow: /subscribe.js
+Disallow: /connected.js
+Disallow: /test-
+Disallow: /webhooks/
+
+Sitemap: https://replyr.pro/sitemap.xml
