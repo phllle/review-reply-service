@@ -53,6 +53,12 @@ import {
   getProTierFromSubscription as proTierFromSub
 } from "./stripePricing.js";
 import { verifyCancelToken } from "./replyDelay.js";
+import {
+  getPlanAmountsCents,
+  computeMrr,
+  computeFunnel,
+  formatCentsAsUsd
+} from "./metrics.js";
 
 const app = express();
 app.set("trust proxy", 1);
@@ -3132,6 +3138,169 @@ app.get("/terms", (req, res) => {
 });
 
 // Admin page: list businesses, edit contact and auto-reply (requires ADMIN_SECRET via ?secret= or X-Admin-Secret)
+async function buildAdminMetrics() {
+  const businessesObj = await getAllBusinesses();
+  const businesses = Object.values(businessesObj || {});
+  const amounts = getPlanAmountsCents();
+  const mrr = computeMrr(businesses, amounts);
+  const funnel = computeFunnel(businesses, {
+    windowDays: 30,
+    isGratis: isGratisAccount
+  });
+  const monthKey = getCurrentMonthKey();
+  const [openPending, smsThisMonth] = await Promise.all([
+    db.useDb() ? db.getOpenPendingRepliesCount() : Promise.resolve(0),
+    db.useDb() ? db.getProSmsUsageSum(monthKey) : Promise.resolve(0)
+  ]);
+  const delayedModeCount = businesses.filter((b) => (b.autoReplyMode || "instant") === "delayed").length;
+  const autoReplyEnabledCount = businesses.filter((b) => !!b.autoReplyEnabled).length;
+  return {
+    generatedAt: new Date().toISOString(),
+    mrr: {
+      totalCents: mrr.mrrCents,
+      totalDisplay: formatCentsAsUsd(mrr.mrrCents),
+      byPlanCents: mrr.mrrByPlan,
+      countsByPlan: mrr.countsByPlan,
+      activeSubscribers: mrr.activeSubs
+    },
+    funnel,
+    activity: {
+      monthKey,
+      autoReplyEnabledCount,
+      delayedModeCount,
+      pendingRepliesOpen: openPending,
+      proSmsThisMonth: smsThisMonth
+    },
+    planAmountsConfigured: {
+      base: amounts.base > 0,
+      proStarter: amounts.proStarter > 0,
+      proGrowth: amounts.proGrowth > 0,
+      proScale: amounts.proScale > 0
+    }
+  };
+}
+
+app.get("/admin/metrics.json", async (req, res, next) => {
+  try {
+    if (!(process.env.ADMIN_SECRET || "").trim()) {
+      return res.status(503).json({ error: "Admin disabled. Set ADMIN_SECRET in the server environment." });
+    }
+    if (!isValidAdminRequest(req)) {
+      return res.status(401).json({ error: "Unauthorized. Provide ADMIN_SECRET via X-Admin-Secret header or ?secret=." });
+    }
+    const data = await buildAdminMetrics();
+    res.json(data);
+  } catch (err) {
+    req.log?.error(err, "Admin metrics JSON failed");
+    next(err);
+  }
+});
+
+app.get("/admin/metrics", async (req, res, next) => {
+  try {
+    if (!(process.env.ADMIN_SECRET || "").trim()) {
+      res.status(503);
+      return res.type("html").send(
+        "<!DOCTYPE html><html><body style=\"font-family:system-ui;padding:2rem\"><h1>Admin disabled</h1><p>Set <code>ADMIN_SECRET</code> in the server environment.</p></body></html>"
+      );
+    }
+    if (!isValidAdminRequest(req)) {
+      res.status(401);
+      return res.type("html").send(
+        "<!DOCTYPE html><html><body style=\"font-family:system-ui;padding:2rem\"><h1>Unauthorized</h1><p>Add your admin secret to the URL: <code>/admin/metrics?secret=YOUR_ADMIN_SECRET</code></p></body></html>"
+      );
+    }
+    const data = await buildAdminMetrics();
+    const adminSecret = getAdminSecretFromRequest(req);
+    res.set("Content-Type", "text/html; charset=utf-8");
+    res.send(renderAdminMetricsHtml(data, adminSecret));
+  } catch (err) {
+    req.log?.error(err, "Admin metrics page failed");
+    next(err);
+  }
+});
+
+function renderAdminMetricsHtml(data, adminSecret) {
+  const pct = (n) => `${(n * 100).toFixed(1)}%`;
+  const cents = (c) => formatCentsAsUsd(c);
+  const counts = data.mrr.countsByPlan;
+  const planRow = (label, key) =>
+    `<tr><td>${label}</td><td style="text-align:right">${counts[key] || 0}</td><td style="text-align:right">${cents(data.mrr.byPlanCents[key] || 0)}</td></tr>`;
+  const planConfigWarnings = [
+    !data.planAmountsConfigured.base && "STRIPE_BASE_PRICE_AMOUNT_CENTS",
+    !data.planAmountsConfigured.proStarter && "STRIPE_PRO_STARTER_AMOUNT_CENTS",
+    !data.planAmountsConfigured.proGrowth && "STRIPE_PRO_GROWTH_AMOUNT_CENTS",
+    !data.planAmountsConfigured.proScale && "STRIPE_PRO_SCALE_AMOUNT_CENTS"
+  ].filter(Boolean);
+  const warningHtml = planConfigWarnings.length
+    ? `<div class="warn">⚠ MRR may be undercounted — these env vars aren't set: ${planConfigWarnings.map((s) => `<code>${s}</code>`).join(", ")}</div>`
+    : "";
+  return `<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Replyr – Admin metrics</title>
+<style>
+  * { box-sizing: border-box; }
+  body { font-family: system-ui, sans-serif; max-width: 960px; margin: 0 auto; padding: 1.5rem; background: #f5f5f5; color: #222; }
+  h1 { margin: 0 0 0.25rem; font-size: 1.4rem; }
+  .ts { color: #888; font-size: 0.8rem; margin-bottom: 1.25rem; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; margin-bottom: 1.5rem; }
+  .card { background: #fff; border-radius: 10px; padding: 1rem 1.25rem; box-shadow: 0 1px 3px rgba(0,0,0,0.06); }
+  .card .label { color: #666; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.04em; }
+  .card .value { font-size: 1.6rem; font-weight: 600; margin-top: 0.25rem; color: #111; }
+  .card .sub { color: #666; font-size: 0.8rem; margin-top: 0.4rem; }
+  table { width: 100%; border-collapse: collapse; background: #fff; border-radius: 10px; overflow: hidden; box-shadow: 0 1px 3px rgba(0,0,0,0.06); margin-bottom: 1.25rem; }
+  th, td { padding: 0.6rem 1rem; border-bottom: 1px solid #eee; }
+  th { background: #fafafa; font-weight: 600; color: #555; font-size: 0.78rem; text-transform: uppercase; text-align: left; }
+  th:nth-child(2), th:nth-child(3) { text-align: right; }
+  td:nth-child(2), td:nth-child(3) { text-align: right; }
+  h2 { font-size: 0.9rem; text-transform: uppercase; letter-spacing: 0.04em; color: #555; margin: 1.5rem 0 0.75rem; }
+  .warn { background: #fff8e1; border: 1px solid #f4c430; padding: 0.75rem 1rem; border-radius: 8px; font-size: 0.85rem; color: #6b5500; margin-bottom: 1.25rem; }
+  code { background: #eee; padding: 0.1rem 0.35rem; border-radius: 3px; font-size: 0.85em; }
+  .footer { margin-top: 2rem; font-size: 0.8rem; color: #888; }
+  .footer a { color: #4a9eff; }
+</style>
+</head><body>
+<h1>Replyr – Admin metrics</h1>
+<div class="ts">As of ${data.generatedAt}</div>
+
+${warningHtml}
+
+<h2>Revenue</h2>
+<div class="grid">
+  <div class="card"><div class="label">MRR</div><div class="value">${cents(data.mrr.totalCents)}</div><div class="sub">${data.mrr.activeSubscribers} active subscribers</div></div>
+  <div class="card"><div class="label">Conversion (30d)</div><div class="value">${pct(data.funnel.conversionRate)}</div><div class="sub">${data.funnel.trialToPaid} of ${data.funnel.trialsStarted} trials in window</div></div>
+  <div class="card"><div class="label">Active trials</div><div class="value">${data.funnel.activeTrial}</div><div class="sub">connected, in trial, not subscribed</div></div>
+  <div class="card"><div class="label">Trial-end attrition</div><div class="value">${data.funnel.trialEndedNoSub}</div><div class="sub">trial ended, never subscribed</div></div>
+</div>
+
+<h2>Plans</h2>
+<table>
+  <thead><tr><th>Plan</th><th>Active</th><th>MRR</th></tr></thead>
+  <tbody>
+    ${planRow("Base Replyr", "base")}
+    ${planRow("Pro Starter", "pro_starter")}
+    ${planRow("Pro Growth", "pro_growth")}
+    ${planRow("Pro Scale", "pro_scale")}
+    ${counts.pro_legacy ? planRow("Pro (legacy)", "pro_legacy") : ""}
+    <tr><td><strong>Total paid</strong></td><td><strong>${data.mrr.activeSubscribers}</strong></td><td><strong>${cents(data.mrr.totalCents)}</strong></td></tr>
+  </tbody>
+</table>
+
+<h2>Activity</h2>
+<div class="grid">
+  <div class="card"><div class="label">Connected businesses</div><div class="value">${data.funnel.totalConnected}</div></div>
+  <div class="card"><div class="label">Auto-reply enabled</div><div class="value">${data.activity.autoReplyEnabledCount}</div></div>
+  <div class="card"><div class="label">Preview/delayed mode</div><div class="value">${data.activity.delayedModeCount}</div></div>
+  <div class="card"><div class="label">Pending replies queued</div><div class="value">${data.activity.pendingRepliesOpen}</div></div>
+  <div class="card"><div class="label">Pro SMS this month</div><div class="value">${data.activity.proSmsThisMonth.toLocaleString()}</div><div class="sub">${data.activity.monthKey} · across all Pro tiers</div></div>
+</div>
+
+<div class="footer">JSON view: <a href="/admin/metrics.json?secret=${encodeURIComponent(adminSecret || "")}">/admin/metrics.json</a> · Admin home: <a href="/admin?secret=${encodeURIComponent(adminSecret || "")}">/admin</a></div>
+</body></html>`;
+}
+
 app.get("/admin", (req, res) => {
   const adminConfigured = !!(process.env.ADMIN_SECRET || "").trim();
   if (!adminConfigured) {

@@ -830,3 +830,22 @@ export async function markPendingReplyError(id, errorMessage) {
     [id, String(errorMessage || "").slice(0, 1000)]
   );
 }
+
+// --- Admin metrics aggregates ---
+
+/** Number of pending_replies rows that are still queued (not cancelled, not sent). */
+export async function getOpenPendingRepliesCount() {
+  const res = await getPool().query(
+    "SELECT COUNT(*)::int AS n FROM pending_replies WHERE cancelled_at IS NULL AND sent_at IS NULL"
+  );
+  return Number(res.rows[0]?.n || 0);
+}
+
+/** Sum of sms_count across all businesses for the given month_key. */
+export async function getProSmsUsageSum(monthKey) {
+  const res = await getPool().query(
+    "SELECT COALESCE(SUM(sms_count), 0)::int AS total FROM pro_sms_usage WHERE month_key = $1",
+    [monthKey]
+  );
+  return Number(res.rows[0]?.total || 0);
+}
