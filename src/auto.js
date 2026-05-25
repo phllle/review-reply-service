@@ -3,6 +3,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 import * as db from "./db.js";
 import { listReviews, replyToReview } from "./google.js";
+import * as sentry from "./sentry.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -177,6 +178,7 @@ export function startScheduler(appLogger = console) {
         })
         .catch(async (err) => {
           appLogger.error?.(err, { accountId: biz.accountId }, "Auto-reply tick failed");
+          sentry.captureException(err, { kind: "auto-reply-tick", accountId: biz.accountId });
           const { sendFailureAlert } = await import("./alert.js");
           await sendFailureAlert({
             businessName: biz.name,
@@ -187,6 +189,7 @@ export function startScheduler(appLogger = console) {
     }
     } catch (err) {
       appLogger.error?.(err, "Auto-reply scheduler tick failed (database or config)");
+      sentry.captureException(err, { kind: "auto-reply-scheduler" });
     }
   }, intervalMs);
   return handle;

@@ -29,6 +29,12 @@ Minimal Node/Express service that authenticates with Google and replies to Googl
 3. Start: npm run dev
 4. Connect Google at http://localhost:3000/auth/google
 
+### Tests
+Run unit tests with `npm test` (uses Node's built-in `node:test` runner; no extra deps). Watch mode: `npm run test:watch`.
+
+### Error tracking (Sentry)
+Set `SENTRY_DSN` to enable error reporting from Express request handlers, the auto-reply scheduler, the campaign scheduler, the Stripe webhook, and the Twilio SMS webhook. Leave it unset to disable — the app runs identically without it.
+
 ### Reply example
 POST /google/reviews/{ACCOUNT_ID}/{LOCATION_ID}/{REVIEW_ID}/reply with { "comment": "Thank you!" }.
 

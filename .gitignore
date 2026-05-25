@@ -4,3 +4,4 @@ node_modules
 tokens.json
 auto-state.json
 businesses.json
+.claude/
