@@ -652,32 +652,51 @@ app.get("/no-business", (req, res) => {
   const reason = (req.query.reason || "").trim();
   const isNoLocation = reason === "no_location";
   res.set("Content-Type", "text/html; charset=utf-8");
-  res.send(`
-<!DOCTYPE html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Replyr – No business profile</title>
-<style>
-  * { box-sizing: border-box; }
-  body { font-family: system-ui, sans-serif; margin: 0; padding: 2rem; background: #f5f5f5; display: flex; align-items: center; justify-content: center; min-height: 100vh; }
-  .card { background: #fff; padding: 2rem; border-radius: 12px; box-shadow: 0 2px 12px rgba(0,0,0,0.08); max-width: 440px; text-align: center; }
-  h1 { font-size: 1.35rem; margin: 0 0 1rem; color: #333; }
-  p { color: #555; line-height: 1.6; margin: 0 0 1rem; font-size: 0.95rem; }
-  a { color: #2160F3; text-decoration: none; }
-  a:hover { text-decoration: underline; }
-  .btn { display: inline-block; margin-top: 0.5rem; padding: 0.6rem 1.2rem; background: #333; color: #fff; border-radius: 8px; font-size: 0.95rem; }
-  .btn:hover { background: #555; text-decoration: none; color: #fff; }
-</style>
-</head>
-<body>
-  <div class="card">
-    <h1>No Google Business Profile</h1>
-    ${isNoLocation
-      ? "<p>Your Google account is connected, but there’s no business location linked yet. Replyr needs a Google Business Profile (and at least one location) to reply to reviews.</p><p>Create or complete your <a href=\"https://business.google.com\" target=\"_blank\" rel=\"noopener\">Google Business Profile</a>, then try connecting again.</p>"
-      : "<p>Replyr works with <strong>Google Business Profile</strong>. The Google account you signed in with doesn’t have access to any business profile (or doesn’t own or manage one).</p><p>If you have a business, create or claim your listing at <a href=\"https://business.google.com\" target=\"_blank\" rel=\"noopener\">business.google.com</a>, then connect again. If you were just exploring, no problem — you can go back to the homepage.</p>"}
-    <p><a href="/" class="btn">Back to Replyr</a></p>
-    <p style="margin-top:12px;font-size:13px;"><a href="/contact">Contact us</a></p>
-  </div>
-</body></html>`);
+  const body = isNoLocation
+    ? `    <h1>No <em>business location</em> yet</h1>
+    <p>Your Google account is connected, but there’s no business location linked yet. Replyr needs a Google Business Profile (and at least one location) to reply to reviews.</p>
+    <p>Create or complete your <a href="https://business.google.com" target="_blank" rel="noopener">Google Business Profile</a>, then try connecting again.</p>
+    <p style="margin-top:18px"><a href="/" class="doc-btn">← Back to Replyr</a></p>
+    <p style="margin-top:14px;font-size:13px;"><a href="/contact">Contact us</a></p>`
+    : `    <h1>No <em>Google Business Profile</em></h1>
+    <p>Replyr works with <strong>Google Business Profile</strong>. The Google account you signed in with doesn’t have access to any business profile (or doesn’t own or manage one).</p>
+    <p>If you have a business, create or claim your listing at <a href="https://business.google.com" target="_blank" rel="noopener">business.google.com</a>, then connect again. If you were just exploring, no problem — you can go back to the homepage.</p>
+    <p style="margin-top:18px"><a href="/" class="doc-btn">← Back to Replyr</a></p>
+    <p style="margin-top:14px;font-size:13px;"><a href="/contact">Contact us</a></p>`;
+  res.send(darkShellHtml({
+    title: "Replyr – No business profile",
+    bodyHtml: body,
+    narrow: true
+  }));
+});
+
+// Dev-only fake-auth shortcut. Mints a session cookie + ensures a business
+// record exists so /connected and /pro work without real Google OAuth. Requires
+// REPLYR_DEV_LOGIN=1 AND NODE_ENV !== production — both must hold or the route
+// 404s. Never enable in production.
+app.get("/dev/login", async (req, res, next) => {
+  try {
+    if (process.env.NODE_ENV === "production" || process.env.REPLYR_DEV_LOGIN !== "1") {
+      return res.status(404).send("Not found");
+    }
+    const accountId = (req.query.accountId && String(req.query.accountId).trim()) || "dev-local";
+    const wantPro = req.query.pro === "1";
+    const existing = await getBusiness(accountId);
+    await upsertBusiness({
+      accountId,
+      locationId: existing?.locationId || "dev-location",
+      name: existing?.name || "Dev Local Business",
+      isPro: wantPro || !!existing?.isPro
+    });
+    setSessionCookie(res, accountId);
+    const returnToRaw = (req.query.return_to && String(req.query.return_to).trim()) || "";
+    const returnTo = returnToRaw.startsWith("/") && !returnToRaw.startsWith("//")
+      ? returnToRaw
+      : `/connected?accountId=${encodeURIComponent(accountId)}`;
+    res.redirect(returnTo);
+  } catch (err) {
+    next(err);
+  }
 });
 
 // Dashboard: re-run Google sign-in and land back on /connected
@@ -786,7 +805,7 @@ app.get("/connected", async (req, res, next) => {
   <div class="card-title">Auto-reply</div>
   <div class="toggle-row">
     <label class="toggle">
-      <input type="checkbox" id="auto-reply-toggle" ${currentAutoReply ? "checked" : ""} ${trialEndedNoSubscription ? "disabled" : ""}>
+      <input type="checkbox" id="auto-reply-toggle" role="switch" aria-checked="${currentAutoReply ? "true" : "false"}" aria-label="Reply to new Google reviews automatically" ${currentAutoReply ? "checked" : ""} ${trialEndedNoSubscription ? "disabled" : ""}>
       <div class="toggle-track"></div>
     </label>
     <span class="toggle-label">Reply to new Google reviews automatically</span>
@@ -795,26 +814,30 @@ app.get("/connected", async (req, res, next) => {
   <p id="auto-reply-msg" class="connected-msg" aria-live="polite"></p>
 </div>`
       : "";
+    const previewModeOn = currentAutoReplyMode === "delayed";
     const previewModeCard = accountId
       ? `<div class="card reply-preview-section" data-account-id="${escapeHtml(accountId)}">
   <div class="card-title">Reply preview (low-star reviews)</div>
   <div class="card-desc">For 1–3 star reviews, hold the AI-generated reply for 15 minutes and email you a cancel link before it posts. 4–5 star replies still post immediately.</div>
   <div class="toggle-row" style="margin-top:14px">
     <label class="toggle">
-      <input type="checkbox" id="reply-preview-toggle" ${currentAutoReplyMode === "delayed" ? "checked" : ""}>
+      <input type="checkbox" id="reply-preview-toggle" role="switch" aria-checked="${previewModeOn ? "true" : "false"}" aria-label="Email me before low-star replies post" ${previewModeOn ? "checked" : ""}>
       <div class="toggle-track"></div>
     </label>
     <span class="toggle-label">Email me before low-star replies post</span>
   </div>
-  <div class="contact-input-row" style="margin-top:14px">
+  <div id="notification-email-row" class="contact-input-row" style="margin-top:14px${previewModeOn ? "" : ";display:none"}">
     <input type="email" id="notification-email-input" value="${escapeHtml(currentNotificationEmail)}" placeholder="you@example.com">
     <button type="button" id="notification-email-save-btn" class="btn-save">Save</button>
   </div>
   <p id="reply-preview-msg" class="connected-msg" aria-live="polite"></p>
 </div>`
       : "";
+    // Hide the "Try it now" demo once auto-reply is enabled — once the system is
+    // replying automatically, the one-shot demo is just noise. The card toggles
+    // with the auto-reply switch (see /connected.js).
     const tryItCard = accountId
-      ? `<div class="card" id="free-reply-section" data-account-id="${escapeHtml(accountId)}">
+      ? `<div class="card" id="free-reply-section" data-account-id="${escapeHtml(accountId)}"${currentAutoReply ? ' style="display:none"' : ""}>
   <div class="card-title">Try it now</div>
   <div class="card-desc">We'll reply to your latest unreplied review once, free. You'll see it on your Google listing.</div>
   <button type="button" id="free-reply-btn" class="btn btn-primary"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M13 2L3 6l4 3 3 4 3-11z"/></svg>Send my 1 free reply</button>
@@ -876,6 +899,7 @@ app.get("/connected", async (req, res, next) => {
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Replyr – Connected</title>
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,wght@0,300;0,400;0,600;1,300&family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
 <style>
   :root { --bg: #0f0f11; --surface: #17171a; --surface2: #1e1e22; --border: rgba(255,255,255,0.07); --accent: #4a9eff; --accent2: #7c6af7; --text: #f0ede8; --muted: #7a7880; --danger: #ff6b6b; }
@@ -1062,110 +1086,127 @@ app.get("/subscribe", (req, res) => {
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Subscribe – Replyr</title>
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,wght@0,300;0,400;0,600;1,300&family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
   <style>
-    * { box-sizing: border-box; }
-    body { font-family: system-ui, sans-serif; margin: 0; min-height: 100vh; display: flex; flex-direction: column; align-items: center; padding: 2rem 1rem; background: #f5f5f5; }
-    .subscribe-page { max-width: 440px; width: 100%; }
-    .brand { display: flex; align-items: center; justify-content: center; gap: 0.5rem; margin-bottom: 0.5rem; }
-    .logo { width: 36px; height: 36px; flex-shrink: 0; }
-    .logo svg { width: 100%; height: 100%; display: block; }
-    .brand-name { font-size: 1.5rem; font-weight: 700; color: #2C2D32; letter-spacing: -0.02em; }
-    h1 { font-size: 1.5rem; color: #222; margin: 0 0 0.25rem; text-align: center; }
-    .tagline { color: #555; font-size: 0.95rem; line-height: 1.5; margin: 0 0 1.5rem; text-align: center; }
-    .plan-card { background: #fff; border: 1px solid #e0e0e0; border-radius: 12px; padding: 1.5rem 1.75rem; margin-bottom: 1.5rem; box-shadow: 0 2px 8px rgba(0,0,0,0.06); }
-    .plan-card h2 { margin: 0 0 0.35rem; font-size: 1.15rem; color: #222; }
-    .plan-desc { color: #555; font-size: 0.9rem; margin: 0 0 1rem; line-height: 1.4; }
-    .plan-price { font-size: 1.75rem; font-weight: 700; color: #111; margin: 0 0 0.25rem; }
-    .plan-price-note { font-size: 0.8rem; color: #666; margin: 0 0 1rem; }
-    .plan-features { list-style: none; margin: 0; padding: 0; }
-    .plan-features li { position: relative; padding-left: 1.25rem; margin-bottom: 0.4rem; color: #444; font-size: 0.9rem; }
-    .plan-features li::before { content: ""; position: absolute; left: 0; top: 0.45em; width: 6px; height: 6px; background: #2160F3; border-radius: 50%; }
-    .cta-wrap { text-align: center; margin-top: 1.25rem; }
+    :root { --bg: #0f0f11; --surface: #17171a; --surface2: #1e1e22; --border: rgba(255,255,255,0.07); --accent: #4a9eff; --accent2: #7c6af7; --text: #f0ede8; --muted: #7a7880; --danger: #ff6b6b; }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background: var(--bg); color: var(--text); font-family: 'DM Sans', sans-serif; font-size: 15px; min-height: 100vh; padding: 48px 24px 80px; overflow-x: hidden; }
+    body::before { content: ''; position: fixed; top: -200px; left: 50%; transform: translateX(-50%); width: 800px; height: 500px; background: radial-gradient(ellipse, rgba(124,106,247,0.12) 0%, transparent 70%); pointer-events: none; z-index: 0; }
+    .subscribe-page { max-width: 480px; width: 100%; margin: 0 auto; position: relative; z-index: 1; }
+    .brand { display: flex; align-items: center; justify-content: center; gap: 9px; margin-bottom: 24px; }
+    .brand-icon { width: 30px; height: 30px; background: linear-gradient(135deg, var(--accent2), var(--accent)); border-radius: 9px; display: flex; align-items: center; justify-content: center; font-size: 15px; }
+    .brand-name { font-size: 16px; font-weight: 700; color: var(--text); letter-spacing: -0.01em; }
+    h1 { font-family: 'Fraunces', serif; font-size: 36px; font-weight: 300; letter-spacing: -0.02em; color: var(--text); margin: 0 0 8px; text-align: center; }
+    h1 em { color: var(--accent); font-style: italic; }
+    .tagline { color: var(--muted); font-size: 14px; line-height: 1.6; margin: 0 0 32px; text-align: center; max-width: 380px; margin-left: auto; margin-right: auto; }
+    .plan-card { position: relative; background: var(--surface); border: 1px solid var(--border); border-radius: 20px; padding: 28px 28px; margin-bottom: 16px; transition: border-color 0.2s, transform 0.2s; animation: fadeUp 0.4s ease both; }
+    .plan-card:hover { border-color: rgba(255,255,255,0.12); transform: translateY(-2px); }
+    .plan-card.recommended { border-color: rgba(74,158,255,0.35); background: linear-gradient(135deg, rgba(124,106,247,0.06), rgba(74,158,255,0.04)); }
+    .plan-card:nth-child(2) { animation-delay: 0.05s; } .plan-card:nth-child(3) { animation-delay: 0.1s; } .plan-card:nth-child(4) { animation-delay: 0.15s; } .plan-card:nth-child(5) { animation-delay: 0.2s; }
+    .recommended-badge { position: absolute; top: -10px; right: 20px; display: inline-flex; align-items: center; gap: 5px; background: linear-gradient(135deg, var(--accent2), var(--accent)); color: #0f0f11; font-size: 11px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; padding: 5px 11px; border-radius: 999px; box-shadow: 0 4px 14px rgba(74,158,255,0.3); }
+    .plan-card h2 { font-family: 'Fraunces', serif; font-size: 22px; font-weight: 400; color: var(--text); margin-bottom: 6px; line-height: 1.2; }
+    .plan-desc { color: var(--muted); font-size: 13px; line-height: 1.6; margin-bottom: 16px; }
+    .plan-price { font-family: 'Fraunces', serif; font-size: 36px; font-weight: 300; color: var(--text); line-height: 1; margin: 0 0 4px; }
+    .plan-price-unit { font-family: 'DM Sans', sans-serif; font-size: 14px; color: var(--muted); font-weight: 400; }
+    .plan-price-note { font-size: 12px; color: var(--muted); margin-bottom: 16px; }
+    .plan-tagline { font-size: 12px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--accent); margin: 14px 0 14px; }
+    .plan-features { list-style: none; margin: 0 0 22px; padding: 0; }
+    .plan-features li { position: relative; padding-left: 22px; margin-bottom: 8px; color: var(--muted); font-size: 13px; line-height: 1.5; }
+    .plan-features li strong { color: var(--text); font-weight: 600; }
+    .plan-features li::before { content: ""; position: absolute; left: 0; top: 5px; width: 14px; height: 14px; background: rgba(74,158,255,0.15); border-radius: 50%; }
+    .plan-features li::after { content: ""; position: absolute; left: 4px; top: 8px; width: 6px; height: 3px; border-left: 1.5px solid var(--accent); border-bottom: 1.5px solid var(--accent); transform: rotate(-45deg); }
+    .cta-wrap { text-align: center; }
     .cta-msg { word-break: break-word; }
-    a.cta-btn, button.cta-btn { display: inline-block; padding: 0.75rem 1.5rem; background: #2160F3; color: #fff; text-decoration: none; border-radius: 8px; font-weight: 600; font-size: 1rem; }
-    a.cta-btn:hover, button.cta-btn:hover { background: #1d4ed8; }
-    .back { text-align: center; margin-top: 1rem; }
-    .back a { color: #2160F3; text-decoration: none; font-size: 0.9rem; }
-    .back a:hover { text-decoration: underline; }
+    button.cta-btn { display: inline-flex; align-items: center; justify-content: center; gap: 7px; padding: 13px 24px; background: var(--accent); color: #0f0f11; border: none; border-radius: 12px; font-family: 'DM Sans', sans-serif; font-weight: 700; font-size: 14px; cursor: pointer; transition: all 0.2s; width: 100%; letter-spacing: -0.01em; }
+    button.cta-btn:hover:not(:disabled) { background: #6bafff; transform: translateY(-1px); box-shadow: 0 8px 30px rgba(74,158,255,0.25); }
+    button.cta-btn:disabled { opacity: 0.7; cursor: not-allowed; }
+    .plan-card.recommended button.cta-btn { background: linear-gradient(135deg, var(--accent2), var(--accent)); }
+    .plan-card.recommended button.cta-btn:hover:not(:disabled) { box-shadow: 0 8px 30px rgba(124,106,247,0.35); }
+    .back-row { text-align: center; margin-top: 24px; font-size: 13px; color: var(--muted); }
+    .back-row a { color: var(--accent2); text-decoration: none; font-weight: 500; }
+    .back-row a:hover { color: #a099f7; text-decoration: underline; }
+    .back-row + .back-row { margin-top: 8px; }
+    @keyframes fadeUp { from { opacity: 0; transform: translateY(16px); } to { opacity: 1; transform: translateY(0); } }
   </style>
 </head>
 <body>
   <div class="subscribe-page" data-account-id="${escapeHtml(accountId)}" data-fallback-url="${escapeHtml(ctaHref)}" data-base-requires-account="${basePlanNeedsSignIn ? "1" : "0"}" data-pro-url="${escapeHtml(subscribeProUrl)}" data-pro-use-checkout="${hasProPrice ? "1" : "0"}">
     <div class="brand">
-      <div class="logo" aria-hidden="true"><svg viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg"><rect x="8" y="6" width="24" height="14" rx="4" fill="#2160F3"/><polygon points="12,20 20,20 16,27" fill="#2160F3"/><line x1="12" y1="12" x2="28" y2="12" stroke="#fff" stroke-width="2" stroke-linecap="round"/></svg></div>
+      <div class="brand-icon" aria-hidden="true">💬</div>
       <span class="brand-name">Replyr</span>
     </div>
-    <h1>Subscribe</h1>
-    <p class="tagline">Keep auto-reply after your trial. Choose a plan that fits your business size.</p>
+    <h1>Choose your <em>plan</em></h1>
+    <p class="tagline">Keep auto-reply after your 30-day trial. Cancel anytime from the billing portal.</p>
     <div class="plan-card">
       <h2>Replyr</h2>
-      <p class="plan-desc">For businesses that want automatic, professional replies to every new Google review.</p>
+      <p class="plan-desc">Automatic, professional replies to every new Google review.</p>
       <p class="plan-price">${escapeHtml(priceLabel)}</p>
       ${hasStripe ? "" : '<p class="plan-price-note">We\'ll send you a secure payment link.</p>'}
       <ul class="plan-features">
-        <li>Auto-reply to new 1–5 star reviews</li>
-        <li>Your contact in 1–3 star replies</li>
-        <li>Replies show as “[Your business] (Owner)”</li>
-        <li>One connection, no extra setup</li>
+        <li>Auto-reply to new <strong>1–5 star</strong> reviews</li>
+        <li>Your contact in <strong>1–3 star</strong> replies</li>
+        <li>Replies show as <strong>"[Your business] (Owner)"</strong></li>
+        <li>Optional <strong>preview mode</strong> for low-star replies</li>
       </ul>
       <div class="cta-wrap">
-        <button type="button" id="subscribe-cta" class="cta-btn" style="border:none;cursor:pointer;font:inherit;" data-plan="">${escapeHtml(ctaText)}</button>
-        <p id="subscribe-cta-msg" class="cta-msg" style="margin-top:0.5rem;font-size:0.9rem;min-height:1.2em;color:#c62828;" aria-live="polite"></p>
+        <button type="button" id="subscribe-cta" class="cta-btn" data-plan="">${escapeHtml(ctaText)}</button>
+        <p id="subscribe-cta-msg" class="cta-msg" style="margin-top:10px;font-size:13px;min-height:1.2em;color:var(--danger);" aria-live="polite"></p>
       </div>
     </div>
     ${hasPro ? `
     <div class="plan-card plan-card-pro">
       <h2>Replyr Pro Starter</h2>
-      <p class="plan-desc">For growing businesses that want campaigns without worrying about setup.</p>
+      <p class="plan-desc">For small lists who want a few campaigns a month.</p>
       <p class="plan-price">${escapeHtml(proStarterPriceLabel)}</p>
       <ul class="plan-features">
         <li>Everything in Replyr</li>
         <li>Upload customer CSV (email, name, birthday, phone)</li>
         <li>Automated birthday, event, and one-off campaigns</li>
-        <li>Email + SMS sending with brand personalization</li>
-        <li>Includes up to 500 SMS / month</li>
-        <li>When limit is reached, SMS pauses until next month (or tier upgrade)</li>
+        <li>Includes up to <strong>500 SMS / month</strong></li>
+        <li>Best for <strong>under 1,000 contacts</strong></li>
       </ul>
       <div class="cta-wrap">
-        <button type="button" id="subscribe-pro-starter-cta" class="cta-btn" style="border:none;cursor:pointer;font:inherit;" data-plan="pro_starter">Subscribe to Pro Starter</button>
-        <p id="subscribe-pro-starter-cta-msg" class="cta-msg" style="margin-top:0.5rem;font-size:0.9rem;min-height:1.2em;color:#c62828;" aria-live="polite"></p>
+        <button type="button" id="subscribe-pro-starter-cta" class="cta-btn" data-plan="pro_starter">Subscribe to Pro Starter</button>
+        <p id="subscribe-pro-starter-cta-msg" class="cta-msg" style="margin-top:10px;font-size:13px;min-height:1.2em;color:var(--danger);" aria-live="polite"></p>
       </div>
     </div>
-    <div class="plan-card plan-card-pro">
+    <div class="plan-card plan-card-pro recommended">
+      <span class="recommended-badge">★ Most popular</span>
       <h2>Replyr Pro Growth</h2>
-      <p class="plan-desc">For businesses with larger customer lists and more frequent campaign sends.</p>
+      <p class="plan-desc">For mid-size shops running monthly campaigns.</p>
       <p class="plan-price">${escapeHtml(proGrowthPriceLabel)}</p>
       <ul class="plan-features">
         <li>Everything in Pro Starter</li>
-        <li>Includes up to 2,500 SMS / month</li>
-        <li>Best for mid-size customer databases</li>
-        <li>When limit is reached, SMS pauses until next month (or tier upgrade)</li>
+        <li>Includes up to <strong>2,500 SMS / month</strong> (5× Starter)</li>
+        <li>Best for <strong>1,000–5,000 contacts</strong></li>
+        <li>Multiple monthly events + birthday automations</li>
       </ul>
       <div class="cta-wrap">
-        <button type="button" id="subscribe-pro-growth-cta" class="cta-btn" style="border:none;cursor:pointer;font:inherit;" data-plan="pro_growth">Subscribe to Pro Growth</button>
-        <p id="subscribe-pro-growth-cta-msg" class="cta-msg" style="margin-top:0.5rem;font-size:0.9rem;min-height:1.2em;color:#c62828;" aria-live="polite"></p>
+        <button type="button" id="subscribe-pro-growth-cta" class="cta-btn" data-plan="pro_growth">Subscribe to Pro Growth</button>
+        <p id="subscribe-pro-growth-cta-msg" class="cta-msg" style="margin-top:10px;font-size:13px;min-height:1.2em;color:var(--danger);" aria-live="polite"></p>
       </div>
     </div>
     ${stripeProScalePriceId ? `
     <div class="plan-card plan-card-pro">
       <h2>Replyr Pro Scale</h2>
-      <p class="plan-desc">For high-volume businesses that need reliable campaign capacity.</p>
+      <p class="plan-desc">For high-volume businesses with large lists.</p>
       <p class="plan-price">${escapeHtml(proScalePriceLabel)}</p>
       <ul class="plan-features">
         <li>Everything in Pro Growth</li>
-        <li>Includes up to 10,000 SMS / month</li>
-        <li>Built for large contact lists and frequent campaigns</li>
-        <li>When limit is reached, SMS pauses until next month (or tier upgrade)</li>
+        <li>Includes up to <strong>10,000 SMS / month</strong> (4× Growth)</li>
+        <li>Best for <strong>5,000+ contacts</strong></li>
+        <li>Frequent, multi-channel campaign sends</li>
       </ul>
       <div class="cta-wrap">
-        <button type="button" id="subscribe-pro-scale-cta" class="cta-btn" style="border:none;cursor:pointer;font:inherit;" data-plan="pro_scale">Subscribe to Pro Scale</button>
-        <p id="subscribe-pro-scale-cta-msg" class="cta-msg" style="margin-top:0.5rem;font-size:0.9rem;min-height:1.2em;color:#c62828;" aria-live="polite"></p>
+        <button type="button" id="subscribe-pro-scale-cta" class="cta-btn" data-plan="pro_scale">Subscribe to Pro Scale</button>
+        <p id="subscribe-pro-scale-cta-msg" class="cta-msg" style="margin-top:10px;font-size:13px;min-height:1.2em;color:var(--danger);" aria-live="polite"></p>
       </div>
     </div>` : ""}
 ` : ""}
-    ${hasBillingPortal ? `<p class="back" style="margin-bottom:0.5rem;"><a href="${escapeHtml(billingPortalUrl)}" target="_blank" rel="noopener">Manage billing / subscription</a></p>` : ""}
-    <p class="back"><a href="/">← Back to Replyr</a></p>
-    <p class="back" style="margin-top:0.5rem;"><a href="/contact">Contact us</a></p>
+    ${hasBillingPortal ? `<p class="back-row"><a href="${escapeHtml(billingPortalUrl)}" target="_blank" rel="noopener">Manage billing / subscription →</a></p>` : ""}
+    <p class="back-row"><a href="/">← Back to Replyr</a></p>
+    <p class="back-row"><a href="/contact">Contact us</a></p>
   </div>
   <script src="/subscribe.js"></script>
 </body>
@@ -1214,12 +1255,14 @@ app.get("/subscribe.js", (req, res) => {
         return;
       }
       if (isProPlan(plan) && proUseCheckout && !accountId) {
-        if (msgEl) msgEl.textContent = "Sign in via Dashboard first so we can link Pro to your business.";
+        if (msgEl) msgEl.textContent = "Redirecting you to sign in with Google…";
+        window.location.href = "/dashboard?return_to=" + encodeURIComponent("/subscribe");
         return;
       }
       if (!accountId && !plan) {
         if (baseRequiresAccount) {
-          if (msgEl) msgEl.textContent = "Sign in with Google from the home page, connect your business, then open Subscribe from your dashboard so checkout links to your account.";
+          if (msgEl) msgEl.textContent = "Redirecting you to sign in with Google…";
+          window.location.href = "/dashboard?return_to=" + encodeURIComponent("/subscribe");
           return;
         }
         go(fallbackUrl, false, msgEl);
@@ -1258,9 +1301,22 @@ app.get("/connected.js", (req, res) => {
   res.set("Content-Type", "application/javascript; charset=utf-8");
   res.send(`
 (function() {
+  // Keep aria-checked in sync with any role="switch" checkbox.
+  document.addEventListener("change", function(e) {
+    var t = e.target;
+    if (t && t.getAttribute && t.getAttribute("role") === "switch") {
+      t.setAttribute("aria-checked", t.checked ? "true" : "false");
+    }
+  });
+
   var aidEl = document.querySelector("[data-account-id]");
   var accountId = aidEl ? aidEl.getAttribute("data-account-id") : null;
   var section = document.getElementById("free-reply-section");
+
+  function setFreeReplyVisible(visible) {
+    var fr = document.getElementById("free-reply-section");
+    if (fr) fr.style.display = visible ? "" : "none";
+  }
 
   var autoReplySection = document.querySelector(".auto-reply-section");
   if (autoReplySection) {
@@ -1285,15 +1341,18 @@ app.get("/connected.js", (req, res) => {
             autoReplyMsg.textContent = data.error;
             autoReplyMsg.classList.add("err");
             toggle.checked = !enabled;
+            toggle.setAttribute("aria-checked", toggle.checked ? "true" : "false");
           } else {
             autoReplyMsg.textContent = enabled ? "Auto-reply is on." : "Auto-reply is off.";
             autoReplyMsg.classList.add("ok");
+            setFreeReplyVisible(!enabled);
           }
         })
         .catch(function() {
           autoReplyMsg.textContent = "Something went wrong.";
           autoReplyMsg.classList.remove("ok"); autoReplyMsg.classList.add("err");
           toggle.checked = !enabled;
+          toggle.setAttribute("aria-checked", toggle.checked ? "true" : "false");
         });
       });
     }
@@ -1338,9 +1397,21 @@ app.get("/connected.js", (req, res) => {
     var contactInput = document.getElementById("contact-input");
     var contactSaveBtn = document.getElementById("contact-save-btn");
     var contactMsg = document.getElementById("contact-msg");
+    function isValidContact(v) {
+      if (!v) return true; // empty = clear field, allowed
+      if (EMAIL_RE.test(v)) return true;
+      // Phone: at least 7 digits among the input. Allows "(425) 643-9327" etc.
+      var digits = v.replace(/\\D+/g, "");
+      return digits.length >= 7 && digits.length <= 15;
+    }
     if (aid && contactInput && contactSaveBtn && contactMsg) {
       contactSaveBtn.addEventListener("click", function() {
         var contact = contactInput.value.trim();
+        if (!isValidContact(contact)) {
+          contactMsg.textContent = "Please enter a valid email address or phone number.";
+          contactMsg.classList.remove("ok"); contactMsg.classList.add("err");
+          return;
+        }
         contactSaveBtn.disabled = true;
         contactMsg.textContent = "";
         contactMsg.classList.remove("ok", "err");
@@ -1357,7 +1428,7 @@ app.get("/connected.js", (req, res) => {
               contactMsg.textContent = data.error;
               contactMsg.classList.add("err");
             } else {
-              contactMsg.textContent = "Saved. We'll use this for 1–3 star replies.";
+              contactMsg.textContent = contact ? "Saved. We'll use this for 1–3 star replies." : "Cleared. Replies won't include a contact.";
               contactMsg.classList.add("ok");
             }
           })
@@ -1372,6 +1443,12 @@ app.get("/connected.js", (req, res) => {
 
   // Reply preview mode toggle + notification email
   var previewSection = document.querySelector(".reply-preview-section");
+  // Simple, permissive email regex — server is the source of truth.
+  var EMAIL_RE = /^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/;
+  function setEmailRowVisible(visible) {
+    var row = document.getElementById("notification-email-row");
+    if (row) row.style.display = visible ? "flex" : "none";
+  }
   if (previewSection) {
     var previewAccountId = previewSection.getAttribute("data-account-id") || accountId;
     var previewToggle = document.getElementById("reply-preview-toggle");
@@ -1396,11 +1473,14 @@ app.get("/connected.js", (req, res) => {
       previewToggle.addEventListener("change", function() {
         var nextMode = previewToggle.checked ? "delayed" : "instant";
         setPreviewMsg("");
+        setEmailRowVisible(previewToggle.checked);
         patchBusiness({ autoReplyMode: nextMode })
           .then(function(res) {
             if (res.data && res.data.error) {
               setPreviewMsg(res.data.error, "err");
               previewToggle.checked = !previewToggle.checked;
+              previewToggle.setAttribute("aria-checked", previewToggle.checked ? "true" : "false");
+              setEmailRowVisible(previewToggle.checked);
             } else {
               setPreviewMsg(nextMode === "delayed"
                 ? "Preview mode on. We'll email you 15 minutes before low-star replies post."
@@ -1412,12 +1492,18 @@ app.get("/connected.js", (req, res) => {
           .catch(function() {
             setPreviewMsg("Something went wrong.", "err");
             previewToggle.checked = !previewToggle.checked;
+            previewToggle.setAttribute("aria-checked", previewToggle.checked ? "true" : "false");
+            setEmailRowVisible(previewToggle.checked);
           });
       });
     }
     if (previewAccountId && emailSaveBtn && emailInput) {
       emailSaveBtn.addEventListener("click", function() {
         var email = emailInput.value.trim();
+        if (email && !EMAIL_RE.test(email)) {
+          setPreviewMsg("Please enter a valid email address.", "err");
+          return;
+        }
         emailSaveBtn.disabled = true;
         setPreviewMsg("");
         patchBusiness({ notificationEmail: email })
@@ -1442,12 +1528,18 @@ app.get("/connected.js", (req, res) => {
       var t = document.getElementById("auto-reply-toggle");
       if (t) {
         t.checked = !!data.autoReplyEnabled;
+        t.setAttribute("aria-checked", t.checked ? "true" : "false");
         t.disabled = !!data.trialEndedNoSubscription;
+        setFreeReplyVisible(!t.checked);
       }
       var ci = document.getElementById("contact-input");
       if (ci && data.contact !== undefined && data.contact !== null) ci.value = String(data.contact);
       var pt = document.getElementById("reply-preview-toggle");
-      if (pt) pt.checked = data.autoReplyMode === "delayed";
+      if (pt) {
+        pt.checked = data.autoReplyMode === "delayed";
+        pt.setAttribute("aria-checked", pt.checked ? "true" : "false");
+        setEmailRowVisible(pt.checked);
+      }
       var ne = document.getElementById("notification-email-input");
       if (ne && data.notificationEmail != null) ne.value = String(data.notificationEmail || "");
     })
@@ -1660,6 +1752,68 @@ app.get("/connected.js", (req, res) => {
 function escapeHtml(s) {
   const d = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" };
   return String(s).replace(/[&<>"]/g, (c) => d[c]);
+}
+
+// Shared dark-brand shell for the simple static-style pages
+// (no-business, contact, compliance, privacy, terms).
+// Body content is rendered inside .doc-card.
+function darkShellHtml({ title, bodyHtml, narrow = false, description = "" }) {
+  const pageWidth = narrow ? "440px" : "720px";
+  const descMeta = description
+    ? `<meta name="description" content="${escapeHtml(description)}">`
+    : "";
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>${escapeHtml(title)}</title>
+${descMeta}
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,wght@0,300;0,400;0,600;1,300&family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root { --bg: #0f0f11; --surface: #17171a; --surface2: #1e1e22; --border: rgba(255,255,255,0.07); --accent: #4a9eff; --accent2: #7c6af7; --text: #f0ede8; --muted: #7a7880; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--text); font-family: 'DM Sans', sans-serif; font-size: 15px; min-height: 100vh; padding: 48px 24px 80px; overflow-x: hidden; line-height: 1.6; }
+  body::before { content: ''; position: fixed; top: -200px; left: 50%; transform: translateX(-50%); width: 800px; height: 500px; background: radial-gradient(ellipse, rgba(124,106,247,0.12) 0%, transparent 70%); pointer-events: none; z-index: 0; }
+  .doc-wrap { max-width: ${pageWidth}; margin: 0 auto; position: relative; z-index: 1; }
+  .doc-brand { display: flex; align-items: center; justify-content: center; gap: 9px; margin-bottom: 24px; }
+  .doc-brand-icon { width: 30px; height: 30px; background: linear-gradient(135deg, var(--accent2), var(--accent)); border-radius: 9px; display: flex; align-items: center; justify-content: center; font-size: 15px; }
+  .doc-brand-name { font-size: 16px; font-weight: 700; color: var(--text); letter-spacing: -0.01em; }
+  .doc-card { background: var(--surface); border: 1px solid var(--border); border-radius: 20px; padding: 32px; animation: fadeUp 0.4s ease both; }
+  .doc-card h1 { font-family: 'Fraunces', serif; font-size: 32px; font-weight: 300; letter-spacing: -0.02em; color: var(--text); margin-bottom: 16px; line-height: 1.15; }
+  .doc-card h1 em { color: var(--accent); font-style: italic; }
+  .doc-card h2 { font-family: 'Fraunces', serif; font-size: 18px; font-weight: 400; color: var(--text); margin: 24px 0 10px; }
+  .doc-card p { color: var(--muted); font-size: 14px; line-height: 1.7; margin-bottom: 14px; }
+  .doc-card p strong { color: var(--text); font-weight: 600; }
+  .doc-card a { color: var(--accent2); text-decoration: none; font-weight: 500; }
+  .doc-card a:hover { color: #a099f7; text-decoration: underline; }
+  .doc-card code { background: rgba(255,255,255,0.06); border-radius: 4px; padding: 1px 6px; font-size: 12px; color: var(--accent); font-family: ui-monospace, SFMono-Regular, monospace; }
+  .doc-card .meta-stamp { color: var(--muted); font-size: 12px; margin-bottom: 18px; letter-spacing: 0.04em; text-transform: uppercase; font-weight: 600; }
+  .doc-card .callout { background: var(--surface2); border: 1px solid var(--border); border-radius: 12px; padding: 14px 16px; margin: 12px 0; }
+  .doc-card .callout p:last-child { margin-bottom: 0; }
+  .doc-card .callout strong { color: var(--text); }
+  .doc-back { text-align: center; margin-top: 24px; font-size: 13px; color: var(--muted); }
+  .doc-back a { color: var(--accent2); text-decoration: none; font-weight: 500; }
+  .doc-back a:hover { color: #a099f7; text-decoration: underline; }
+  .doc-btn { display: inline-flex; align-items: center; gap: 7px; margin-top: 6px; padding: 11px 20px; background: var(--accent); color: #0f0f11; border-radius: 12px; text-decoration: none; font-weight: 700; font-size: 14px; transition: all 0.2s; }
+  .doc-btn:hover { background: #6bafff; transform: translateY(-1px); box-shadow: 0 8px 30px rgba(74,158,255,0.25); color: #0f0f11; text-decoration: none; }
+  .doc-card .contact-link { display: inline-block; margin-top: 4px; font-size: 16px; font-weight: 600; }
+  @keyframes fadeUp { from { opacity: 0; transform: translateY(16px); } to { opacity: 1; transform: translateY(0); } }
+</style>
+</head>
+<body>
+<div class="doc-wrap">
+  <div class="doc-brand">
+    <div class="doc-brand-icon" aria-hidden="true">💬</div>
+    <span class="doc-brand-name">Replyr</span>
+  </div>
+  <div class="doc-card">
+${bodyHtml}
+  </div>
+</div>
+</body>
+</html>`;
 }
 
 app.get("/auth/google", authRouteLimiter, async (req, res, next) => {
@@ -2268,13 +2422,13 @@ app.get("/pro", async (req, res, next) => {
     }
     if (!db.useDb()) {
       res.set("Content-Type", "text/html; charset=utf-8");
-      return res.send(`
-<!DOCTYPE html><html><head><meta charset="utf-8"><title>Replyr Pro</title></head>
-<body style="font-family:system-ui,sans-serif;max-width:480px;margin:2rem auto;padding:1.5rem;">
-  <h1>Campaigns</h1>
-  <p>Database is required for campaigns. Use a PostgreSQL connection in production.</p>
-  <p><a href="/connected?accountId=${encodeURIComponent(accountId)}">← Back to Connected</a></p>
-</body></html>`);
+      return res.send(darkShellHtml({
+        title: "Replyr Pro",
+        bodyHtml: `    <h1>Campaigns</h1>
+    <p>A database is required for campaigns. Use a PostgreSQL connection in production.</p>
+    <p style="margin-top:18px"><a href="/connected?accountId=${encodeURIComponent(accountId)}">← Back to Connected</a></p>`,
+        narrow: true
+      }));
     }
     const birthday = await db.getProBirthdaySettings(accountId);
     res.set("Content-Type", "text/html; charset=utf-8");
@@ -2285,6 +2439,7 @@ app.get("/pro", async (req, res, next) => {
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Replyr Pro – Campaigns</title>
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,wght@0,300;0,400;0,600;1,300&family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
 <style>
   :root {
@@ -2387,11 +2542,12 @@ app.get("/pro", async (req, res, next) => {
     padding: 11px 20px; transition: all 0.2s; letter-spacing: 0.01em;
   }
   .btn-generate {
-    background: var(--surface2); color: var(--muted); border: 1px solid var(--border); margin-bottom: 20px;
+    background: linear-gradient(135deg, rgba(124,106,247,0.18), rgba(74,158,255,0.14));
+    color: var(--accent2); border: 1px solid rgba(124,106,247,0.35); margin-bottom: 20px; font-weight: 600;
   }
-  .btn-generate:hover { background: rgba(124,106,247,0.15); color: var(--text); border-color: rgba(124,106,247,0.4); }
+  .btn-generate:hover { background: linear-gradient(135deg, rgba(124,106,247,0.28), rgba(74,158,255,0.22)); color: var(--text); border-color: rgba(124,106,247,0.55); transform: translateY(-1px); box-shadow: 0 4px 16px rgba(124,106,247,0.2); }
   .btn-generate svg { width: 15px; height: 15px; }
-  .btn-generate:disabled { opacity: 0.6; cursor: not-allowed; }
+  .btn-generate:disabled { opacity: 0.6; cursor: not-allowed; transform: none; box-shadow: none; }
   .btn-primary { background: var(--accent); color: #0f0f11; }
   .btn-primary:hover { background: #6bafff; transform: translateY(-1px); box-shadow: 0 4px 20px rgba(74,158,255,0.25); }
   .btn-primary:active { transform: translateY(0); }
@@ -2455,7 +2611,7 @@ app.get("/pro", async (req, res, next) => {
     </div>
     <div class="toggle-row">
       <label class="toggle">
-        <input type="checkbox" id="birthday-enabled" ${birthday?.enabled ? "checked" : ""}>
+        <input type="checkbox" id="birthday-enabled" role="switch" aria-checked="${birthday?.enabled ? "true" : "false"}" aria-label="Enable birthday messages" ${birthday?.enabled ? "checked" : ""}>
         <span class="toggle-track"></span>
       </label>
       <span class="toggle-label">Enable birthday messages</span>
@@ -2464,14 +2620,14 @@ app.get("/pro", async (req, res, next) => {
     <div class="channel-toggles">
       <div class="toggle-row">
         <label class="toggle">
-          <input type="checkbox" id="birthday-send-email" ${(birthday?.sendEmail !== false) ? "checked" : ""}>
+          <input type="checkbox" id="birthday-send-email" role="switch" aria-checked="${(birthday?.sendEmail !== false) ? "true" : "false"}" aria-label="Send birthday email" ${(birthday?.sendEmail !== false) ? "checked" : ""}>
           <span class="toggle-track"></span>
         </label>
         <span class="toggle-label">Send email</span>
       </div>
       <div class="toggle-row">
         <label class="toggle">
-          <input type="checkbox" id="birthday-send-sms" ${(birthday?.sendSms !== false) ? "checked" : ""}>
+          <input type="checkbox" id="birthday-send-sms" role="switch" aria-checked="${(birthday?.sendSms !== false) ? "true" : "false"}" aria-label="Send birthday SMS when contact has phone" ${(birthday?.sendSms !== false) ? "checked" : ""}>
           <span class="toggle-track"></span>
         </label>
         <span class="toggle-label">Send SMS (when contact has phone)</span>
@@ -2537,14 +2693,14 @@ app.get("/pro", async (req, res, next) => {
       <div class="channel-toggles">
         <div class="toggle-row">
           <label class="toggle">
-            <input type="checkbox" id="event-detail-send-email" checked>
+            <input type="checkbox" id="event-detail-send-email" role="switch" aria-checked="true" aria-label="Send event email" checked>
             <span class="toggle-track"></span>
           </label>
           <span class="toggle-label">Send email</span>
         </div>
         <div class="toggle-row">
           <label class="toggle">
-            <input type="checkbox" id="event-detail-send-sms" checked>
+            <input type="checkbox" id="event-detail-send-sms" role="switch" aria-checked="true" aria-label="Send event SMS when contact has phone" checked>
             <span class="toggle-track"></span>
           </label>
           <span class="toggle-label">Send SMS (when contact has phone)</span>
@@ -2590,14 +2746,14 @@ app.get("/pro", async (req, res, next) => {
     <div class="channel-toggles">
       <div class="toggle-row">
         <label class="toggle">
-          <input type="checkbox" id="oneoff-send-email" checked>
+          <input type="checkbox" id="oneoff-send-email" role="switch" aria-checked="true" aria-label="Send one-off promo email" checked>
           <span class="toggle-track"></span>
         </label>
         <span class="toggle-label">Send email</span>
       </div>
       <div class="toggle-row">
         <label class="toggle">
-          <input type="checkbox" id="oneoff-send-sms" checked>
+          <input type="checkbox" id="oneoff-send-sms" role="switch" aria-checked="true" aria-label="Send one-off promo SMS when contact has phone" checked>
           <span class="toggle-track"></span>
         </label>
         <span class="toggle-label">Send SMS (when contact has phone)</span>
@@ -2620,6 +2776,14 @@ app.get("/pro.js", (req, res) => {
   res.set("Content-Type", "application/javascript; charset=utf-8");
   res.send(`
 (function() {
+  // Keep aria-checked in sync with any role="switch" checkbox.
+  document.addEventListener("change", function(e) {
+    var t = e.target;
+    if (t && t.getAttribute && t.getAttribute("role") === "switch") {
+      t.setAttribute("aria-checked", t.checked ? "true" : "false");
+    }
+  });
+
   var app = document.getElementById("pro-app");
   if (!app) return;
   var accountId = (app.getAttribute("data-account-id") || "").trim();
@@ -2683,16 +2847,17 @@ app.get("/pro.js", (req, res) => {
           panel.classList.add("visible");
           var sendEmailEl = document.getElementById("event-detail-send-email");
           var sendSmsEl = document.getElementById("event-detail-send-sms");
-          if (sendEmailEl) sendEmailEl.checked = true;
-          if (sendSmsEl) sendSmsEl.checked = true;
+          function syncAria(el) { if (el && el.getAttribute("role") === "switch") el.setAttribute("aria-checked", el.checked ? "true" : "false"); }
+          if (sendEmailEl) { sendEmailEl.checked = true; syncAria(sendEmailEl); }
+          if (sendSmsEl) { sendSmsEl.checked = true; syncAria(sendSmsEl); }
           fetch("/pro/events/" + key + "/" + year + "?accountId=" + encodeURIComponent(accountId), { credentials: "same-origin" })
             .then(function(r) { return r.json(); })
             .then(function(c) {
               if (c && c.messageText) { panelMessage.value = c.messageText; panelMessage.dispatchEvent(new Event("input")); }
               if (c && c.offerText) panelOffer.value = c.offerText;
               if (panelSendAt && c && c.sendAtLocal) panelSendAt.value = c.sendAtLocal;
-              if (sendEmailEl && c && c.sendEmail !== undefined) sendEmailEl.checked = c.sendEmail !== false;
-              if (sendSmsEl && c && c.sendSms !== undefined) sendSmsEl.checked = c.sendSms !== false;
+              if (sendEmailEl && c && c.sendEmail !== undefined) { sendEmailEl.checked = c.sendEmail !== false; syncAria(sendEmailEl); }
+              if (sendSmsEl && c && c.sendSms !== undefined) { sendSmsEl.checked = c.sendSms !== false; syncAria(sendSmsEl); }
               if (c && c.status === "confirmed") { btn.textContent = "Edit"; btn.classList.add("event-edit"); }
             })
             .catch(function() {});
@@ -3001,24 +3166,22 @@ app.get("/pro/unsubscribe", async (req, res, next) => {
     const decoded = verifyUnsubscribeToken(token);
     if (!decoded) {
       res.set("Content-Type", "text/html; charset=utf-8");
-      return res.status(400).send(`
-<!DOCTYPE html>
-<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Invalid link</title></head>
-<body style="font-family:system-ui,sans-serif;max-width:480px;margin:2rem auto;padding:1.5rem;text-align:center;">
-  <h1>Invalid or expired link</h1>
-  <p>This unsubscribe link is invalid or has expired. If you still want to stop emails, contact the business that sent them.</p>
-</body></html>`);
+      return res.status(400).send(darkShellHtml({
+        title: "Invalid link",
+        bodyHtml: `    <h1 style="text-align:center">Invalid or <em>expired link</em></h1>
+    <p style="text-align:center">This unsubscribe link is invalid or has expired. If you still want to stop emails, contact the business that sent them.</p>`,
+        narrow: true
+      }));
     }
     const { accountId, email } = decoded;
     await setProContactUnsubscribed(accountId, email);
     res.set("Content-Type", "text/html; charset=utf-8");
-    res.send(`
-<!DOCTYPE html>
-<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Unsubscribed</title></head>
-<body style="font-family:system-ui,sans-serif;max-width:480px;margin:2rem auto;padding:1.5rem;text-align:center;">
-  <h1>You're unsubscribed</h1>
-  <p>You won't receive further campaign emails from this business via Replyr.</p>
-</body></html>`);
+    res.send(darkShellHtml({
+      title: "Unsubscribed",
+      bodyHtml: `    <h1 style="text-align:center">You're <em>unsubscribed</em></h1>
+    <p style="text-align:center">You won't receive further campaign emails from this business via Replyr.</p>`,
+      narrow: true
+    }));
   } catch (err) {
     next(err);
   }
@@ -3029,123 +3192,90 @@ app.get("/contact", (req, res) => {
   const contactEmail = (process.env.ALERT_EMAIL || "").trim();
   const emailHtml = contactEmail
     ? `<p>Email: <a href="mailto:${escapeHtml(contactEmail)}" class="contact-link">${escapeHtml(contactEmail)}</a></p>`
-    : "<p>Set <code>ALERT_EMAIL</code> in your environment to show your contact email here.</p>";
+    : "<p style=\"font-size:13px\">Set <code>ALERT_EMAIL</code> in your environment to show your contact email here.</p>";
   res.set("Content-Type", "text/html; charset=utf-8");
-  res.send(`
-<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Replyr – Contact us</title>
-<style>
-  * { box-sizing: border-box; margin: 0; padding: 0; }
-  body { font-family: system-ui, sans-serif; background: #0f0f11; color: #f0ede8; min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 24px; }
-  .contact-card { max-width: 420px; background: #17171a; border: 1px solid rgba(255,255,255,0.07); border-radius: 20px; padding: 32px; }
-  h1 { font-size: 22px; margin-bottom: 12px; color: #f0ede8; }
-  p { font-size: 14px; color: #7a7880; line-height: 1.6; margin-bottom: 16px; }
-  a { color: #4a9eff; text-decoration: none; font-weight: 500; }
-  a:hover { text-decoration: underline; }
-  .contact-link { display: inline-block; margin-top: 8px; font-size: 15px; }
-  .back { margin-top: 24px; font-size: 13px; }
-  .back a { color: #7c6af7; }
-</style>
-</head>
-<body>
-  <div class="contact-card">
-    <h1>Contact us</h1>
+  res.send(darkShellHtml({
+    title: "Replyr – Contact us",
+    bodyHtml: `    <h1>Contact <em>us</em></h1>
     <p>Questions or concerns? We're here to help — whether you're already using Replyr or thinking about signing up.</p>
     ${emailHtml}
-    <p class="back"><a href="/">← Back to Replyr</a></p>
-  </div>
-</body>
-</html>`);
+    <p class="doc-back" style="margin-top:24px;text-align:left"><a href="/">← Back to Replyr</a></p>`,
+    narrow: true,
+    description: "Get in touch with Replyr — questions, support, or feedback."
+  }));
 });
 
 // Compliance / acceptable use (linked from Pro UI and email footer). Wording aligned with toll-free use case: marketing/promotional messages.
 app.get("/compliance", (req, res) => {
   res.set("Content-Type", "text/html; charset=utf-8");
-  res.send(`
-<!DOCTYPE html>
-<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Replyr – Messaging compliance</title></head>
-<body style="font-family:system-ui,sans-serif;max-width:600px;margin:2rem auto;padding:1.5rem;">
-  <h1>Replyr – Messaging compliance</h1>
-
-  <h2 style="font-size:1rem;color:#333;margin-top:1.5rem;">Opt-in workflow (Web Form)</h2>
-  <p>When collecting contact information for <strong>marketing and promotional messages</strong> (birthday offers, holiday promotions, special offers), the business must obtain explicit consent. Example web form workflow:</p>
-  <div style="background:#f8f9fa;border:1px solid #dee2e6;border-radius:8px;padding:1rem;margin:0.75rem 0;">
-    <p style="margin:0 0 0.5rem;font-weight:600;">Required consent (checkbox or equivalent):</p>
-    <p style="margin:0;font-size:0.95rem;">&ldquo;I agree to receive marketing messages and special offers via email and/or SMS from this business. Message and data rates may apply. Reply STOP to opt out of text messages.&rdquo;</p>
-  </div>
-  <p>The collected contacts are then used only for the declared use case: birthday and holiday promotional messaging. Consent is obtained before any messages are sent.</p>
-
-  <h2 style="font-size:1rem;color:#333;margin-top:1.5rem;">Business confirmation</h2>
-  <p>By uploading a customer list and sending campaigns through Replyr Pro, the business confirms that each contact has agreed to receive marketing and promotional messages (as above) via web form, in-store signup, or an existing customer relationship where they agreed to hear from the business.</p>
-  <p>We do not allow spam. Every campaign email includes an unsubscribe link; every SMS includes instructions to reply STOP. We process opt-outs and do not resend to unsubscribed contacts.</p>
-  <p>We include a physical address in campaign footers where required (e.g. CAN-SPAM).</p>
-  <p><a href="/">← Back to Replyr</a> · <a href="/contact">Contact us</a></p>
-</body></html>`);
+  const body = `    <h1>Messaging <em>compliance</em></h1>
+    <h2>Opt-in workflow (Web Form)</h2>
+    <p>When collecting contact information for <strong>marketing and promotional messages</strong> (birthday offers, holiday promotions, special offers), the business must obtain explicit consent. Example web form workflow:</p>
+    <div class="callout">
+      <p style="margin-bottom:8px"><strong>Required consent (checkbox or equivalent):</strong></p>
+      <p style="font-size:13px">“I agree to receive marketing messages and special offers via email and/or SMS from this business. Message and data rates may apply. Reply STOP to opt out of text messages.”</p>
+    </div>
+    <p>The collected contacts are then used only for the declared use case: birthday and holiday promotional messaging. Consent is obtained before any messages are sent.</p>
+    <h2>Business confirmation</h2>
+    <p>By uploading a customer list and sending campaigns through Replyr Pro, the business confirms that each contact has agreed to receive marketing and promotional messages (as above) via web form, in-store signup, or an existing customer relationship where they agreed to hear from the business.</p>
+    <p>We do not allow spam. Every campaign email includes an unsubscribe link; every SMS includes instructions to reply STOP. We process opt-outs and do not resend to unsubscribed contacts.</p>
+    <p>We include a physical address in campaign footers where required (e.g. CAN-SPAM).</p>
+    <p style="margin-top:24px"><a href="/">← Back to Replyr</a> · <a href="/contact">Contact us</a></p>`;
+  res.send(darkShellHtml({
+    title: "Replyr – Messaging compliance",
+    bodyHtml: body,
+    description: "Replyr Pro messaging compliance — opt-in workflow, business confirmation, opt-out handling."
+  }));
 });
 
 // Privacy policy (linked from Google OAuth consent screen)
 app.get("/privacy", (req, res) => {
   res.set("Content-Type", "text/html; charset=utf-8");
-  res.send(`
-<!DOCTYPE html>
-<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Replyr – Privacy policy</title></head>
-<body style="font-family:system-ui,sans-serif;max-width:720px;margin:2rem auto;padding:1.5rem;">
-  <h1>Replyr – Privacy policy</h1>
-  <p style="color:#555;line-height:1.6;">Last updated: ${new Date().toISOString().split("T")[0]}</p>
-
-  <h2 style="font-size:1rem;margin-top:1.5rem;color:#333;">Who we are</h2>
-  <p>Replyr (“we”, “us”, “our”) provides an AI-assisted service that helps businesses respond to Google Business Profile reviews.</p>
-
-  <h2 style="font-size:1rem;margin-top:1.5rem;color:#333;">What we collect</h2>
-  <p>When you connect your Google account, we store Google OAuth tokens for the Google Business Profile you authorize. For Replyr Pro, we also store customer-list data you upload via CSV (email, name, birthday, and optional phone).</p>
-
-  <h2 style="font-size:1rem;margin-top:1.5rem;color:#333;">How we use information</h2>
-  <p>We use stored data to: (1) read reviews from your authorized Google Business location(s), (2) generate replies with an AI model, and (3) send email/SMS campaigns for businesses who subscribe to Replyr Pro.</p>
-
-  <h2 style="font-size:1rem;margin-top:1.5rem;color:#333;">Sharing</h2>
-  <p>We share limited information with service providers (e.g. Google APIs, Resend for email sending, Twilio for SMS sending, Stripe for billing, and Anthropic for AI generation) to deliver the service. We do not sell your data.</p>
-
-  <h2 style="font-size:1rem;margin-top:1.5rem;color:#333;">Data retention</h2>
-  <p>We retain OAuth tokens and any enabled campaign settings while your business account is active and until you disconnect or cancel your subscriptions. Pro customer uploads are stored for the purpose of running campaigns and can be replaced by uploading a new CSV.</p>
-
-  <h2 style="font-size:1rem;margin-top:1.5rem;color:#333;">Your choices</h2>
-  <p>You can disconnect Google access via the app, and you can manage/unsubscribe contacts using the unsubscribe links provided in emails/SMS (Pro campaigns).</p>
-
-  <p style="margin-top:1.5rem;"><a href="/">← Back to Replyr</a> · <a href="/contact">Contact us</a></p>
-</body></html>`);
+  const today = new Date().toISOString().split("T")[0];
+  const body = `    <h1>Privacy <em>policy</em></h1>
+    <p class="meta-stamp">Last updated: ${escapeHtml(today)}</p>
+    <h2>Who we are</h2>
+    <p>Replyr (“we”, “us”, “our”) provides an AI-assisted service that helps businesses respond to Google Business Profile reviews.</p>
+    <h2>What we collect</h2>
+    <p>When you connect your Google account, we store Google OAuth tokens for the Google Business Profile you authorize. For Replyr Pro, we also store customer-list data you upload via CSV (email, name, birthday, and optional phone).</p>
+    <h2>How we use information</h2>
+    <p>We use stored data to: (1) read reviews from your authorized Google Business location(s), (2) generate replies with an AI model, and (3) send email/SMS campaigns for businesses who subscribe to Replyr Pro.</p>
+    <h2>Sharing</h2>
+    <p>We share limited information with service providers (e.g. Google APIs, Resend for email sending, Twilio for SMS sending, Stripe for billing, and Anthropic for AI generation) to deliver the service. We do not sell your data.</p>
+    <h2>Data retention</h2>
+    <p>We retain OAuth tokens and any enabled campaign settings while your business account is active and until you disconnect or cancel your subscriptions. Pro customer uploads are stored for the purpose of running campaigns and can be replaced by uploading a new CSV.</p>
+    <h2>Your choices</h2>
+    <p>You can disconnect Google access via the app, and you can manage/unsubscribe contacts using the unsubscribe links provided in emails/SMS (Pro campaigns).</p>
+    <p style="margin-top:24px"><a href="/">← Back to Replyr</a> · <a href="/contact">Contact us</a></p>`;
+  res.send(darkShellHtml({
+    title: "Replyr – Privacy policy",
+    bodyHtml: body,
+    description: "Replyr privacy policy — what we collect, how we use it, and your choices."
+  }));
 });
 
 // Terms of service (linked from Google OAuth consent screen)
 app.get("/terms", (req, res) => {
   res.set("Content-Type", "text/html; charset=utf-8");
-  res.send(`
-<!DOCTYPE html>
-<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Replyr – Terms of service</title></head>
-<body style="font-family:system-ui,sans-serif;max-width:720px;margin:2rem auto;padding:1.5rem;">
-  <h1>Replyr – Terms of service</h1>
-  <p style="color:#555;line-height:1.6;">Last updated: ${new Date().toISOString().split("T")[0]}</p>
-
-  <h2 style="font-size:1rem;margin-top:1.5rem;color:#333;">Agreement</h2>
-  <p>By using Replyr, you agree to these Terms. Replyr provides an automation and AI-assistance tool; it does not guarantee specific outcomes.</p>
-
-  <h2 style="font-size:1rem;margin-top:1.5rem;color:#333;">Use of service</h2>
-  <p>You are responsible for ensuring you have the rights and permissions to send messages to your contacts and for complying with applicable laws (including consent and unsubscribe requirements for promotional messages).</p>
-
-  <h2 style="font-size:1rem;margin-top:1.5rem;color:#333;">No warranty</h2>
-  <p>Replyr is provided “as is”. We do not guarantee uninterrupted service, accuracy of AI-generated text, or that replies/campaigns will be delivered.</p>
-
-  <h2 style="font-size:1rem;margin-top:1.5rem;color:#333;">Billing (Stripe)</h2>
-  <p>If you subscribe, billing is handled by Stripe according to Stripe terms. Cancellation and refund policies (if any) are governed by Stripe’s policy and your plan.</p>
-
-  <h2 style="font-size:1rem;margin-top:1.5rem;color:#333;">Limitation of liability</h2>
-  <p>To the maximum extent permitted by law, Replyr is not liable for indirect, incidental, or consequential damages arising from use of the service.</p>
-
-  <p style="margin-top:1.5rem;"><a href="/">← Back to Replyr</a> · <a href="/contact">Contact us</a></p>
-</body></html>`);
+  const today = new Date().toISOString().split("T")[0];
+  const body = `    <h1>Terms of <em>service</em></h1>
+    <p class="meta-stamp">Last updated: ${escapeHtml(today)}</p>
+    <h2>Agreement</h2>
+    <p>By using Replyr, you agree to these Terms. Replyr provides an automation and AI-assistance tool; it does not guarantee specific outcomes.</p>
+    <h2>Use of service</h2>
+    <p>You are responsible for ensuring you have the rights and permissions to send messages to your contacts and for complying with applicable laws (including consent and unsubscribe requirements for promotional messages).</p>
+    <h2>No warranty</h2>
+    <p>Replyr is provided “as is”. We do not guarantee uninterrupted service, accuracy of AI-generated text, or that replies/campaigns will be delivered.</p>
+    <h2>Billing (Stripe)</h2>
+    <p>If you subscribe, billing is handled by Stripe according to Stripe terms. Cancellation and refund policies (if any) are governed by Stripe’s policy and your plan.</p>
+    <h2>Limitation of liability</h2>
+    <p>To the maximum extent permitted by law, Replyr is not liable for indirect, incidental, or consequential damages arising from use of the service.</p>
+    <p style="margin-top:24px"><a href="/">← Back to Replyr</a> · <a href="/contact">Contact us</a></p>`;
+  res.send(darkShellHtml({
+    title: "Replyr – Terms of service",
+    bodyHtml: body,
+    description: "Replyr terms of service."
+  }));
 });
 
 // Admin page: list businesses, edit contact and auto-reply (requires ADMIN_SECRET via ?secret= or X-Admin-Secret)
