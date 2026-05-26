@@ -51,7 +51,10 @@ import * as sentry from "./sentry.js";
 import {
   getProPriceIds,
   subscriptionHasProPrice as proPriceMatches,
-  getProTierFromSubscription as proTierFromSub
+  getProTierFromSubscription as proTierFromSub,
+  getProTierFromCheckoutMetadata,
+  subscribedAtForSubscriptionStatus,
+  subscriptionStatusKeepsAccess
 } from "./stripePricing.js";
 import { verifyCancelToken } from "./replyDelay.js";
 import {
@@ -567,7 +570,7 @@ async function stripeWebhook(req, res) {
     if (business) {
       await upsertBusiness({
         ...business,
-        subscribedAt: subscribedAt || null,
+        subscribedAt: subscribedAt === undefined ? business.subscribedAt || null : subscribedAt || null,
         isPro: !!isPro,
         ...(isPro ? { proTier: proTier || business.proTier || "starter" } : {})
       });
@@ -579,8 +582,9 @@ async function stripeWebhook(req, res) {
       const session = event.data.object;
       const accountId = session.client_reference_id;
       const customerId = typeof session.customer === "string" ? session.customer : (session.customer?.id ?? null);
-      let isPro = false;
-      let proTier = "starter";
+      const metadataProTier = getProTierFromCheckoutMetadata(session.metadata);
+      let isPro = !!metadataProTier;
+      let proTier = metadataProTier || "starter";
       if (allProPriceIds.length && session.subscription) {
         try {
           const stripe = new Stripe(process.env.STRIPE_SECRET_KEY || "");
@@ -589,6 +593,9 @@ async function stripeWebhook(req, res) {
           proTier = getProTierFromSubscription(sub);
         } catch (e) {
           req.log?.warn({ err: e.message }, "Could not retrieve subscription for Pro check");
+          if (!metadataProTier) {
+            req.log?.warn({ accountId }, "Recording checkout without Pro metadata fallback");
+          }
         }
       }
       if (accountId) {
@@ -608,9 +615,11 @@ async function stripeWebhook(req, res) {
       const subscription = event.data.object;
       const customerId = typeof subscription.customer === "string" ? subscription.customer : subscription.customer?.id;
       const accountId = customerId ? await getAccountIdByStripeCustomerId(customerId) : null;
-      const isPro = subscriptionHasProPrice(subscription);
+      const keepsAccess = subscriptionStatusKeepsAccess(subscription.status);
+      const isPro = keepsAccess && subscriptionHasProPrice(subscription);
       const proTier = isPro ? getProTierFromSubscription(subscription) : "starter";
-      const subscribedAt = subscription.status === "active" ? new Date().toISOString() : null;
+      const business = accountId ? await getBusiness(accountId) : null;
+      const subscribedAt = subscribedAtForSubscriptionStatus(subscription.status, business?.subscribedAt);
       await applySubscriptionState(accountId, subscribedAt, isPro, proTier);
       if (accountId) req.log?.info({ accountId, isPro, proTier }, "Stripe: subscription updated");
     } else if (event.type === "customer.subscription.deleted") {
