@@ -24,6 +24,10 @@ function getTrialEndsAtForNewBusiness() {
   return d.toISOString();
 }
 
+function hasOwn(config, key) {
+  return Object.prototype.hasOwnProperty.call(config, key);
+}
+
 async function readBusinesses() {
   if (db.useDb()) {
     return await db.getAllBusinessesFromDb();
@@ -71,13 +75,13 @@ export async function upsertBusiness(config) {
       autoReplyEnabled: config.autoReplyEnabled ?? existing.autoReplyEnabled ?? false,
       intervalMinutes: config.intervalMinutes ?? existing.intervalMinutes ?? 30,
       freeReplyUsed: config.freeReplyUsed ?? existing.freeReplyUsed ?? false,
-      trialEndsAt: config.trialEndsAt ?? existing.trialEndsAt ?? (isNew ? getTrialEndsAtForNewBusiness() : null),
-      subscribedAt: config.subscribedAt ?? existing.subscribedAt ?? null,
-      stripeCustomerId: config.stripeCustomerId ?? existing.stripeCustomerId ?? null,
+      trialEndsAt: hasOwn(config, "trialEndsAt") ? config.trialEndsAt : existing.trialEndsAt ?? (isNew ? getTrialEndsAtForNewBusiness() : null),
+      subscribedAt: hasOwn(config, "subscribedAt") ? config.subscribedAt : existing.subscribedAt ?? null,
+      stripeCustomerId: hasOwn(config, "stripeCustomerId") ? config.stripeCustomerId : existing.stripeCustomerId ?? null,
       isPro: config.isPro ?? existing.isPro ?? false,
       proTier: config.proTier ?? existing.proTier ?? "starter",
       autoReplyMode: config.autoReplyMode ?? existing.autoReplyMode ?? "instant",
-      notificationEmail: config.notificationEmail ?? existing.notificationEmail ?? null
+      notificationEmail: hasOwn(config, "notificationEmail") ? config.notificationEmail : existing.notificationEmail ?? null
     };
     return await db.upsertBusinessInDb(merged);
   }
@@ -92,13 +96,13 @@ export async function upsertBusiness(config) {
     autoReplyEnabled: config.autoReplyEnabled ?? existing.autoReplyEnabled ?? false,
     intervalMinutes: config.intervalMinutes ?? existing.intervalMinutes ?? 30,
     freeReplyUsed: config.freeReplyUsed ?? existing.freeReplyUsed ?? false,
-    trialEndsAt: config.trialEndsAt ?? existing.trialEndsAt ?? (isNew ? getTrialEndsAtForNewBusiness() : null),
-    subscribedAt: config.subscribedAt ?? existing.subscribedAt ?? null,
-    stripeCustomerId: config.stripeCustomerId ?? existing.stripeCustomerId ?? null,
+    trialEndsAt: hasOwn(config, "trialEndsAt") ? config.trialEndsAt : existing.trialEndsAt ?? (isNew ? getTrialEndsAtForNewBusiness() : null),
+    subscribedAt: hasOwn(config, "subscribedAt") ? config.subscribedAt : existing.subscribedAt ?? null,
+    stripeCustomerId: hasOwn(config, "stripeCustomerId") ? config.stripeCustomerId : existing.stripeCustomerId ?? null,
     isPro: config.isPro ?? existing.isPro ?? false,
     proTier: config.proTier ?? existing.proTier ?? "starter",
     autoReplyMode: config.autoReplyMode ?? existing.autoReplyMode ?? "instant",
-    notificationEmail: config.notificationEmail ?? existing.notificationEmail ?? null,
+    notificationEmail: hasOwn(config, "notificationEmail") ? config.notificationEmail : existing.notificationEmail ?? null,
     updatedAt: new Date().toISOString()
   };
   await writeBusinesses(all);
