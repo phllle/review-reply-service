@@ -50,6 +50,13 @@ function getPool() {
   return pool;
 }
 
+export function __setPoolForTesting(nextPool) {
+  if (process.env.NODE_ENV !== "test") {
+    throw new Error("__setPoolForTesting is only available in tests");
+  }
+  pool = nextPool;
+}
+
 /** Create tables if they don't exist. Call once at startup when using DB. */
 async function initSchema() {
   const client = getPool();
@@ -465,41 +472,67 @@ export async function getProContactUnsubscribedEmails(accountId) {
 }
 
 export async function replaceProContacts(accountId, rows) {
-  const client = getPool();
-  const unsubscribedSet = await getProContactUnsubscribedEmails(accountId);
-  await client.query("DELETE FROM pro_contacts WHERE account_id = $1", [accountId]);
-  if (!rows.length) return;
-  // Rows with email: dedupe by email (last wins). Rows without email: keep all.
-  const withEmail = new Map();
-  const withoutEmail = [];
-  for (const r of rows) {
-    const emailRaw = (r.email || "").trim();
-    const email = emailRaw.toLowerCase() || null;
-    const row = {
-      email: emailRaw || null,
-      first_name: (r.first_name || r.firstName || "").trim() || null,
-      birthday: (r.birthday || r.birth_date || "").trim() || null,
-      phone: (r.phone || "").trim() || null
-    };
-    if (email) withEmail.set(email, row);
-    else withoutEmail.push(row);
-  }
-  const now = new Date().toISOString();
-  for (const r of withEmail.values()) {
-    const email = (r.email || "").trim().toLowerCase();
-    const unsub = unsubscribedSet.has(email);
-    await client.query(
-      `INSERT INTO pro_contacts (account_id, email, first_name, birthday, phone, unsubscribed_at, created_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-      [accountId, email, r.first_name, r.birthday, r.phone, unsub ? now : null, now]
+  const pool = getPool();
+  const client = await pool.connect();
+  let inTransaction = false;
+  try {
+    await client.query("BEGIN");
+    inTransaction = true;
+
+    const unsubscribedRes = await client.query(
+      "SELECT email FROM pro_contacts WHERE account_id = $1 AND email IS NOT NULL AND unsubscribed_at IS NOT NULL",
+      [accountId]
     );
-  }
-  for (const r of withoutEmail) {
-    await client.query(
-      `INSERT INTO pro_contacts (account_id, email, first_name, birthday, phone, unsubscribed_at, created_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-      [accountId, null, r.first_name, r.birthday, r.phone, null, now]
-    );
+    const unsubscribedSet = new Set(unsubscribedRes.rows.map((r) => (r.email || "").toLowerCase()));
+
+    await client.query("DELETE FROM pro_contacts WHERE account_id = $1", [accountId]);
+    if (rows.length) {
+      // Rows with email: dedupe by email (last wins). Rows without email: keep all.
+      const withEmail = new Map();
+      const withoutEmail = [];
+      for (const r of rows) {
+        const emailRaw = (r.email || "").trim();
+        const email = emailRaw.toLowerCase() || null;
+        const row = {
+          email: emailRaw || null,
+          first_name: (r.first_name || r.firstName || "").trim() || null,
+          birthday: (r.birthday || r.birth_date || "").trim() || null,
+          phone: (r.phone || "").trim() || null
+        };
+        if (email) withEmail.set(email, row);
+        else withoutEmail.push(row);
+      }
+      const now = new Date().toISOString();
+      for (const r of withEmail.values()) {
+        const email = (r.email || "").trim().toLowerCase();
+        const unsub = unsubscribedSet.has(email);
+        await client.query(
+          `INSERT INTO pro_contacts (account_id, email, first_name, birthday, phone, unsubscribed_at, created_at)
+           VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+          [accountId, email, r.first_name, r.birthday, r.phone, unsub ? now : null, now]
+        );
+      }
+      for (const r of withoutEmail) {
+        await client.query(
+          `INSERT INTO pro_contacts (account_id, email, first_name, birthday, phone, unsubscribed_at, created_at)
+           VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+          [accountId, null, r.first_name, r.birthday, r.phone, null, now]
+        );
+      }
+    }
+    await client.query("COMMIT");
+    inTransaction = false;
+  } catch (err) {
+    if (inTransaction) {
+      try {
+        await client.query("ROLLBACK");
+      } catch (rollbackErr) {
+        err.rollbackError = rollbackErr;
+      }
+    }
+    throw err;
+  } finally {
+    client.release();
   }
 }
 
