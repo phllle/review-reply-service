@@ -819,6 +819,64 @@ export async function getPendingRepliesDueToSend(now = new Date()) {
   return res.rows.map(rowToPendingReply);
 }
 
+/**
+ * Lock a pending reply row while posting it. This serializes sends with
+ * cancelPendingReply(), so a cancel request cannot report success while a
+ * scheduler tick is already posting the same public Google reply.
+ */
+export async function sendPendingReplyWithLock(id, sendReply) {
+  const client = await getPool().connect();
+  let shouldRollback = false;
+  try {
+    await client.query("BEGIN");
+    shouldRollback = true;
+
+    const res = await client.query(
+      `SELECT ${PENDING_REPLY_COLUMNS}
+       FROM pending_replies
+       WHERE id = $1
+       FOR UPDATE`,
+      [id]
+    );
+    const row = rowToPendingReply(res.rows[0]);
+    const sendAfterMs = row?.sendAfter ? new Date(row.sendAfter).getTime() : Number.POSITIVE_INFINITY;
+    if (!row || row.cancelledAt || row.sentAt || !Number.isFinite(sendAfterMs) || sendAfterMs > Date.now()) {
+      await client.query("COMMIT");
+      shouldRollback = false;
+      return null;
+    }
+
+    try {
+      await sendReply(row);
+    } catch (err) {
+      const msg = err?.message || String(err);
+      await client.query("UPDATE pending_replies SET send_error = $2 WHERE id = $1", [
+        id,
+        String(msg || "").slice(0, 1000)
+      ]);
+      await client.query("COMMIT");
+      shouldRollback = false;
+      throw err;
+    }
+
+    await client.query("UPDATE pending_replies SET sent_at = NOW(), send_error = NULL WHERE id = $1", [id]);
+    await client.query("COMMIT");
+    shouldRollback = false;
+    return row;
+  } catch (err) {
+    if (shouldRollback) {
+      try {
+        await client.query("ROLLBACK");
+      } catch {
+        /* ignore rollback failure; surface the original error */
+      }
+    }
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
 /** Mark a pending reply cancelled. Returns the updated row, or null if not found / already terminal. */
 export async function cancelPendingReply(accountId, locationId, reviewId) {
   const res = await getPool().query(
