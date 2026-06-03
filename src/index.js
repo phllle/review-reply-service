@@ -60,6 +60,10 @@ import {
   computeFunnel,
   formatCentsAsUsd
 } from "./metrics.js";
+import {
+  buildProEventCampaignUpsertData,
+  isSentProEventCampaign
+} from "./proEventCampaignUpdate.js";
 
 const app = express();
 app.set("trust proxy", 1);
@@ -2445,28 +2449,20 @@ app.patch("/pro/events/:key/:year", async (req, res, next) => {
   try {
     const accountId = (req.body?.accountId || req.query.accountId || "").trim();
     const { key, year } = req.params;
-    const { status, messageText, offerText, sendAtLocal, sendEmail, sendSms } = req.body || {};
     if (!guardBusinessAccess(req, res, accountId)) return;
     const business = await getBusiness(accountId);
     if (!business?.isPro) return res.status(403).json({ error: "Replyr Pro required" });
     if (!db.useDb()) return res.status(503).json({ error: "Database required for campaigns" });
     const eventYear = parseInt(year, 10);
-    const normalizedSendAtLocal =
-      typeof sendAtLocal === "string" && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(sendAtLocal.trim())
-        ? sendAtLocal.trim()
-        : null;
-    if (status === "confirmed" && !normalizedSendAtLocal) {
+    const existing = await db.getProEventCampaign(accountId, key, eventYear);
+    if (isSentProEventCampaign(existing)) {
+      return res.status(409).json({ error: "This event campaign has already been sent and cannot be changed." });
+    }
+    const upsertData = buildProEventCampaignUpsertData(existing, req.body || {});
+    if (upsertData.status === "confirmed" && !upsertData.sendAtLocal) {
       return res.status(400).json({ error: "sendAtLocal is required in YYYY-MM-DDTHH:mm format (Pacific Time)." });
     }
-    await db.upsertProEventCampaign(accountId, key, eventYear, {
-      status: status || "pending",
-      messageText,
-      offerText,
-      sendAtLocal: normalizedSendAtLocal,
-      sendEmail,
-      sendSms,
-      confirmedAt: status === "confirmed" ? new Date().toISOString() : null
-    });
+    await db.upsertProEventCampaign(accountId, key, eventYear, upsertData);
     const updated = await db.getProEventCampaign(accountId, key, eventYear);
     res.json(updated);
   } catch (err) {
