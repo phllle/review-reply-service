@@ -212,17 +212,33 @@ export async function processPendingReviews(accountId, locationId, options = {})
  * Process queued (delayed) replies whose send_after has passed and that
  * weren't cancelled. Posts to Google, marks the row sent, adds to auto-state.
  */
-export async function processQueuedReplies(logger = console) {
-  if (!db.useDb()) return { processed: 0 };
-  const due = await db.getPendingRepliesDueToSend();
+export async function processQueuedReplies(logger = console, deps = {}) {
+  const dbApi = deps.db || db;
+  const postReply = deps.replyToReview || replyToReview;
+  const addHandledReview = deps.addRepliedReviewId || addRepliedReviewId;
+
+  if (!dbApi.useDb()) return { processed: 0 };
+  const due = await dbApi.getPendingRepliesDueToSend();
   if (!due.length) return { processed: 0 };
   let processed = 0;
   let failed = 0;
   for (const row of due) {
     try {
-      await replyToReview(row.accountId, row.locationId, row.reviewId, row.generatedReply);
-      await db.markPendingReplySent(row.id);
-      await addRepliedReviewId(row.accountId, row.locationId, row.reviewId);
+      const sent = await dbApi.withPendingReplySendClaim(row.id, async (claimed) => {
+        await postReply(claimed.accountId, claimed.locationId, claimed.reviewId, claimed.generatedReply);
+      });
+      if (!sent) continue;
+      try {
+        await addHandledReview(sent.accountId, sent.locationId, sent.reviewId);
+      } catch (stateErr) {
+        logger.error?.({ err: stateErr, id: sent.id, accountId: sent.accountId }, "Queued reply state update failed");
+        sentry.captureException(stateErr, {
+          kind: "queued-reply-state",
+          pendingId: sent.id,
+          accountId: sent.accountId,
+          reviewId: sent.reviewId
+        });
+      }
       processed += 1;
     } catch (err) {
       failed += 1;
@@ -235,7 +251,7 @@ export async function processQueuedReplies(logger = console) {
         reviewId: row.reviewId
       });
       try {
-        await db.markPendingReplyError(row.id, msg);
+        await dbApi.markPendingReplyError(row.id, msg);
       } catch {
         /* swallow — we'll see it via Sentry */
       }
