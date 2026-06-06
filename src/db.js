@@ -758,6 +758,8 @@ export async function decrementProSmsUsage(accountId, monthKey, amount = 1) {
 
 const PENDING_REPLY_COLUMNS =
   "id, account_id, location_id, review_id, rating, reviewer_name, review_comment, generated_reply, send_after, cancelled_at, sent_at, processing_at, send_error, created_at";
+const PENDING_REPLY_RETURNING_COLUMNS =
+  "p.id, p.account_id, p.location_id, p.review_id, p.rating, p.reviewer_name, p.review_comment, p.generated_reply, p.send_after, p.cancelled_at, p.sent_at, p.processing_at, p.send_error, p.created_at";
 
 function rowToPendingReply(row) {
   if (!row) return null;
@@ -843,7 +845,7 @@ export async function claimPendingRepliesDueToSend(now = new Date(), limit = 200
             send_error = NULL
        FROM due
       WHERE p.id = due.id
-      RETURNING ${PENDING_REPLY_COLUMNS}`,
+      RETURNING ${PENDING_REPLY_RETURNING_COLUMNS}`,
     [now, limit]
   );
   return res.rows.map(rowToPendingReply);
