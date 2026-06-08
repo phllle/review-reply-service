@@ -11,6 +11,7 @@ import {
   DEFAULT_DELAY_MAX_STAR,
   DEFAULT_DELAY_MINUTES
 } from "../src/replyDelay.js";
+import { processQueuedReplies } from "../src/auto.js";
 
 const SECRET = "test-cancel-secret-aaaaa";
 
@@ -141,4 +142,79 @@ test("createCancelToken: throws when secret is missing", () => {
 test("verifyCancelToken: returns null when secret is missing", () => {
   const tok = createCancelToken("acct-1", "loc-1", "rev-abc", SECRET);
   assert.equal(verifyCancelToken(tok, ""), null);
+});
+
+test("processQueuedReplies: skips posting when atomic claim loses to cancellation", async () => {
+  let posted = false;
+  let markedSent = false;
+  const result = await processQueuedReplies(
+    { error: () => assert.fail("logger.error should not be called") },
+    {
+      db: {
+        useDb: () => true,
+        getPendingRepliesDueToSend: async () => [
+          {
+            id: 123,
+            accountId: "acct-1",
+            locationId: "loc-1",
+            reviewId: "rev-1",
+            generatedReply: "Thanks"
+          }
+        ],
+        claimPendingReplyDueToSend: async () => null,
+        markPendingReplySent: async () => {
+          markedSent = true;
+        }
+      },
+      replyToReview: async () => {
+        posted = true;
+      },
+      addRepliedReviewId: async () => assert.fail("review state should not be updated"),
+      sentry: { captureException: () => assert.fail("sentry should not be called") }
+    }
+  );
+
+  assert.deepEqual(result, { processed: 0, failed: 0 });
+  assert.equal(posted, false);
+  assert.equal(markedSent, false);
+});
+
+test("processQueuedReplies: posts only the row returned by the atomic claim", async () => {
+  const calls = [];
+  const result = await processQueuedReplies(
+    { error: () => assert.fail("logger.error should not be called") },
+    {
+      db: {
+        useDb: () => true,
+        getPendingRepliesDueToSend: async () => [
+          {
+            id: 123,
+            accountId: "acct-selected",
+            locationId: "loc-selected",
+            reviewId: "rev-selected",
+            generatedReply: "stale"
+          }
+        ],
+        claimPendingReplyDueToSend: async (id) => ({
+          id,
+          accountId: "acct-claimed",
+          locationId: "loc-claimed",
+          reviewId: "rev-claimed",
+          generatedReply: "claimed reply"
+        }),
+        markPendingReplySent: async (id) => calls.push(["sent", id]),
+        markPendingReplyError: async () => assert.fail("markPendingReplyError should not be called")
+      },
+      replyToReview: async (...args) => calls.push(["post", ...args]),
+      addRepliedReviewId: async (...args) => calls.push(["handled", ...args]),
+      sentry: { captureException: () => assert.fail("sentry should not be called") }
+    }
+  );
+
+  assert.deepEqual(result, { processed: 1, failed: 0 });
+  assert.deepEqual(calls, [
+    ["post", "acct-claimed", "loc-claimed", "rev-claimed", "claimed reply"],
+    ["sent", 123],
+    ["handled", "acct-claimed", "loc-claimed", "rev-claimed"]
+  ]);
 });
