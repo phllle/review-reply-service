@@ -129,6 +129,7 @@ async function initSchema() {
       send_after TIMESTAMPTZ NOT NULL,
       cancelled_at TIMESTAMPTZ,
       sent_at TIMESTAMPTZ,
+      processing_at TIMESTAMPTZ,
       send_error TEXT,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
@@ -137,6 +138,16 @@ async function initSchema() {
     CREATE INDEX IF NOT EXISTS idx_pending_replies_due
       ON pending_replies(send_after)
       WHERE cancelled_at IS NULL AND sent_at IS NULL;
+  `);
+  try {
+    await client.query("ALTER TABLE pending_replies ADD COLUMN processing_at TIMESTAMPTZ");
+  } catch (err) {
+    if (err.code !== "42701") throw err;
+  }
+  await client.query(`
+    CREATE INDEX IF NOT EXISTS idx_pending_replies_due_claim
+      ON pending_replies(send_after)
+      WHERE cancelled_at IS NULL AND sent_at IS NULL AND processing_at IS NULL;
   `);
   // Replyr Pro: contacts per business (all CSV rows; email optional for storage, required for sending)
   await client.query(`
@@ -453,6 +464,13 @@ export function useDb() {
   return Boolean(process.env.DATABASE_URL);
 }
 
+export function __setPoolForTest(testPool) {
+  if (process.env.NODE_ENV !== "test") {
+    throw new Error("__setPoolForTest is only available when NODE_ENV=test");
+  }
+  pool = testPool;
+}
+
 // --- Pro contacts (Replyr Pro: CSV upload, per-account) ---
 
 /** Get set of emails that have unsubscribed for this account (so we preserve opt-out on replace). */
@@ -751,7 +769,7 @@ export async function decrementProSmsUsage(accountId, monthKey, amount = 1) {
 // --- Pending replies (auto-reply preview/delay mode) ---
 
 const PENDING_REPLY_COLUMNS =
-  "id, account_id, location_id, review_id, rating, reviewer_name, review_comment, generated_reply, send_after, cancelled_at, sent_at, send_error, created_at";
+  "id, account_id, location_id, review_id, rating, reviewer_name, review_comment, generated_reply, send_after, cancelled_at, sent_at, processing_at, send_error, created_at";
 
 function rowToPendingReply(row) {
   if (!row) return null;
@@ -767,6 +785,7 @@ function rowToPendingReply(row) {
     sendAfter: row.send_after ? new Date(row.send_after).toISOString() : null,
     cancelledAt: row.cancelled_at ? new Date(row.cancelled_at).toISOString() : null,
     sentAt: row.sent_at ? new Date(row.sent_at).toISOString() : null,
+    processingAt: row.processing_at ? new Date(row.processing_at).toISOString() : null,
     sendError: row.send_error,
     createdAt: row.created_at ? new Date(row.created_at).toISOString() : null
   };
@@ -811,10 +830,42 @@ export async function hasOpenPendingReply(accountId, locationId, reviewId) {
 export async function getPendingRepliesDueToSend(now = new Date()) {
   const res = await getPool().query(
     `SELECT ${PENDING_REPLY_COLUMNS} FROM pending_replies
-     WHERE cancelled_at IS NULL AND sent_at IS NULL AND send_after <= $1
+     WHERE cancelled_at IS NULL AND sent_at IS NULL AND processing_at IS NULL AND send_after <= $1
      ORDER BY send_after ASC
      LIMIT 200`,
     [now]
+  );
+  return res.rows.map(rowToPendingReply);
+}
+
+/**
+ * Atomically claim due replies before posting to Google. This synchronizes the
+ * scheduler with user cancellation and prevents multiple app instances from
+ * sending the same queued reply.
+ */
+export async function claimPendingRepliesDueToSend(now = new Date(), limit = 200) {
+  const safeLimit = Math.min(Math.max(Number(limit) || 200, 1), 1000);
+  const res = await getPool().query(
+    `WITH due AS (
+       SELECT id FROM pending_replies
+       WHERE cancelled_at IS NULL
+         AND sent_at IS NULL
+         AND send_after <= $1
+         AND (
+           processing_at IS NULL
+           OR processing_at < NOW() - INTERVAL '30 minutes'
+         )
+       ORDER BY send_after ASC
+       FOR UPDATE SKIP LOCKED
+       LIMIT $2
+     )
+     UPDATE pending_replies AS p
+        SET processing_at = NOW(),
+            send_error = NULL
+       FROM due
+      WHERE p.id = due.id
+      RETURNING ${PENDING_REPLY_COLUMNS}`,
+    [now, safeLimit]
   );
   return res.rows.map(rowToPendingReply);
 }
@@ -823,9 +874,15 @@ export async function getPendingRepliesDueToSend(now = new Date()) {
 export async function cancelPendingReply(accountId, locationId, reviewId) {
   const res = await getPool().query(
     `UPDATE pending_replies
-       SET cancelled_at = NOW()
+       SET cancelled_at = NOW(),
+           processing_at = NULL
      WHERE account_id = $1 AND location_id = $2 AND review_id = $3
-       AND cancelled_at IS NULL AND sent_at IS NULL
+       AND cancelled_at IS NULL
+       AND sent_at IS NULL
+       AND (
+         processing_at IS NULL
+         OR processing_at < NOW() - INTERVAL '30 minutes'
+       )
      RETURNING ${PENDING_REPLY_COLUMNS}`,
     [accountId, locationId, reviewId]
   );
@@ -833,15 +890,23 @@ export async function cancelPendingReply(accountId, locationId, reviewId) {
 }
 
 export async function markPendingReplySent(id) {
-  await getPool().query(
-    "UPDATE pending_replies SET sent_at = NOW(), send_error = NULL WHERE id = $1",
+  const res = await getPool().query(
+    `UPDATE pending_replies
+        SET sent_at = NOW(),
+            processing_at = NULL,
+            send_error = NULL
+      WHERE id = $1 AND cancelled_at IS NULL AND sent_at IS NULL`,
     [id]
   );
+  return res.rowCount > 0;
 }
 
 export async function markPendingReplyError(id, errorMessage) {
   await getPool().query(
-    "UPDATE pending_replies SET send_error = $2 WHERE id = $1",
+    `UPDATE pending_replies
+        SET send_error = $2,
+            processing_at = NULL
+      WHERE id = $1 AND cancelled_at IS NULL AND sent_at IS NULL`,
     [id, String(errorMessage || "").slice(0, 1000)]
   );
 }
