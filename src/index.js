@@ -304,7 +304,7 @@ app.post("/auto-reply/cancel", express.urlencoded({ extended: false }), async (r
         .send(
           renderCancelPage({
             ok: false,
-            message: "This reply was already sent or cancelled. Nothing to do."
+            message: "This reply was already sent, cancelled, or is being sent now. Nothing to do."
           })
         );
     }
