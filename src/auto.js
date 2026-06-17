@@ -214,14 +214,18 @@ export async function processPendingReviews(accountId, locationId, options = {})
  */
 export async function processQueuedReplies(logger = console) {
   if (!db.useDb()) return { processed: 0 };
-  const due = await db.getPendingRepliesDueToSend();
+  const due = await db.claimPendingRepliesDueToSend();
   if (!due.length) return { processed: 0 };
   let processed = 0;
   let failed = 0;
   for (const row of due) {
     try {
       await replyToReview(row.accountId, row.locationId, row.reviewId, row.generatedReply);
-      await db.markPendingReplySent(row.id);
+      const markedSent = await db.markPendingReplySent(row.id);
+      if (!markedSent) {
+        logger.warn?.({ id: row.id, accountId: row.accountId }, "Queued reply posted but row was already terminal");
+        continue;
+      }
       await addRepliedReviewId(row.accountId, row.locationId, row.reviewId);
       processed += 1;
     } catch (err) {
