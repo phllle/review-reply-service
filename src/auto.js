@@ -86,6 +86,16 @@ export async function getReplyText(review, options = {}) {
   });
 }
 
+export function getProcessPendingReviewOptions(business, logger = console) {
+  return {
+    contact: business?.contact,
+    businessName: business?.name || "our business",
+    logger,
+    autoReplyMode: business?.autoReplyMode || "instant",
+    ownerEmail: business?.notificationEmail || null
+  };
+}
+
 export async function processPendingReviews(accountId, locationId, options = {}) {
   const {
     contact: contactOverride,
@@ -279,13 +289,7 @@ export function startScheduler(appLogger = console) {
       return;
     }
     for (const biz of businesses) {
-      processPendingReviews(biz.accountId, biz.locationId, {
-        contact: biz.contact,
-        businessName: biz.name || "our business",
-        logger: appLogger,
-        autoReplyMode: biz.autoReplyMode || "instant",
-        ownerEmail: biz.notificationEmail || null
-      })
+      processPendingReviews(biz.accountId, biz.locationId, getProcessPendingReviewOptions(biz, appLogger))
         .then(async (result) => {
           if (result.failed > 0) {
             const { sendFailureAlert } = await import("./alert.js");

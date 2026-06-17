@@ -22,7 +22,7 @@ import {
   signChooseLocationToken,
   verifyChooseLocationToken
 } from "./sessionAuth.js";
-import { processPendingReviews, startScheduler, getReplyText, addRepliedReviewId } from "./auto.js";
+import { processPendingReviews, startScheduler, getReplyText, addRepliedReviewId, getProcessPendingReviewOptions } from "./auto.js";
 import {
   getAllBusinesses,
   getBusiness,
@@ -4102,11 +4102,7 @@ app.post("/auto/process", async (req, res, next) => {
       return res.status(403).json({ error: "Forbidden" });
     }
     const business = await getBusiness(a);
-    const result = await processPendingReviews(a, l, {
-      contact: business?.contact,
-      businessName: business?.name || "our business",
-      logger: req.log
-    });
+    const result = await processPendingReviews(a, l, getProcessPendingReviewOptions(business, req.log));
     res.json({ ok: true, result });
   } catch (err) {
     req.log.error(err, "Auto process failed");
