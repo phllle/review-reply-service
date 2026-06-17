@@ -778,7 +778,10 @@ app.get("/dashboard", authRouteLimiter, async (req, res, next) => {
 app.get("/connected", async (req, res, next) => {
   try {
     const nameFromQuery = (req.query.name && String(req.query.name).trim()) || "";
-    let accountId = (req.query.accountId && String(req.query.accountId).trim()) || null;
+    let accountId =
+      (req.query.accountId && String(req.query.accountId).trim()) ||
+      readSessionAccountId(req) ||
+      null;
     if (accountId && !canAccessAccount(req, accountId)) {
       const returnTo = encodeURIComponent(req.originalUrl || "/connected");
       return res.redirect(`/auth/google?return_to=${returnTo}`);
@@ -2136,6 +2139,9 @@ app.post("/free-reply", freeReplyLimiter, async (req, res, next) => {
       businessName: business.name || "our business"
     });
     await replyToReview(accountId, locationId, reviewId, comment);
+    if (db.useDb()) {
+      await db.markOpenPendingReplySent(accountId, locationId, reviewId);
+    }
     await addRepliedReviewId(accountId, locationId, reviewId);
     await upsertBusiness({ ...business, freeReplyUsed: true });
     return res.json({ ok: true, message: "We replied to your latest review. Check your Google listing." });
@@ -4041,6 +4047,9 @@ app.post("/google/reviews/:accountId/:locationId/:reviewId/reply", async (req, r
       return res.status(400).json({ error: "comment is required" });
     }
     const result = await replyToReview(accountId, locationId, reviewId, comment.trim());
+    if (db.useDb()) {
+      await db.markOpenPendingReplySent(accountId, locationId, reviewId);
+    }
     res.json({ ok: true, result });
   } catch (err) {
     req.log.error(err, "Failed to reply to review");
@@ -4105,7 +4114,9 @@ app.post("/auto/process", async (req, res, next) => {
     const result = await processPendingReviews(a, l, {
       contact: business?.contact,
       businessName: business?.name || "our business",
-      logger: req.log
+      logger: req.log,
+      autoReplyMode: business?.autoReplyMode || "instant",
+      ownerEmail: business?.notificationEmail || null
     });
     res.json({ ok: true, result });
   } catch (err) {

@@ -73,6 +73,22 @@ function mapStarRatingToNumber(starRating) {
   return mapping[starRating] || null;
 }
 
+function reviewMatchesId(review, reviewId) {
+  if (!review || !reviewId) return false;
+  return (
+    review.reviewId === reviewId ||
+    review.name === reviewId ||
+    (typeof review.name === "string" && review.name.split("/").pop() === reviewId)
+  );
+}
+
+async function reviewAlreadyHasReply(accountId, locationId, reviewId, listReviewsFn = listReviews) {
+  const reviews = await listReviewsFn(accountId, locationId);
+  return reviews.some(
+    (review) => reviewMatchesId(review, reviewId) && Boolean(review.reviewReply?.comment)
+  );
+}
+
 /** Build reply using Claude only. Requires ANTHROPIC_API_KEY. */
 export async function getReplyText(review, options = {}) {
   const { contact: contactOverride, businessName } = options;
@@ -193,6 +209,9 @@ export async function processPendingReviews(accountId, locationId, options = {})
       }
 
       await replyToReview(accountId, locationId, reviewId, comment);
+      if (db.useDb()) {
+        await db.markOpenPendingReplySent(accountId, locationId, reviewId);
+      }
       alreadyReplied.add(reviewId);
       results.succeeded += 1;
       results.details.push({ reviewId, rating, status: "ok" });
@@ -212,17 +231,27 @@ export async function processPendingReviews(accountId, locationId, options = {})
  * Process queued (delayed) replies whose send_after has passed and that
  * weren't cancelled. Posts to Google, marks the row sent, adds to auto-state.
  */
-export async function processQueuedReplies(logger = console) {
-  if (!db.useDb()) return { processed: 0 };
-  const due = await db.getPendingRepliesDueToSend();
+export async function processQueuedReplies(logger = console, deps = {}) {
+  const store = deps.db || db;
+  const listReviewsFn = deps.listReviews || listReviews;
+  const replyToReviewFn = deps.replyToReview || replyToReview;
+  const addRepliedReviewIdFn = deps.addRepliedReviewId || addRepliedReviewId;
+  if (!store.useDb()) return { processed: 0 };
+  const due = await store.claimPendingRepliesDueToSend();
   if (!due.length) return { processed: 0 };
   let processed = 0;
   let failed = 0;
+  let skipped = 0;
   for (const row of due) {
     try {
-      await replyToReview(row.accountId, row.locationId, row.reviewId, row.generatedReply);
-      await db.markPendingReplySent(row.id);
-      await addRepliedReviewId(row.accountId, row.locationId, row.reviewId);
+      if (await reviewAlreadyHasReply(row.accountId, row.locationId, row.reviewId, listReviewsFn)) {
+        await store.markPendingReplySkipped(row.id, "Skipped: Google review already has a reply");
+        skipped += 1;
+        continue;
+      }
+      await replyToReviewFn(row.accountId, row.locationId, row.reviewId, row.generatedReply);
+      await store.markPendingReplySent(row.id);
+      await addRepliedReviewIdFn(row.accountId, row.locationId, row.reviewId);
       processed += 1;
     } catch (err) {
       failed += 1;
@@ -235,13 +264,13 @@ export async function processQueuedReplies(logger = console) {
         reviewId: row.reviewId
       });
       try {
-        await db.markPendingReplyError(row.id, msg);
+        await store.markPendingReplyError(row.id, msg);
       } catch {
         /* swallow — we'll see it via Sentry */
       }
     }
   }
-  return { processed, failed };
+  return { processed, failed, skipped };
 }
 
 export function startScheduler(appLogger = console) {
