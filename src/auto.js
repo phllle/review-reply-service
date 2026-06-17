@@ -212,30 +212,39 @@ export async function processPendingReviews(accountId, locationId, options = {})
  * Process queued (delayed) replies whose send_after has passed and that
  * weren't cancelled. Posts to Google, marks the row sent, adds to auto-state.
  */
-export async function processQueuedReplies(logger = console) {
-  if (!db.useDb()) return { processed: 0 };
-  const due = await db.getPendingRepliesDueToSend();
+export async function processQueuedReplies(logger = console, dependencies = {}) {
+  const store = dependencies.db || db;
+  const postReply = dependencies.replyToReview || replyToReview;
+  const markHandled = dependencies.addRepliedReviewId || addRepliedReviewId;
+  const errorReporter = dependencies.sentry || sentry;
+
+  if (!store.useDb()) return { processed: 0 };
+  const due = await store.getPendingRepliesDueToSend();
   if (!due.length) return { processed: 0 };
   let processed = 0;
   let failed = 0;
   for (const row of due) {
+    const claimed = await store.claimPendingReplyDueToSend(row.id);
+    if (!claimed) {
+      continue;
+    }
     try {
-      await replyToReview(row.accountId, row.locationId, row.reviewId, row.generatedReply);
-      await db.markPendingReplySent(row.id);
-      await addRepliedReviewId(row.accountId, row.locationId, row.reviewId);
+      await postReply(claimed.accountId, claimed.locationId, claimed.reviewId, claimed.generatedReply);
+      await store.markPendingReplySent(claimed.id);
+      await markHandled(claimed.accountId, claimed.locationId, claimed.reviewId);
       processed += 1;
     } catch (err) {
       failed += 1;
       const msg = err?.message || String(err);
-      logger.error?.({ err, id: row.id, accountId: row.accountId }, "Queued reply post failed");
-      sentry.captureException(err, {
+      logger.error?.({ err, id: claimed.id, accountId: claimed.accountId }, "Queued reply post failed");
+      errorReporter.captureException(err, {
         kind: "queued-reply-post",
-        pendingId: row.id,
-        accountId: row.accountId,
-        reviewId: row.reviewId
+        pendingId: claimed.id,
+        accountId: claimed.accountId,
+        reviewId: claimed.reviewId
       });
       try {
-        await db.markPendingReplyError(row.id, msg);
+        await store.markPendingReplyError(claimed.id, msg);
       } catch {
         /* swallow — we'll see it via Sentry */
       }
