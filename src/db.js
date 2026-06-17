@@ -819,6 +819,50 @@ export async function getPendingRepliesDueToSend(now = new Date()) {
   return res.rows.map(rowToPendingReply);
 }
 
+/**
+ * Lock a pending reply while the caller posts it, then mark it sent in the same
+ * transaction. Returns null when cancellation or another worker got there first.
+ */
+export async function withPendingReplySendClaim(id, sendReply) {
+  const client = await getPool().connect();
+  try {
+    await client.query("BEGIN");
+    const claim = await client.query(
+      `SELECT ${PENDING_REPLY_COLUMNS}
+       FROM pending_replies
+       WHERE id = $1 AND cancelled_at IS NULL AND sent_at IS NULL
+       FOR UPDATE SKIP LOCKED`,
+      [id]
+    );
+    const row = rowToPendingReply(claim.rows[0]);
+    if (!row) {
+      await client.query("ROLLBACK");
+      return null;
+    }
+
+    await sendReply(row);
+
+    const sent = await client.query(
+      `UPDATE pending_replies
+         SET sent_at = NOW(), send_error = NULL
+       WHERE id = $1
+       RETURNING ${PENDING_REPLY_COLUMNS}`,
+      [id]
+    );
+    await client.query("COMMIT");
+    return rowToPendingReply(sent.rows[0]);
+  } catch (err) {
+    try {
+      await client.query("ROLLBACK");
+    } catch {
+      /* ignore rollback failure; original error is more useful */
+    }
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
 /** Mark a pending reply cancelled. Returns the updated row, or null if not found / already terminal. */
 export async function cancelPendingReply(accountId, locationId, reviewId) {
   const res = await getPool().query(
