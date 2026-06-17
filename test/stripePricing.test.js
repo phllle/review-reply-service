@@ -3,7 +3,10 @@ import assert from "node:assert/strict";
 import {
   getProPriceIds,
   subscriptionHasProPrice,
-  getProTierFromSubscription
+  getProTierFromSubscription,
+  getProTierFromCheckoutMetadata,
+  subscribedAtForSubscriptionStatus,
+  subscriptionStatusKeepsAccess
 } from "../src/stripePricing.js";
 
 const env = {
@@ -71,4 +74,29 @@ test("getProTierFromSubscription: unknown subscription falls back to starter", (
 test("getProTierFromSubscription: handles items.data with bare price string", () => {
   const subBare = { items: { data: [{ price: "price_growth" }] } };
   assert.equal(getProTierFromSubscription(subBare, priceIds), "growth");
+});
+
+test("subscriptionStatusKeepsAccess: keeps access during active/trialing/dunning only", () => {
+  assert.equal(subscriptionStatusKeepsAccess("active"), true);
+  assert.equal(subscriptionStatusKeepsAccess("trialing"), true);
+  assert.equal(subscriptionStatusKeepsAccess("past_due"), true);
+  assert.equal(subscriptionStatusKeepsAccess("canceled"), false);
+  assert.equal(subscriptionStatusKeepsAccess("incomplete_expired"), false);
+  assert.equal(subscriptionStatusKeepsAccess("unpaid"), false);
+});
+
+test("subscribedAtForSubscriptionStatus: preserves existing timestamp while access remains", () => {
+  const existing = "2026-05-01T00:00:00.000Z";
+  const now = new Date("2026-05-26T12:00:00.000Z");
+  assert.equal(subscribedAtForSubscriptionStatus("past_due", existing, now), existing);
+  assert.equal(subscribedAtForSubscriptionStatus("active", "", now), "2026-05-26T12:00:00.000Z");
+  assert.equal(subscribedAtForSubscriptionStatus("canceled", existing, now), null);
+});
+
+test("getProTierFromCheckoutMetadata: accepts app checkout Pro metadata", () => {
+  assert.equal(getProTierFromCheckoutMetadata({ pro_tier: "growth" }), "growth");
+  assert.equal(getProTierFromCheckoutMetadata({ proTier: "scale" }), "scale");
+  assert.equal(getProTierFromCheckoutMetadata({ pro_tier: "pro" }), "starter");
+  assert.equal(getProTierFromCheckoutMetadata({ pro_tier: "unknown" }), null);
+  assert.equal(getProTierFromCheckoutMetadata(null), null);
 });

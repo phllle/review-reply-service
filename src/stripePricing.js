@@ -46,3 +46,33 @@ export function getProTierFromSubscription(subscription, priceIds) {
   if (priceIds.legacyPro && ids.includes(priceIds.legacyPro)) return "starter";
   return "starter";
 }
+
+const ACCESS_STATUSES = new Set(["active", "trialing", "past_due"]);
+
+/**
+ * Stripe can mark a subscription `past_due` during its retry/dunning window.
+ * The customer still has an active subscription object, so keep app access
+ * until Stripe emits a terminal state or the deleted event.
+ */
+export function subscriptionStatusKeepsAccess(status) {
+  return ACCESS_STATUSES.has(String(status || "").trim().toLowerCase());
+}
+
+export function subscribedAtForSubscriptionStatus(status, currentSubscribedAt, now = new Date()) {
+  if (!subscriptionStatusKeepsAccess(status)) return null;
+  return currentSubscribedAt || now.toISOString();
+}
+
+/**
+ * Checkout sessions created by this app include metadata.pro_tier for Pro.
+ * Use it as a safe fallback if Stripe subscription expansion is transiently
+ * unavailable during checkout.session.completed.
+ *
+ * @returns {"starter"|"growth"|"scale"|null}
+ */
+export function getProTierFromCheckoutMetadata(metadata) {
+  const raw = String(metadata?.pro_tier || metadata?.proTier || "").trim().toLowerCase();
+  if (raw === "pro") return "starter";
+  if (raw === "starter" || raw === "growth" || raw === "scale") return raw;
+  return null;
+}
