@@ -212,17 +212,20 @@ export async function processPendingReviews(accountId, locationId, options = {})
  * Process queued (delayed) replies whose send_after has passed and that
  * weren't cancelled. Posts to Google, marks the row sent, adds to auto-state.
  */
-export async function processQueuedReplies(logger = console) {
-  if (!db.useDb()) return { processed: 0 };
-  const due = await db.getPendingRepliesDueToSend();
+export async function processQueuedReplies(logger = console, deps = {}) {
+  const store = deps.db || db;
+  const postReply = deps.replyToReview || replyToReview;
+  const recordRepliedReview = deps.addRepliedReviewId || addRepliedReviewId;
+  if (!store.useDb()) return { processed: 0 };
+  const due = await store.claimPendingRepliesDueToSend();
   if (!due.length) return { processed: 0 };
   let processed = 0;
   let failed = 0;
   for (const row of due) {
     try {
-      await replyToReview(row.accountId, row.locationId, row.reviewId, row.generatedReply);
-      await db.markPendingReplySent(row.id);
-      await addRepliedReviewId(row.accountId, row.locationId, row.reviewId);
+      await postReply(row.accountId, row.locationId, row.reviewId, row.generatedReply);
+      await store.markPendingReplySent(row.id);
+      await recordRepliedReview(row.accountId, row.locationId, row.reviewId);
       processed += 1;
     } catch (err) {
       failed += 1;
@@ -235,7 +238,7 @@ export async function processQueuedReplies(logger = console) {
         reviewId: row.reviewId
       });
       try {
-        await db.markPendingReplyError(row.id, msg);
+        await store.markPendingReplyError(row.id, msg);
       } catch {
         /* swallow — we'll see it via Sentry */
       }
