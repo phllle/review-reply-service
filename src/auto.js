@@ -220,9 +220,11 @@ export async function processQueuedReplies(logger = console) {
   let failed = 0;
   for (const row of due) {
     try {
-      await replyToReview(row.accountId, row.locationId, row.reviewId, row.generatedReply);
-      await db.markPendingReplySent(row.id);
-      await addRepliedReviewId(row.accountId, row.locationId, row.reviewId);
+      const claimed = await db.claimPendingReplyForSend(row.id);
+      if (!claimed) continue;
+      await replyToReview(claimed.accountId, claimed.locationId, claimed.reviewId, claimed.generatedReply);
+      await db.markPendingReplySent(claimed.id);
+      await addRepliedReviewId(claimed.accountId, claimed.locationId, claimed.reviewId);
       processed += 1;
     } catch (err) {
       failed += 1;
