@@ -41,7 +41,7 @@ Write a single, short reply to this review. Output only the reply text, nothing 
 
   const Anthropic = (await import("@anthropic-ai/sdk")).default;
   const client = new Anthropic({ apiKey });
-  const model = process.env.ANTHROPIC_MODEL?.trim() || "claude-sonnet-4-5";
+  const model = process.env.ANTHROPIC_MODEL?.trim() || "claude-sonnet-4-6";
 
   const message = await client.messages.create({
     model,
@@ -84,7 +84,7 @@ export async function generateCampaignMessageWithClaude(opts = {}) {
   const { type = "birthday", businessName = "our business", eventName, offerText, businessPrompt } = opts;
   const Anthropic = (await import("@anthropic-ai/sdk")).default;
   const client = new Anthropic({ apiKey });
-  const model = process.env.ANTHROPIC_MODEL?.trim() || "claude-sonnet-4-5";
+  const model = process.env.ANTHROPIC_MODEL?.trim() || "claude-sonnet-4-6";
 
   const systemPrompt = `You write short, friendly marketing SMS messages for a small business. Rules:
 - Output plain text only. No markdown, bullets, or hashtags.
@@ -125,7 +125,7 @@ export async function generateOneOffWithClaude(opts = {}) {
   const { prompt = "", businessName = "our business" } = opts;
   const Anthropic = (await import("@anthropic-ai/sdk")).default;
   const client = new Anthropic({ apiKey });
-  const model = process.env.ANTHROPIC_MODEL?.trim() || "claude-sonnet-4-5";
+  const model = process.env.ANTHROPIC_MODEL?.trim() || "claude-sonnet-4-6";
 
   const systemPrompt = `You write short marketing emails for a small business. Rules:
 - Output plain text only. No markdown, bullets, or hashtags.
