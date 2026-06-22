@@ -250,7 +250,7 @@ export async function sendBirthdayCampaignsForAccount(accountId, logger = consol
       }
       if (sendSms && c.phone && isSmsConfigured()) {
         const footer = " Reply STOP to opt out.";
-        const fullSmsBody = toSmsFriendly(formatBodyForSms(body), 200) + footer;
+        const fullSmsBody = toSmsFriendly(formatBodyForSms(body), 160) + footer;
         try {
           const ok = await sendProCampaignSms(accountId, c.phone, fullSmsBody, logger);
           if (ok) {
@@ -298,7 +298,7 @@ export async function sendEventCampaignForAccount(accountId, eventKey, eventYear
         sent++;
       }
       if (sendSms && c.phone && isSmsConfigured()) {
-        const smsBody = toSmsFriendly(formatBodyForSms(personalized), 200) + footer;
+        const smsBody = toSmsFriendly(formatBodyForSms(personalized), 160) + footer;
         try {
           const ok = await sendProCampaignSms(accountId, c.phone, smsBody, logger);
           if (ok) {
@@ -372,7 +372,7 @@ export async function sendProEventCampaignTest(accountId, eventKey, eventYear, o
         );
       }
     } else {
-      const smsBody = toSmsFriendly("(TEST)\n\n" + formatBodyForSms(personalized), 200) + footer;
+      const smsBody = toSmsFriendly("(TEST)\n\n" + formatBodyForSms(personalized), 160) + footer;
       try {
         await sendCampaignSms(phoneTo, smsBody, { bypassCampaignSmsEnabled: true });
         smsSent = true;
@@ -410,7 +410,7 @@ export async function sendOneOffCampaign(id, accountId, subject, body, logger = 
         sent++;
       }
       if (sendSms && c.phone && isSmsConfigured()) {
-        const smsBody = toSmsFriendly(formatBodyForSms(personalized), 200) + footer;
+        const smsBody = toSmsFriendly(formatBodyForSms(personalized), 160) + footer;
         try {
           const ok = await sendProCampaignSms(accountId, c.phone, smsBody, logger);
           if (ok) {

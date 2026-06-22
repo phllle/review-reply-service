@@ -2782,7 +2782,7 @@ app.get("/pro", async (req, res, next) => {
         <span class="toggle-label">Send SMS (when contact has phone)</span>
       </div>
     </div>
-    <p class="field-hint" style="margin-top:0.35rem;margin-bottom:0">SMS allows up to 200 characters for your message (plus a required "Reply STOP to opt out." footer). Messages over 137 chars send as 2 segments (~2¢ per recipient instead of ~1¢).</p>
+    <p class="field-hint" style="margin-top:0.35rem;margin-bottom:0">SMS allows up to 160 characters for your message (plus a required "Reply STOP to opt out." footer). Messages over 137 chars send as 2 segments (~2¢ per recipient instead of ~1¢).</p>
     <div class="field-group">
       <label class="field-label">Describe your business (optional)</label>
       <input type="text" id="birthday-prompt" placeholder="e.g. Anchovie and Salts is a seafood restaurant in Seattle — tailor the message to that" class="field-input">
@@ -2856,7 +2856,7 @@ app.get("/pro", async (req, res, next) => {
           <span class="toggle-label">Send SMS (when contact has phone)</span>
         </div>
       </div>
-      <p class="field-hint" style="margin-top:0.35rem;margin-bottom:0">SMS allows up to 200 characters for your message (plus a required "Reply STOP to opt out." footer). Messages over 137 chars send as 2 segments (~2¢ per recipient instead of ~1¢).</p>
+      <p class="field-hint" style="margin-top:0.35rem;margin-bottom:0">SMS allows up to 160 characters for your message (plus a required "Reply STOP to opt out." footer). Messages over 137 chars send as 2 segments (~2¢ per recipient instead of ~1¢).</p>
       <button type="button" class="btn btn-primary" id="event-detail-save">Save and confirm</button>
       <span id="event-detail-msg" class="pro-msg" aria-live="polite"></span>
     </div>
@@ -2909,7 +2909,7 @@ app.get("/pro", async (req, res, next) => {
         <span class="toggle-label">Send SMS (when contact has phone)</span>
       </div>
     </div>
-    <p class="field-hint" style="margin-top:0.35rem;margin-bottom:0">SMS allows up to 200 characters for your message (plus a required "Reply STOP to opt out." footer). Messages over 137 chars send as 2 segments (~2¢ per recipient instead of ~1¢).</p>
+    <p class="field-hint" style="margin-top:0.35rem;margin-bottom:0">SMS allows up to 160 characters for your message (plus a required "Reply STOP to opt out." footer). Messages over 137 chars send as 2 segments (~2¢ per recipient instead of ~1¢).</p>
     <button type="button" class="btn btn-primary" id="oneoff-schedule">Schedule campaign</button>
     <span id="oneoff-msg" class="pro-msg" aria-live="polite"></span>
   </div>
@@ -3355,10 +3355,10 @@ app.get("/pro.js", (req, res) => {
     };
   }
 
-  // SMS body budget: 200 chars + 23-char STOP footer = 2 GSM segments (223 total)
+  // SMS body budget: 160 chars + 23-char STOP footer = 183 total (2 GSM segments)
   (function() {
-    var SMS_SOFT_WARN = 160;
-    var SMS_HARD_CAP = 200;
+    var SMS_SOFT_WARN = 130;
+    var SMS_HARD_CAP = 160;
 
     function smsSegments(text) {
       var total = text.length + 23; // include STOP footer in segment count
