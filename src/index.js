@@ -2782,7 +2782,7 @@ app.get("/pro", async (req, res, next) => {
         <span class="toggle-label">Send SMS (when contact has phone)</span>
       </div>
     </div>
-    <p class="field-hint" style="margin-top:0.35rem;margin-bottom:0">SMS uses one segment per recipient: up to 137 characters for your message plus a required “Reply STOP to opt out.” line (160 total).</p>
+    <p class="field-hint" style="margin-top:0.35rem;margin-bottom:0">SMS allows up to 200 characters for your message (plus a required "Reply STOP to opt out." footer). Messages over 137 chars send as 2 segments (~2¢ per recipient instead of ~1¢).</p>
     <div class="field-group">
       <label class="field-label">Describe your business (optional)</label>
       <input type="text" id="birthday-prompt" placeholder="e.g. Anchovie and Salts is a seafood restaurant in Seattle — tailor the message to that" class="field-input">
@@ -2856,7 +2856,7 @@ app.get("/pro", async (req, res, next) => {
           <span class="toggle-label">Send SMS (when contact has phone)</span>
         </div>
       </div>
-      <p class="field-hint" style="margin-top:0.35rem;margin-bottom:0">SMS uses one segment per recipient: up to 137 characters for your message plus a required “Reply STOP to opt out.” line (160 total).</p>
+      <p class="field-hint" style="margin-top:0.35rem;margin-bottom:0">SMS allows up to 200 characters for your message (plus a required "Reply STOP to opt out." footer). Messages over 137 chars send as 2 segments (~2¢ per recipient instead of ~1¢).</p>
       <button type="button" class="btn btn-primary" id="event-detail-save">Save and confirm</button>
       <span id="event-detail-msg" class="pro-msg" aria-live="polite"></span>
     </div>
@@ -2909,7 +2909,7 @@ app.get("/pro", async (req, res, next) => {
         <span class="toggle-label">Send SMS (when contact has phone)</span>
       </div>
     </div>
-    <p class="field-hint" style="margin-top:0.35rem;margin-bottom:0">SMS uses one segment: only the first 137 characters of this body are sent as text (plus “Reply STOP to opt out.”). For long promos, turn off SMS or write a short SMS version.</p>
+    <p class="field-hint" style="margin-top:0.35rem;margin-bottom:0">SMS allows up to 200 characters for your message (plus a required "Reply STOP to opt out." footer). Messages over 137 chars send as 2 segments (~2¢ per recipient instead of ~1¢).</p>
     <button type="button" class="btn btn-primary" id="oneoff-schedule">Schedule campaign</button>
     <span id="oneoff-msg" class="pro-msg" aria-live="polite"></span>
   </div>
@@ -3355,17 +3355,15 @@ app.get("/pro.js", (req, res) => {
     };
   }
 
-  // SMS body budget: 137 chars + 23-char STOP footer = 1 GSM segment (160)
+  // SMS body budget: 200 chars + 23-char STOP footer = 2 GSM segments (223 total)
   (function() {
-    var SMS_SOFT_WARN = 110;
-    var SMS_HARD_CAP = 137;
-    var SEG1 = 160;
+    var SMS_SOFT_WARN = 160;
+    var SMS_HARD_CAP = 200;
 
     function smsSegments(text) {
-      var len = text.length;
-      if (len === 0) return { chars: 0, segs: 0 };
-      if (len <= SEG1) return { chars: len, segs: 1 };
-      return { chars: len, segs: Math.ceil(len / 153) };
+      var total = text.length + 23; // include STOP footer in segment count
+      if (total <= 160) return { chars: text.length, segs: 1 };
+      return { chars: text.length, segs: Math.ceil(total / 153) };
     }
 
     function updateCounter(taId, counterId) {
@@ -3380,10 +3378,9 @@ app.get("/pro.js", (req, res) => {
           text = ta.value;
         }
         var s = smsSegments(text);
-        counter.textContent = s.chars + " / " + SMS_HARD_CAP + " chars (your text) + opt-out = 1 SMS (~1¢ per recipient)";
+        counter.textContent = s.chars + " / " + SMS_HARD_CAP + " chars · " + s.segs + " SMS segment" + (s.segs === 1 ? "" : "s") + " (~" + s.segs + "¢ per recipient)";
         if (s.chars > SMS_SOFT_WARN) {
           counter.style.color = "#e67e22";
-          counter.textContent += " — approaching limit";
         } else {
           counter.style.color = "var(--muted)";
         }
