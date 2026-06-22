@@ -90,14 +90,14 @@ export async function generateCampaignMessageWithClaude(opts = {}) {
 - Output plain text only. No markdown, bullets, or hashtags.
 - Include {{first_name}} for the customer's name. Include the exact offer/discount in the message (use {{offer}} as placeholder if the offer will be inserted later).
 - Tailor the message to the specific business: use its name and infer the business type from the name (e.g. nail salon, restaurant, Pho, spa, retail) so the copy fits naturally — mention relevant services, products, or vibes (e.g. nails/manicure for a nail salon, food/dining for a restaurant).
-- CRITICAL: Keep the entire message under 140 characters (including spaces). This is an SMS message billed per segment — shorter saves money. 2 sentences max. No subject line.`;
+- CRITICAL: Keep the entire message under 160 characters (including spaces). This is an SMS message — shorter saves money. 2 sentences max. No subject line.`;
 
   const offerHint = offerText ? ` The offer to include (use {{offer}} or weave in naturally): "${offerText}".` : "";
   const businessHint = businessPrompt ? ` The business owner provided this description — use it to tailor the message: "${businessPrompt}".` : "";
   const userPrompt =
     type === "birthday"
-      ? `Business: "${businessName}".${businessHint} Write a birthday SMS (under 140 chars) tailored to this business. Use {{first_name}}.${offerHint} Example: "Happy birthday, {{first_name}}! Treat yourself to {{offer}} at ${businessName}. Book now: [phone]."`
-      : `Business: "${businessName}".${businessHint} Write a short promotional SMS (under 140 chars) for: ${eventName || "holiday"}, tailored to this business. Use {{first_name}} and the offer.${offerHint} 2 sentences max. Example: "Hi {{first_name}}, celebrate ${eventName || "the holiday"} with {{offer}} at ${businessName}. Book now: [phone]."`;
+      ? `Business: "${businessName}".${businessHint} Write a birthday SMS (under 160 chars) tailored to this business. Use {{first_name}}.${offerHint} Example: "Happy birthday, {{first_name}}! Treat yourself to {{offer}} at ${businessName}. Book now: [phone]."`
+      : `Business: "${businessName}".${businessHint} Write a short promotional SMS (under 160 chars) for: ${eventName || "holiday"}, tailored to this business. Use {{first_name}} and the offer.${offerHint} 2 sentences max. Example: "Hi {{first_name}}, celebrate ${eventName || "the holiday"} with {{offer}} at ${businessName}. Book now: [phone]."`;
 
   const message = await client.messages.create({
     model,
@@ -127,10 +127,11 @@ export async function generateOneOffWithClaude(opts = {}) {
   const client = new Anthropic({ apiKey });
   const model = process.env.ANTHROPIC_MODEL?.trim() || "claude-sonnet-4-6";
 
-  const systemPrompt = `You write short marketing emails for a small business. Rules:
+  const systemPrompt = `You write short marketing messages for a small business. Rules:
 - Output plain text only. No markdown, bullets, or hashtags.
 - Use {{first_name}} in the body for the customer's name (filled automatically from their list).
-- Keep subject under 60 characters. Body under 150 words. Warm and professional.`;
+- Keep subject under 60 characters.
+- CRITICAL: Keep body under 160 characters (including spaces). The body is sent as both email and SMS — it must fit in a single SMS. 2-3 sentences max. Warm and professional.`;
 
   const userPrompt = `Business: ${businessName}. They want to send this one-off announcement: "${prompt}"
 
