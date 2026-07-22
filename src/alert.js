@@ -11,6 +11,53 @@ const TWILIO_ACCOUNT_SID = process.env.TWILIO_ACCOUNT_SID?.trim();
 const TWILIO_AUTH_TOKEN = process.env.TWILIO_AUTH_TOKEN?.trim();
 const TWILIO_FROM_NUMBER = process.env.TWILIO_FROM_NUMBER?.trim();
 
+// De-dupe repeated alerts. The scheduler runs every ~30 min, so a persistent
+// upstream failure (e.g. a multi-hour Google 503) would otherwise fire an
+// email + SMS on every tick. We suppress the same (account + error-signature)
+// alert for a cooldown window. In-memory only — resets on restart, which is
+// fine: a restart is exactly when you'd want to hear about a fresh failure.
+const ALERT_COOLDOWN_MS = Math.max(1, Number(process.env.ALERT_COOLDOWN_MINUTES || 360)) * 60 * 1000;
+const lastAlertAt = new Map();
+
+/** Normalize an error/result into a stable signature so retries de-dupe. */
+function alertSignature({ accountId, error, result }) {
+  let reason = "";
+  if (error) {
+    reason = String(error.message || error);
+  } else if (result) {
+    const errDetail = result.details?.find((d) => d.status === "error" && d.message);
+    reason = errDetail?.message || `failed:${result.failed ?? 0}`;
+  }
+  // Collapse volatile bits (request ids, timestamps, digits) so the same class
+  // of error maps to one signature. e.g. two Google 503s with different
+  // request_ids still de-dupe.
+  const normalized = reason
+    .replace(/\breq_[A-Za-z0-9]+/g, "req_#") // Anthropic/Stripe-style request ids
+    .replace(/\b[0-9a-f]{8,}\b/gi, "#")       // long hex ids / tokens
+    .replace(/\d+/g, "#")                       // any remaining numbers
+    .slice(0, 120);
+  return `${accountId || "?"}::${normalized}`;
+}
+
+/** @returns {boolean} true if this alert is within the cooldown of a prior identical one. */
+function isThrottled(signature, now) {
+  const prev = lastAlertAt.get(signature);
+  if (prev != null && now - prev < ALERT_COOLDOWN_MS) return true;
+  lastAlertAt.set(signature, now);
+  // Opportunistic cleanup so the map can't grow unbounded.
+  if (lastAlertAt.size > 500) {
+    for (const [k, t] of lastAlertAt) {
+      if (now - t >= ALERT_COOLDOWN_MS) lastAlertAt.delete(k);
+    }
+  }
+  return false;
+}
+
+/** Test-only: reset the throttle state. */
+export function _resetAlertThrottle() {
+  lastAlertAt.clear();
+}
+
 /**
  * Send failure alert to configured email and/or phone.
  * @param {object} opts - { businessName?, accountId?, error?, result? }
@@ -18,6 +65,13 @@ const TWILIO_FROM_NUMBER = process.env.TWILIO_FROM_NUMBER?.trim();
 export async function sendFailureAlert(opts = {}) {
   const { businessName = "Unknown", accountId = "", error, result } = opts;
   const businessLabel = businessName || accountId || "Unknown business";
+
+  // Suppress duplicate alerts for the same account+error within the cooldown.
+  const signature = alertSignature({ accountId, error, result });
+  if (isThrottled(signature, Date.now())) {
+    console.info?.(`Alert suppressed (cooldown): ${signature}`);
+    return { sent: false, throttled: true, signature };
+  }
   let subject = "Replyr: auto-reply failed";
   let body = `Replyr auto-reply failed for ${businessLabel}`;
   if (accountId) body += ` (${accountId})`;
@@ -45,6 +99,7 @@ export async function sendFailureAlert(opts = {}) {
     promises.push(sendSms(shortMsg).catch((e) => console.error("Alert SMS failed:", e.message)));
   }
   await Promise.allSettled(promises);
+  return { sent: true, throttled: false, signature };
 }
 
 async function sendEmail(subject, text) {
