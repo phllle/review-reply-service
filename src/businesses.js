@@ -77,7 +77,10 @@ export async function upsertBusiness(config) {
       isPro: config.isPro ?? existing.isPro ?? false,
       proTier: config.proTier ?? existing.proTier ?? "starter",
       autoReplyMode: config.autoReplyMode ?? existing.autoReplyMode ?? "instant",
-      notificationEmail: config.notificationEmail ?? existing.notificationEmail ?? null
+      notificationEmail: config.notificationEmail ?? existing.notificationEmail ?? null,
+      weeklyDigestEnabled: config.weeklyDigestEnabled ?? existing.weeklyDigestEnabled ?? true,
+      lastWeeklyDigestAt: config.lastWeeklyDigestAt ?? existing.lastWeeklyDigestAt ?? null,
+      lastDigestRatingAvg: config.lastDigestRatingAvg ?? existing.lastDigestRatingAvg ?? null
     };
     return await db.upsertBusinessInDb(merged);
   }
@@ -99,6 +102,9 @@ export async function upsertBusiness(config) {
     proTier: config.proTier ?? existing.proTier ?? "starter",
     autoReplyMode: config.autoReplyMode ?? existing.autoReplyMode ?? "instant",
     notificationEmail: config.notificationEmail ?? existing.notificationEmail ?? null,
+    weeklyDigestEnabled: config.weeklyDigestEnabled ?? existing.weeklyDigestEnabled ?? true,
+    lastWeeklyDigestAt: config.lastWeeklyDigestAt ?? existing.lastWeeklyDigestAt ?? null,
+    lastDigestRatingAvg: config.lastDigestRatingAvg ?? existing.lastDigestRatingAvg ?? null,
     updatedAt: new Date().toISOString()
   };
   await writeBusinesses(all);

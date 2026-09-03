@@ -168,3 +168,50 @@ BODY: your body text here`;
   }
   return { subject, body };
 }
+
+/**
+ * Summarize recurring themes from a week's review comments for the owner digest.
+ * Returns a short array of plain-text bullet strings (e.g. "3 reviews mentioned
+ * long wait times"). Best-effort: returns [] on any failure so the digest still
+ * sends without themes.
+ * @param {string[]} comments - review comment texts (already filtered to non-empty)
+ * @returns {Promise<string[]>}
+ */
+export async function extractReviewThemesWithClaude(comments = []) {
+  try {
+    const apiKey = process.env.ANTHROPIC_API_KEY?.trim();
+    if (!apiKey || !Array.isArray(comments) || comments.length === 0) return [];
+    const Anthropic = (await import("@anthropic-ai/sdk")).default;
+    const client = new Anthropic({ apiKey });
+    const model = process.env.ANTHROPIC_MODEL?.trim() || "claude-sonnet-4-6";
+    // Cap input so a flood of long reviews can't blow up the prompt.
+    const sample = comments.filter(Boolean).slice(0, 50).map((c) => String(c).slice(0, 500));
+    if (sample.length === 0) return [];
+
+    const systemPrompt = `You analyze customer reviews for a small business owner. Identify up to 3 recurring themes across the reviews (positive or negative). Rules:
+- Output plain text only, one theme per line, no markdown or bullets characters.
+- Each line: a short phrase the owner can act on, prefixed with how many reviews touched it. Example: "3 reviews praised the staff" or "2 reviews mentioned long wait times".
+- Only include a theme if at least 2 reviews touch it. If nothing recurs, output the single line: NONE.`;
+    const userPrompt = `Here are this week's review comments (one per line):\n\n${sample.map((c, i) => `${i + 1}. ${c}`).join("\n")}`;
+
+    const message = await client.messages.create({
+      model,
+      max_tokens: 200,
+      system: systemPrompt,
+      messages: [{ role: "user", content: userPrompt }]
+    });
+    const text = message.content
+      ?.filter((b) => b.type === "text")
+      ?.map((b) => b.text)
+      ?.join("")
+      ?.trim();
+    if (!text || /^NONE$/im.test(text)) return [];
+    return text
+      .split(/\n+/)
+      .map((l) => l.replace(/^[-*•\d.\s]+/, "").trim())
+      .filter(Boolean)
+      .slice(0, 3);
+  } catch {
+    return [];
+  }
+}
