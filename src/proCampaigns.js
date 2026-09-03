@@ -7,6 +7,7 @@ import * as db from "./db.js";
 import { sendCampaignEmail } from "./campaignEmail.js";
 import { sendCampaignSms, sendProCampaignSms, isCampaignSmsFeatureEnabled, isSmsConfigured } from "./campaignSms.js";
 import { getBusiness } from "./businesses.js";
+import { sendCampaignReport } from "./campaignReport.js";
 
 // Major US events: key, name, and a function (year) -> send date (YYYY-MM-DD)
 const EVENT_RULES = [
@@ -287,6 +288,7 @@ export async function sendEventCampaignForAccount(accountId, eventKey, eventYear
   const body = (campaign.messageText || "").replace(/\{\{offer\}\}/gi, campaign.offerText || "");
   const subject = `${businessName} – ${eventName}`;
   let sent = 0;
+  const stats = { contactsTotal: contacts.length, emailSent: 0, smsSent: 0, smsAttempted: 0, smsFailed: 0 };
   const sendEmail = campaign.sendEmail !== false;
   const sendSms = campaign.sendSms !== false && isCampaignSmsFeatureEnabled();
   const footer = " Reply STOP to opt out.";
@@ -296,16 +298,22 @@ export async function sendEventCampaignForAccount(accountId, eventKey, eventYear
       if (sendEmail && c.email) {
         await sendCampaignEmail({ to: c.email, subject, bodyContent: personalized, businessName, accountId, replyTo });
         sent++;
+        stats.emailSent++;
       }
       if (sendSms && c.phone && isSmsConfigured()) {
+        stats.smsAttempted++;
         const smsBody = toSmsFriendly(formatBodyForSms(personalized), 160) + footer;
         try {
           const ok = await sendProCampaignSms(accountId, c.phone, smsBody, logger);
           if (ok) {
             sent++;
+            stats.smsSent++;
             logger?.info?.({ accountId, phone: c.phone }, "Event SMS sent");
+          } else {
+            stats.smsFailed++;
           }
         } catch (smsErr) {
+          stats.smsFailed++;
           logger?.error?.({ err: smsErr, accountId, phone: c.phone }, "Event SMS failed");
         }
       }
@@ -315,6 +323,7 @@ export async function sendEventCampaignForAccount(accountId, eventKey, eventYear
   }
   await db.markProEventCampaignSent(accountId, eventKey, eventYear);
   logger?.info?.({ accountId, eventKey, sent }, "Event campaign sent");
+  await sendCampaignReport({ business, campaignLabel: `${eventName} campaign`, stats, logger });
   return { sent };
 }
 
@@ -402,22 +411,29 @@ export async function sendOneOffCampaign(id, accountId, subject, body, logger = 
   const sendSms = campaignRow.send_sms !== false && isCampaignSmsFeatureEnabled();
   const footer = " Reply STOP to opt out.";
   let sent = 0;
+  const stats = { contactsTotal: contacts.length, emailSent: 0, smsSent: 0, smsAttempted: 0, smsFailed: 0 };
   for (const c of contacts) {
     try {
       const personalized = (body || "").replace(/\{\{first_name\}\}/gi, c.firstName || "there");
       if (sendEmail && c.email) {
         await sendCampaignEmail({ to: c.email, subject, bodyContent: personalized, businessName, accountId, replyTo });
         sent++;
+        stats.emailSent++;
       }
       if (sendSms && c.phone && isSmsConfigured()) {
+        stats.smsAttempted++;
         const smsBody = toSmsFriendly(formatBodyForSms(personalized), 160) + footer;
         try {
           const ok = await sendProCampaignSms(accountId, c.phone, smsBody, logger);
           if (ok) {
             sent++;
+            stats.smsSent++;
             logger?.info?.({ accountId, phone: c.phone }, "One-off SMS sent");
+          } else {
+            stats.smsFailed++;
           }
         } catch (smsErr) {
+          stats.smsFailed++;
           logger?.error?.({ err: smsErr, accountId, phone: c.phone }, "One-off SMS failed");
         }
       }
@@ -427,5 +443,6 @@ export async function sendOneOffCampaign(id, accountId, subject, body, logger = 
   }
   await db.markProOneOffCampaignSent(id);
   logger?.info?.({ accountId, id, sent }, "One-off campaign sent");
+  await sendCampaignReport({ business, campaignLabel: subject ? `Promo "${subject}"` : "One-off promo", stats, logger });
   return { sent };
 }
