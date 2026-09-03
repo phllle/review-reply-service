@@ -46,6 +46,7 @@ import {
 } from "./proCampaigns.js";
 import multer from "multer";
 import Stripe from "stripe";
+import { runWeeklyDigests, verifyDigestUnsubToken } from "./weeklyDigest.js";
 import { getCurrentMonthKey, getIncludedSmsForTier, normalizeProTier } from "./proPlan.js";
 import * as sentry from "./sentry.js";
 import {
@@ -154,6 +155,14 @@ async function runCampaignScheduler() {
         logger.error({ err, id: row.id }, "One-off campaign send failed");
         sentry.captureException(err, { kind: "oneoff-campaign", id: row.id, accountId: row.account_id });
       }
+    }
+    // Weekly owner digest — self-gates to the Monday 8am PT slot and per-business
+    // 6-day cooldown, so calling it every hourly tick is safe.
+    try {
+      await runWeeklyDigests(logger);
+    } catch (err) {
+      logger.error({ err }, "Weekly digest run failed");
+      sentry.captureException(err, { kind: "weekly-digest" });
     }
   } catch (err) {
     logger.error({ err }, "Campaign scheduler failed");
@@ -788,6 +797,7 @@ app.get("/connected", async (req, res, next) => {
     let currentAutoReply = false;
     let currentAutoReplyMode = "instant";
     let currentNotificationEmail = "";
+    let currentWeeklyDigest = true;
     let businessName = "";
     let trialEndsAt = null;
     let trialDaysLeft = null;
@@ -807,6 +817,7 @@ app.get("/connected", async (req, res, next) => {
       currentContact = (business && business.contact) ? String(business.contact) : "";
       currentAutoReplyMode = (business && business.autoReplyMode) ? String(business.autoReplyMode) : "instant";
       currentNotificationEmail = (business && business.notificationEmail) ? String(business.notificationEmail) : "";
+      currentWeeklyDigest = business ? business.weeklyDigestEnabled !== false : true;
       businessName = (business && business.name) ? String(business.name) : "";
       subscribedAt = business?.subscribedAt ?? null;
       if (business && business.trialEndsAt) {
@@ -895,6 +906,20 @@ app.get("/connected", async (req, res, next) => {
   <p id="reply-preview-msg" class="connected-msg" aria-live="polite"></p>
 </div>`
       : "";
+    const digestCard = accountId
+      ? `<div class="card weekly-digest-section" data-account-id="${escapeHtml(accountId)}">
+  <div class="card-title">Weekly summary email</div>
+  <div class="card-desc">Every Monday we email you a recap — reviews handled, your rating trend, and what customers are talking about. Sent to your notification email.</div>
+  <div class="toggle-row" style="margin-top:14px">
+    <label class="toggle">
+      <input type="checkbox" id="weekly-digest-toggle" role="switch" aria-checked="${currentWeeklyDigest ? "true" : "false"}" aria-label="Send me a weekly summary email" ${currentWeeklyDigest ? "checked" : ""}>
+      <div class="toggle-track"></div>
+    </label>
+    <span class="toggle-label">Send me a weekly summary</span>
+  </div>
+  <p id="weekly-digest-msg" class="connected-msg" aria-live="polite"></p>
+</div>`
+      : "";
     // Hide the "Try it now" demo once auto-reply is enabled — once the system is
     // replying automatically, the one-shot demo is just noise. The card toggles
     // with the auto-reply switch (see /connected.js).
@@ -948,7 +973,7 @@ app.get("/connected", async (req, res, next) => {
     const freeReplySection = accountId
       ? `<div class="connected-body">
   <aside class="connected-sidebar" aria-label="Account and review tools">
-    <div class="connected-stack">${trialCard}${autoReplyCard}${previewModeCard}${tryItCard}${contactCard}</div>
+    <div class="connected-stack">${trialCard}${autoReplyCard}${previewModeCard}${digestCard}${tryItCard}${contactCard}</div>
   </aside>
   <div class="connected-pro-wrap">${proCard}</div>
 </div>`
@@ -1508,6 +1533,45 @@ app.get("/connected.js", (req, res) => {
     }
   }
 
+  // Weekly summary email toggle
+  var digestSection = document.querySelector(".weekly-digest-section");
+  if (digestSection) {
+    var digestAccountId = digestSection.getAttribute("data-account-id") || accountId;
+    var digestToggle = document.getElementById("weekly-digest-toggle");
+    var digestMsg = document.getElementById("weekly-digest-msg");
+    if (digestAccountId && digestToggle) {
+      digestToggle.addEventListener("change", function() {
+        var enabled = digestToggle.checked;
+        if (digestMsg) { digestMsg.textContent = ""; digestMsg.classList.remove("ok", "err"); }
+        fetch("/businesses/" + encodeURIComponent(digestAccountId), {
+          method: "PATCH",
+          credentials: "same-origin",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ weeklyDigestEnabled: enabled })
+        })
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+          if (!digestMsg) return;
+          digestMsg.classList.remove("ok", "err");
+          if (data.error) {
+            digestMsg.textContent = data.error;
+            digestMsg.classList.add("err");
+            digestToggle.checked = !enabled;
+            digestToggle.setAttribute("aria-checked", digestToggle.checked ? "true" : "false");
+          } else {
+            digestMsg.textContent = enabled ? "You'll get a weekly summary each Monday." : "Weekly summary off.";
+            digestMsg.classList.add("ok");
+          }
+        })
+        .catch(function() {
+          if (digestMsg) { digestMsg.textContent = "Something went wrong."; digestMsg.classList.add("err"); }
+          digestToggle.checked = !enabled;
+          digestToggle.setAttribute("aria-checked", digestToggle.checked ? "true" : "false");
+        });
+      });
+    }
+  }
+
   // Reply preview mode toggle + notification email
   var previewSection = document.querySelector(".reply-preview-section");
   // Simple, permissive email regex — server is the source of truth.
@@ -1609,6 +1673,11 @@ app.get("/connected.js", (req, res) => {
       }
       var ne = document.getElementById("notification-email-input");
       if (ne && data.notificationEmail != null) ne.value = String(data.notificationEmail || "");
+      var dt = document.getElementById("weekly-digest-toggle");
+      if (dt) {
+        dt.checked = data.weeklyDigestEnabled !== false;
+        dt.setAttribute("aria-checked", dt.checked ? "true" : "false");
+      }
     })
     .catch(function() {});
 
@@ -2209,7 +2278,7 @@ app.patch("/businesses/:accountId", async (req, res, next) => {
     if (!existing) {
       return res.status(404).json({ error: "Business not found. Connect via /auth/google first." });
     }
-    const { autoReplyEnabled, contact, intervalMinutes, isPro, proTier, autoReplyMode, notificationEmail } = req.body || {};
+    const { autoReplyEnabled, contact, intervalMinutes, isPro, proTier, autoReplyMode, notificationEmail, weeklyDigestEnabled } = req.body || {};
     const admin = isValidAdminRequest(req);
     const nextIsPro =
       admin && typeof isPro === "boolean" ? !!isPro : !!existing.isPro;
@@ -2267,6 +2336,7 @@ app.patch("/businesses/:accountId", async (req, res, next) => {
       ...(typeof autoReplyEnabled === "boolean" && { autoReplyEnabled }),
       ...(contact !== undefined && { contact: String(contact) }),
       ...(intervalMinutes !== undefined && { intervalMinutes: Number(intervalMinutes) }),
+      ...(typeof weeklyDigestEnabled === "boolean" && { weeklyDigestEnabled }),
       ...proPatch,
       ...modePatch
     });
@@ -3420,6 +3490,35 @@ app.get("/pro/unsubscribe", async (req, res, next) => {
       title: "Unsubscribed",
       bodyHtml: `    <h1 style="text-align:center">You're <em>unsubscribed</em></h1>
     <p style="text-align:center">You won't receive further campaign emails from this business via Replyr.</p>`,
+      narrow: true
+    }));
+  } catch (err) {
+    next(err);
+  }
+});
+
+// One-click opt-out of the weekly owner digest (link in each digest email).
+app.get("/digest/unsubscribe", async (req, res, next) => {
+  try {
+    const token = (req.query.token || "").trim();
+    const accountId = verifyDigestUnsubToken(token);
+    res.set("Content-Type", "text/html; charset=utf-8");
+    if (!accountId) {
+      return res.status(400).send(darkShellHtml({
+        title: "Invalid link",
+        bodyHtml: `    <h1 style="text-align:center">Invalid or <em>expired link</em></h1>
+    <p style="text-align:center">This link is invalid or has expired. You can manage weekly summaries from your dashboard.</p>`,
+        narrow: true
+      }));
+    }
+    const existing = await getBusiness(accountId);
+    if (existing) {
+      await upsertBusiness({ ...existing, weeklyDigestEnabled: false });
+    }
+    res.send(darkShellHtml({
+      title: "Weekly summary off",
+      bodyHtml: `    <h1 style="text-align:center">Weekly summaries <em>turned off</em></h1>
+    <p style="text-align:center">You won't receive the weekly Replyr summary anymore. You can turn it back on anytime from your <a href="/connected?accountId=${encodeURIComponent(accountId)}">dashboard</a>.</p>`,
       narrow: true
     }));
   } catch (err) {
