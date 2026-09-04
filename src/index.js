@@ -1128,8 +1128,8 @@ app.get("/subscribe", (req, res) => {
   const contact = process.env.REPLYR_CONTACT || "";
   const priceLabel = process.env.SUBSCRIBE_PRICE || "$19 / month";
   const proStarterPriceLabel = (process.env.SUBSCRIBE_PRO_STARTER_PRICE || "").trim() || "$39 / month";
-  const proGrowthPriceLabel = (process.env.SUBSCRIBE_PRO_GROWTH_PRICE || "").trim() || "$69 / month";
-  const proScalePriceLabel = (process.env.SUBSCRIBE_PRO_SCALE_PRICE || "").trim() || "$149 / month";
+  const proGrowthPriceLabel = (process.env.SUBSCRIBE_PRO_GROWTH_PRICE || "").trim() || "$89 / month";
+  const proScalePriceLabel = (process.env.SUBSCRIBE_PRO_SCALE_PRICE || "").trim() || "$179 / month";
   const stripeProPriceId = (process.env.STRIPE_PRO_PRICE_ID || "").trim(); // legacy fallback
   const stripeProStarterPriceId = (process.env.STRIPE_PRO_STARTER_PRICE_ID || "").trim();
   const stripeProGrowthPriceId = (process.env.STRIPE_PRO_GROWTH_PRICE_ID || "").trim();
@@ -1270,7 +1270,7 @@ app.get("/subscribe", (req, res) => {
       <p class="plan-price">${escapeHtml(proGrowthPriceLabel)}</p>
       <ul class="plan-features">
         <li>Everything in Pro Starter</li>
-        <li>Includes up to <strong>2,500 SMS / month</strong> (5× Starter)</li>
+        <li>Includes up to <strong>1,500 SMS / month</strong> (3× Starter)</li>
         <li>Best for <strong>1,000–5,000 contacts</strong></li>
         <li>Multiple monthly events + birthday automations</li>
       </ul>
@@ -1279,14 +1279,13 @@ app.get("/subscribe", (req, res) => {
         <p id="subscribe-pro-growth-cta-msg" class="cta-msg" style="margin-top:10px;font-size:13px;min-height:1.2em;color:var(--danger);" aria-live="polite"></p>
       </div>
     </div>
-    ${stripeProScalePriceId ? `
     <div class="plan-card plan-card-pro">
       <h2>Replyr Pro Scale</h2>
       <p class="plan-desc">For high-volume businesses with large lists.</p>
       <p class="plan-price">${escapeHtml(proScalePriceLabel)}</p>
       <ul class="plan-features">
         <li>Everything in Pro Growth</li>
-        <li>Includes up to <strong>10,000 SMS / month</strong> (4× Growth)</li>
+        <li>Includes up to <strong>10,000 SMS / month</strong></li>
         <li>Best for <strong>5,000+ contacts</strong></li>
         <li>Frequent, multi-channel campaign sends</li>
       </ul>
@@ -1294,7 +1293,7 @@ app.get("/subscribe", (req, res) => {
         <button type="button" id="subscribe-pro-scale-cta" class="cta-btn" data-plan="pro_scale">Subscribe to Pro Scale</button>
         <p id="subscribe-pro-scale-cta-msg" class="cta-msg" style="margin-top:10px;font-size:13px;min-height:1.2em;color:var(--danger);" aria-live="polite"></p>
       </div>
-    </div>` : ""}
+    </div>
 ` : ""}
     ${hasBillingPortal ? `<p class="back-row"><a href="${escapeHtml(billingPortalUrl)}" target="_blank" rel="noopener">Manage billing / subscription →</a></p>` : ""}
     <p class="back-row"><a href="/">← Back to Replyr</a></p>
@@ -3977,10 +3976,8 @@ function replyrAdminHeaders(json) {
 })();
 function proTierSelectInnerHtml(tier) {
   var o = '<option value="starter"' + (tier === "starter" ? " selected" : "") + '>Starter — 500 SMS/mo</option>' +
-    '<option value="growth"' + (tier === "growth" ? " selected" : "") + '>Growth — 2,500 SMS/mo</option>';
-  if (REPLYR_ADMIN_SHOW_PRO_SCALE || tier === "scale") {
-    o += '<option value="scale"' + (tier === "scale" ? " selected" : "") + '>Scale — 10,000 SMS/mo</option>';
-  }
+    '<option value="growth"' + (tier === "growth" ? " selected" : "") + '>Growth — 1,500 SMS/mo</option>' +
+    '<option value="scale"' + (tier === "scale" ? " selected" : "") + '>Scale — 10,000 SMS/mo</option>';
   return o;
 }
 function escapeHtml(s) { const d = document.createElement("div"); d.textContent = s; return d.innerHTML; }
