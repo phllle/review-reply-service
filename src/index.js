@@ -1,1 +1,1 @@
-@/workspace/pricing-v1-push/index.js
+/workspace/replyr-map/index.js
