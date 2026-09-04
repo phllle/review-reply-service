@@ -32,6 +32,12 @@ test("getIncludedSmsForTier matches the public tier table", () => {
   assert.equal(getIncludedSmsForTier("bogus"), PRO_SMS_TIERS.starter.includedSms);
 });
 
+test("approved pricing v1 SMS quotas (messages)", () => {
+  assert.equal(PRO_SMS_TIERS.starter.includedSms, 500);
+  assert.equal(PRO_SMS_TIERS.growth.includedSms, 1500);
+  assert.equal(PRO_SMS_TIERS.scale.includedSms, 10000);
+});
+
 test("getCurrentMonthKey: zero-pads month and uses UTC", () => {
   // Use UTC explicitly so this test is timezone-stable.
   const jan = new Date(Date.UTC(2026, 0, 15));
