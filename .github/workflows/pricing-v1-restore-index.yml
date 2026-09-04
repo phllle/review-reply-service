@@ -1,0 +1,78 @@
+name: pricing-v1-restore-index
+on:
+  workflow_dispatch:
+  push:
+    branches: [pricing-v1-approved]
+    paths:
+      - .github/workflows/pricing-v1-restore-index.yml
+permissions:
+  contents: write
+jobs:
+  restore:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: pricing-v1-approved
+          fetch-depth: 0
+      - name: Restore and patch src/index.js from main
+        run: |
+          set -euo pipefail
+          git fetch origin main
+          git show origin/main:src/index.js > src/index.js
+          python3 <<'PY'
+          from pathlib import Path
+          import re
+          p = Path("src/index.js")
+          t = p.read_text()
+          t = t.replace('|| "$69 / month"', '|| "$89 / month"')
+          t = t.replace('|| "$149 / month"', '|| "$179 / month"')
+          t = t.replace(
+              "Includes up to <strong>2,500 SMS / month</strong> (5× Starter)",
+              "Includes up to <strong>1,500 SMS / month</strong> (3× Starter)",
+          )
+          t = t.replace(
+              "Includes up to <strong>10,000 SMS / month</strong> (4× Growth)",
+              "Includes up to <strong>10,000 SMS / month</strong>",
+          )
+          t = re.sub(r"\$\{stripeProScalePriceId \? `\n", "", t, count=1)
+          t = t.replace('</div>` : ""}\n` : ""}', '</div>\n` : ""}', 1)
+          # unindent Scale card that was nested in ternary
+          t = t.replace(
+              "        <div class=\"plan-card plan-card-pro\">\n      <h2>Replyr Pro Scale</h2>",
+              "    <div class=\"plan-card plan-card-pro\">\n      <h2>Replyr Pro Scale</h2>",
+              1,
+          )
+          t = t.replace("Growth — 2,500 SMS/mo", "Growth — 1,500 SMS/mo")
+          pat = (
+            "    '<option value=\"growth\"' + (tier === \"growth\" ? \" selected\" : \"\") + '>Growth — 1,500 SMS/mo</option>';\n"
+            "  if (REPLYR_ADMIN_SHOW_PRO_SCALE || tier === \"scale\") {\n"
+            "    o += '<option value=\"scale\"' + (tier === \"scale\" ? \" selected\" : \"\") + '>Scale — 10,000 SMS/mo</option>';\n"
+            "  }"
+          )
+          repl = (
+            "    '<option value=\"growth\"' + (tier === \"growth\" ? \" selected\" : \"\") + '>Growth — 1,500 SMS/mo</option>' +\n"
+            "    '<option value=\"scale\"' + (tier === \"scale\" ? \" selected\" : \"\") + '>Scale — 10,000 SMS/mo</option>';"
+          )
+          if pat not in t:
+            raise SystemExit("admin scale gate pattern not found")
+          t = t.replace(pat, repl, 1)
+          assert "$89 / month" in t and "$179 / month" in t
+          assert "1,500 SMS" in t and "Growth — 1,500" in t
+          assert not re.search(r"stripeProScalePriceId\s*\?\s*`[\s\S]{0,120}Replyr Pro Scale", t)
+          p.write_text(t)
+          print("patched ok", len(t))
+          PY
+          rm -rf src/_assemble_chunks || true
+          rm -f .pricing-v1-*.txt .pricing-v1-probe-2k.txt src/_probe_pricing_v1.txt || true
+      - name: Commit restored index.js
+        run: |
+          git config user.name "phllle"
+          git config user.email "phllle253@gmail.com"
+          git add -A
+          if git diff --staged --quiet; then
+            echo "No changes"
+            exit 0
+          fi
+          git commit -m "Pricing v1: publish Scale on /subscribe, Growth 1500 copy"
+          git push
