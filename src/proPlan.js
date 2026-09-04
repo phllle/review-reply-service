@@ -1,6 +1,6 @@
 export const PRO_SMS_TIERS = {
   starter: { includedSms: 500 },
-  growth: { includedSms: 2500 },
+  growth: { includedSms: 1500 },
   scale: { includedSms: 10000 }
 };
 

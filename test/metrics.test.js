@@ -11,16 +11,16 @@ import {
 const env = {
   STRIPE_BASE_PRICE_AMOUNT_CENTS: "1900",
   STRIPE_PRO_STARTER_AMOUNT_CENTS: "3900",
-  STRIPE_PRO_GROWTH_AMOUNT_CENTS: "6900",
-  STRIPE_PRO_SCALE_AMOUNT_CENTS: "14900"
+  STRIPE_PRO_GROWTH_AMOUNT_CENTS: "8900",
+  STRIPE_PRO_SCALE_AMOUNT_CENTS: "17900"
 };
 const amounts = getPlanAmountsCents(env);
 
 test("getPlanAmountsCents: parses positive ints; bad input -> 0", () => {
   assert.equal(amounts.base, 1900);
   assert.equal(amounts.proStarter, 3900);
-  assert.equal(amounts.proGrowth, 6900);
-  assert.equal(amounts.proScale, 14900);
+  assert.equal(amounts.proGrowth, 8900);
+  assert.equal(amounts.proScale, 17900);
   const bad = getPlanAmountsCents({
     STRIPE_BASE_PRICE_AMOUNT_CENTS: "not-a-number",
     STRIPE_PRO_STARTER_AMOUNT_CENTS: "-50"
@@ -51,12 +51,12 @@ test("computeMrr: sums per-plan amounts and counts", () => {
   const businesses = [
     { accountId: "1", subscribedAt: "2026-01-01", isPro: false }, // base $19
     { accountId: "2", isPro: true, proTier: "starter" },           // $39
-    { accountId: "3", isPro: true, proTier: "growth" },            // $69
-    { accountId: "4", isPro: true, proTier: "scale" },             // $149
+    { accountId: "3", isPro: true, proTier: "growth" },            // $89
+    { accountId: "4", isPro: true, proTier: "scale" },             // $179
     { accountId: "5" }                                              // none
   ];
   const m = computeMrr(businesses, amounts);
-  assert.equal(m.mrrCents, 1900 + 3900 + 6900 + 14900);
+  assert.equal(m.mrrCents, 1900 + 3900 + 8900 + 17900);
   assert.deepEqual(m.countsByPlan, {
     base: 1,
     pro_starter: 1,
@@ -66,7 +66,7 @@ test("computeMrr: sums per-plan amounts and counts", () => {
     none: 1
   });
   assert.equal(m.mrrByPlan.base, 1900);
-  assert.equal(m.mrrByPlan.pro_growth, 6900);
+  assert.equal(m.mrrByPlan.pro_growth, 8900);
   assert.equal(m.activeSubs, 4);
 });
 
@@ -82,7 +82,7 @@ test("computeMrr: missing env amount -> 0 contribution (counts still increment)"
   const noScale = getPlanAmountsCents({
     STRIPE_BASE_PRICE_AMOUNT_CENTS: "1900",
     STRIPE_PRO_STARTER_AMOUNT_CENTS: "3900",
-    STRIPE_PRO_GROWTH_AMOUNT_CENTS: "6900"
+    STRIPE_PRO_GROWTH_AMOUNT_CENTS: "8900"
     // no scale
   });
   const businesses = [
