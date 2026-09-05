@@ -286,7 +286,7 @@ export async function listAccounts(accountId) {
 }
 
 export async function listLocations(accountId) {
-  const baseUrl = `https://mybusinessbusinessinformation.googleapis.com/v1/accounts/${encodeURIComponent(accountId)}/locations?readMask=name,title`;
+  const baseUrl = `https://mybusinessbusinessinformation.googleapis.com/v1/accounts/${encodeURIComponent(accountId)}/locations?readMask=name,title,metadata`;
   return await fetchAllPages(baseUrl, "locations", accountId);
 }
 

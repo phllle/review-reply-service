@@ -2066,7 +2066,8 @@ app.get("/auth/google/callback", authRouteLimiter, async (req, res, next) => {
     await upsertBusiness({
       accountId,
       locationId: locationId || "",
-      name
+      name,
+      placeId: firstLocation?.metadata?.placeId || undefined
     });
     if (ownerEmail) {
       try {
@@ -2105,7 +2106,7 @@ app.get("/auth/choose-location", authRouteLimiter, async (req, res, next) => {
       const loc = locations[0];
       const locationId = loc?.name ? loc.name.split("/").pop() : "";
       const name = loc?.title || "";
-      await upsertBusiness({ accountId, locationId, name });
+      await upsertBusiness({ accountId, locationId, name, placeId: loc?.metadata?.placeId || undefined });
       setSessionCookie(res, accountId);
       return res.redirect(
         "/connected?name=" + encodeURIComponent(name || "your business") + "&accountId=" + encodeURIComponent(accountId)
@@ -2160,7 +2161,7 @@ app.post("/auth/choose-location", authRouteLimiter, express.urlencoded({ extende
     }
     const picked = locations.find((loc) => (loc?.name ? loc.name.split("/").pop() : "") === locationId);
     const name = picked?.title || "";
-    await upsertBusiness({ accountId, locationId, name });
+    await upsertBusiness({ accountId, locationId, name, placeId: picked?.metadata?.placeId || undefined });
     setSessionCookie(res, accountId);
     res.redirect(
       "/connected?name=" + encodeURIComponent(name || "your business") + "&accountId=" + encodeURIComponent(accountId)
@@ -3687,6 +3688,50 @@ app.get("/admin/metrics.json", async (req, res, next) => {
     res.json(data);
   } catch (err) {
     req.log?.error(err, "Admin metrics JSON failed");
+    next(err);
+  }
+});
+
+// Backfill Google Place IDs for businesses connected before per-business
+// place_id capture existed. Uses each account's stored OAuth token — no
+// reconnect needed. Admin-gated. Safe to re-run; skips ones already set.
+app.get("/admin/backfill-place-ids", async (req, res, next) => {
+  try {
+    if (!(process.env.ADMIN_SECRET || "").trim()) {
+      return res.status(503).json({ error: "Admin disabled. Set ADMIN_SECRET in the server environment." });
+    }
+    if (!isValidAdminRequest(req)) {
+      return res.status(401).json({ error: "Unauthorized. Provide ADMIN_SECRET via X-Admin-Secret header or ?secret=." });
+    }
+    const businesses = Object.values((await getAllBusinesses()) || {});
+    let updated = 0;
+    let skipped = 0;
+    let failed = 0;
+    const details = [];
+    for (const b of businesses) {
+      if (b.placeId) { skipped += 1; continue; }
+      if (!b.accountId || !b.locationId) { skipped += 1; continue; }
+      try {
+        const locations = await listLocations(b.accountId);
+        const loc = (locations || []).find((l) => (l?.name ? l.name.split("/").pop() : "") === b.locationId);
+        const placeId = loc?.metadata?.placeId || "";
+        if (placeId) {
+          await upsertBusiness({ accountId: b.accountId, locationId: b.locationId, placeId });
+          updated += 1;
+          details.push({ accountId: b.accountId, placeId });
+        } else {
+          skipped += 1;
+          details.push({ accountId: b.accountId, note: "no placeId returned by Google" });
+        }
+      } catch (err) {
+        failed += 1;
+        details.push({ accountId: b.accountId, error: err?.message || String(err) });
+        req.log?.warn?.({ err, accountId: b.accountId }, "Place ID backfill failed for business");
+      }
+    }
+    res.json({ ok: true, total: businesses.length, updated, skipped, failed, details });
+  } catch (err) {
+    req.log?.error(err, "Place ID backfill failed");
     next(err);
   }
 });
