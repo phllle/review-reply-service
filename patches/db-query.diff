@@ -1,0 +1,12 @@
+diff --git a/src/db.js b/src/db.js
+--- a/src/db.js
++++ b/src/db.js
+@@ -38,6 +38,10 @@ function poolOptionsFromUrl(url) {
+   return opts;
+ }
+ 
++export async function query(text, params) {
++  return getPool().query(text, params);
++}
++
+ function getPool() {
