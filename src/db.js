@@ -834,6 +834,17 @@ export async function hasOpenPendingReply(accountId, locationId, reviewId) {
   return res.rows.length > 0;
 }
 
+export async function listOpenPendingRepliesForAccount(accountId, locationId) {
+  if (!useDb()) return [];
+  const res = await getPool().query(
+    `SELECT ${PENDING_REPLY_COLUMNS} FROM pending_replies
+     WHERE account_id = $1 AND location_id = $2
+       AND cancelled_at IS NULL AND sent_at IS NULL`,
+    [accountId, locationId]
+  );
+  return res.rows.map(rowToPendingReply);
+}
+
 export async function getPendingRepliesDueToSend(now = new Date()) {
   const res = await getPool().query(
     `SELECT ${PENDING_REPLY_COLUMNS} FROM pending_replies
