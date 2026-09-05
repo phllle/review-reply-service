@@ -153,7 +153,7 @@ export function registerReviewRequests(app) {
         [accountId, today]
       );
 
-      const preview = buildMessage("there", business.name || "your business", reviewUrl(business));
+      const preview = buildMessage("[first name]", business.name || "your business", reviewUrl(business));
       res.json({
         today: todayRows.rows.map(mapRow),
         preview,
