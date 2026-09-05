@@ -1,5 +1,4 @@
 (function () {
-  // Only run on the Pro page with an accountId.
   if (location.pathname.replace(/\/$/, "") !== "/pro") return;
   var app = document.getElementById("pro-app");
   var accountId = (app && app.getAttribute("data-account-id")) || "";
@@ -16,23 +15,46 @@
       return ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c];
     });
   }
+  function displayName(name) {
+    var n = String(name || "").trim();
+    if (!n) return "No name";
+    if (/^[;=?\-0-9]+$/.test(n)) return "No name";
+    if (/^;/.test(n)) return "No name";
+    return n;
+  }
   function api(path, opts) {
     return fetch(path, Object.assign({ credentials: "same-origin" }, opts)).then(function (r) {
       return r.json().then(function (d) { return { ok: r.ok, data: d }; }).catch(function () { return { ok: false, data: null }; });
     });
   }
   var qs = "accountId=" + encodeURIComponent(accountId);
+  var SEARCH_MIN = 2;
+  var SEARCH_MAX = 25;
 
   var root = document.createElement("div");
   root.id = "review-requests-root";
   root.className = "rr-wrap";
   wrapper.insertBefore(root, wrapper.firstChild);
 
-  var state = { today: [], contacts: [], preview: "", sms: null };
+  var state = { today: [], contacts: [], preview: "", sms: null, query: "" };
 
   function smsLine() {
     if (!state.sms) return "";
     return "SMS this month: " + state.sms.used + "/" + state.sms.included + " · " + state.sms.remaining + " left";
+  }
+
+  function matchesQuery(c, q) {
+    return ((c.firstName || "") + " " + (c.phone || "") + " " + (c.email || "")).toLowerCase().indexOf(q) !== -1;
+  }
+
+  function filteredContacts() {
+    var q = (state.query || "").trim().toLowerCase();
+    if (q.length < SEARCH_MIN) return [];
+    var out = [];
+    for (var i = 0; i < state.contacts.length && out.length < SEARCH_MAX; i++) {
+      if (matchesQuery(state.contacts[i], q)) out.push(state.contacts[i]);
+    }
+    return out;
   }
 
   function render() {
@@ -42,10 +64,10 @@
       '<div class="rr-grid">' +
         '<div class="rr-card">' +
           '<h3>Add a customer</h3>' +
-          '<label class="rr-field">First name<input id="rr-first" type="text" placeholder="Maria"></label>' +
-          '<label class="rr-field">Phone<input id="rr-phone" type="tel" placeholder="(555) 123-4567"></label>' +
-          '<label class="rr-field">Email (optional)<input id="rr-email" type="email" placeholder="maria@example.com"></label>' +
-          '<label class="rr-field">Birthday (optional)<input id="rr-birthday" type="text" placeholder="YYYY-MM-DD or MM/DD"></label>' +
+          '<label class="rr-field">First name<input id="rr-first" type="text" placeholder="Maria" autocomplete="off"></label>' +
+          '<label class="rr-field">Phone<input id="rr-phone" type="tel" placeholder="(555) 123-4567" autocomplete="off"></label>' +
+          '<label class="rr-field">Email (optional)<input id="rr-email" type="email" placeholder="maria@example.com" autocomplete="off"></label>' +
+          '<label class="rr-field">Birthday (optional)<input id="rr-birthday" type="text" placeholder="YYYY-MM-DD or MM/DD" autocomplete="off"></label>' +
           '<label class="rr-check"><input id="rr-perm" type="checkbox"> <span>They agreed to receive messages from this business.</span></label>' +
           '<button type="button" id="rr-add" class="btn btn-primary">Add &amp; mark today</button>' +
           '<p id="rr-add-msg" class="rr-msg" aria-live="polite"></p>' +
@@ -61,9 +83,10 @@
         '</div>' +
       '</div>' +
       '<div class="rr-card" style="margin-top:14px">' +
-        '<h3>All customers (' + state.contacts.length + ')</h3>' +
-        '<input id="rr-search" class="rr-search" type="text" placeholder="Search name, phone, or email">' +
-        '<div id="rr-all">' + renderAll(state.contacts) + '</div>' +
+        '<h3>Find a customer</h3>' +
+        '<p class="rr-muted">' + state.contacts.length + ' on file. Type at least 2 letters or digits of a name, phone, or email.</p>' +
+        '<input id="rr-search" class="rr-search" type="text" placeholder="Search name, phone, or email" value="' + esc(state.query) + '">' +
+        '<div id="rr-all">' + renderAll(filteredContacts()) + '</div>' +
       '</div>';
     wire();
   }
@@ -71,27 +94,40 @@
   function renderToday() {
     if (!state.today.length) return '<p class="rr-muted">No one marked yet today.</p>';
     return state.today.map(function (c) {
-      return '<div class="rr-row"><span>' + esc(c.firstName || "(no name)") +
+      return '<div class="rr-row"><span>' + esc(displayName(c.firstName)) +
         ' <span class="rr-muted">' + esc(c.phone || c.email || "") + '</span></span>' +
         '<button type="button" class="btn rr-unmark" data-id="' + esc(c.id) + '" title="Remove from today">&times;</button></div>';
     }).join("");
   }
 
   function renderAll(list) {
-    if (!list.length) return '<p class="rr-muted">No customers yet.</p>';
-    return '<table class="rr-table"><thead><tr><th>Name</th><th>Contact</th><th>Status</th><th></th></tr></thead><tbody>' +
+    var q = (state.query || "").trim();
+    if (q.length < SEARCH_MIN) {
+      return '<p class="rr-muted">Search to mark someone who is already on your list.</p>';
+    }
+    if (!list.length) return '<p class="rr-muted">No matches.</p>';
+    var extra = "";
+    var totalHits = 0;
+    var ql = q.toLowerCase();
+    for (var i = 0; i < state.contacts.length; i++) {
+      if (matchesQuery(state.contacts[i], ql)) totalHits++;
+    }
+    if (totalHits > list.length) extra = '<p class="rr-muted">Showing ' + list.length + ' of ' + totalHits + '. Narrow the search.</p>';
+    return extra + '<table class="rr-table"><thead><tr><th>Name</th><th>Contact</th><th>Status</th><th></th></tr></thead><tbody>' +
       list.map(function (c) {
         var status = c.visitedToday ? '<span class="rr-chip">Today</span>' : (c.requestedAt ? '<span class="rr-muted">Requested</span>' : "");
         var action = c.visitedToday
           ? '<button type="button" class="btn rr-unmark" data-id="' + esc(c.id) + '">Remove</button>'
           : '<button type="button" class="btn rr-mark" data-id="' + esc(c.id) + '">Came in today</button>';
-        return '<tr><td>' + esc(c.firstName || "(no name)") + '</td><td class="rr-muted">' +
+        var nameClass = displayName(c.firstName) === "No name" ? "rr-muted" : "";
+        return '<tr><td class="' + nameClass + '">' + esc(displayName(c.firstName)) + '</td><td class="rr-muted">' +
           esc(c.phone || c.email || "") + '</td><td>' + status + '</td><td>' + action + '</td></tr>';
       }).join("") +
       '</tbody></table>';
   }
 
   function load() {
+    var keep = state.query;
     return api("/pro/review-requests?" + qs).then(function (res) {
       if (!res.ok || !res.data || res.data.error) {
         root.innerHTML = '<div class="rr-card"><p class="rr-muted">' + esc((res.data && res.data.error) || "Could not load review requests.") + "</p></div>";
@@ -101,6 +137,7 @@
       state.contacts = res.data.contacts || [];
       state.preview = res.data.preview || "";
       state.sms = res.data.sms || null;
+      state.query = keep || "";
       render();
     });
   }
@@ -117,14 +154,13 @@
     var addBtn = document.getElementById("rr-add");
     if (addBtn) addBtn.addEventListener("click", onAdd);
     var search = document.getElementById("rr-search");
-    if (search) search.addEventListener("input", function () {
-      var q = search.value.trim().toLowerCase();
-      var filtered = !q ? state.contacts : state.contacts.filter(function (c) {
-        return ((c.firstName || "") + " " + (c.phone || "") + " " + (c.email || "")).toLowerCase().indexOf(q) !== -1;
+    if (search) {
+      search.addEventListener("input", function () {
+        state.query = search.value;
+        document.getElementById("rr-all").innerHTML = renderAll(filteredContacts());
+        bindRowButtons();
       });
-      document.getElementById("rr-all").innerHTML = renderAll(filtered);
-      bindRowButtons();
-    });
+    }
     var sendBtn = document.getElementById("rr-send");
     if (sendBtn) sendBtn.addEventListener("click", openConfirm);
     bindRowButtons();
@@ -183,7 +219,7 @@
         '<div class="rr-preview">' + esc(state.preview) + '</div>' +
         '<div id="rr-people">' + state.today.map(function (c) {
           return '<label class="rr-check"><input type="checkbox" class="rr-send-check" data-id="' + esc(c.id) + '" checked> <span>' +
-            esc(c.firstName || "(no name)") + ' <span class="rr-muted">' + esc(c.phone || "") + '</span></span></label>';
+            esc(displayName(c.firstName)) + ' <span class="rr-muted">' + esc(c.phone || "") + '</span></span></label>';
         }).join("") + '</div>' +
         '<div class="rr-bar">' +
           '<button type="button" class="btn" id="rr-cancel">Cancel</button>' +
