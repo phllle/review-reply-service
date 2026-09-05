@@ -1,5 +1,4 @@
 (function () {
-  // Only run on the Pro page with an accountId.
   if (location.pathname.replace(/\/$/, "") !== "/pro") return;
   var app = document.getElementById("pro-app");
   var accountId = (app && app.getAttribute("data-account-id")) || "";
@@ -15,6 +14,13 @@
     return String(s == null ? "" : s).replace(/[&<>"]/g, function (c) {
       return ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c];
     });
+  }
+  function displayName(name) {
+    var n = String(name || "").trim();
+    if (!n) return "No name";
+    if (/^[;=?\-0-9]+$/.test(n)) return "No name";
+    if (/^;/.test(n)) return "No name";
+    return n;
   }
   function api(path, opts) {
     return fetch(path, Object.assign({ credentials: "same-origin" }, opts)).then(function (r) {
@@ -42,10 +48,10 @@
       '<div class="rr-grid">' +
         '<div class="rr-card">' +
           '<h3>Add a customer</h3>' +
-          '<label class="rr-field">First name<input id="rr-first" type="text" placeholder="Maria"></label>' +
-          '<label class="rr-field">Phone<input id="rr-phone" type="tel" placeholder="(555) 123-4567"></label>' +
-          '<label class="rr-field">Email (optional)<input id="rr-email" type="email" placeholder="maria@example.com"></label>' +
-          '<label class="rr-field">Birthday (optional)<input id="rr-birthday" type="text" placeholder="YYYY-MM-DD or MM/DD"></label>' +
+          '<label class="rr-field">First name<input id="rr-first" type="text" placeholder="Maria" autocomplete="off"></label>' +
+          '<label class="rr-field">Phone<input id="rr-phone" type="tel" placeholder="(555) 123-4567" autocomplete="off"></label>' +
+          '<label class="rr-field">Email (optional)<input id="rr-email" type="email" placeholder="maria@example.com" autocomplete="off"></label>' +
+          '<label class="rr-field">Birthday (optional)<input id="rr-birthday" type="text" placeholder="YYYY-MM-DD or MM/DD" autocomplete="off"></label>' +
           '<label class="rr-check"><input id="rr-perm" type="checkbox"> <span>They agreed to receive messages from this business.</span></label>' +
           '<button type="button" id="rr-add" class="btn btn-primary">Add &amp; mark today</button>' +
           '<p id="rr-add-msg" class="rr-msg" aria-live="polite"></p>' +
@@ -71,7 +77,7 @@
   function renderToday() {
     if (!state.today.length) return '<p class="rr-muted">No one marked yet today.</p>';
     return state.today.map(function (c) {
-      return '<div class="rr-row"><span>' + esc(c.firstName || "(no name)") +
+      return '<div class="rr-row"><span>' + esc(displayName(c.firstName)) +
         ' <span class="rr-muted">' + esc(c.phone || c.email || "") + '</span></span>' +
         '<button type="button" class="btn rr-unmark" data-id="' + esc(c.id) + '" title="Remove from today">&times;</button></div>';
     }).join("");
@@ -85,7 +91,8 @@
         var action = c.visitedToday
           ? '<button type="button" class="btn rr-unmark" data-id="' + esc(c.id) + '">Remove</button>'
           : '<button type="button" class="btn rr-mark" data-id="' + esc(c.id) + '">Came in today</button>';
-        return '<tr><td>' + esc(c.firstName || "(no name)") + '</td><td class="rr-muted">' +
+        var nameClass = displayName(c.firstName) === "No name" ? "rr-muted" : "";
+        return '<tr><td class="' + nameClass + '">' + esc(displayName(c.firstName)) + '</td><td class="rr-muted">' +
           esc(c.phone || c.email || "") + '</td><td>' + status + '</td><td>' + action + '</td></tr>';
       }).join("") +
       '</tbody></table>';
@@ -183,7 +190,7 @@
         '<div class="rr-preview">' + esc(state.preview) + '</div>' +
         '<div id="rr-people">' + state.today.map(function (c) {
           return '<label class="rr-check"><input type="checkbox" class="rr-send-check" data-id="' + esc(c.id) + '" checked> <span>' +
-            esc(c.firstName || "(no name)") + ' <span class="rr-muted">' + esc(c.phone || "") + '</span></span></label>';
+            esc(displayName(c.firstName)) + ' <span class="rr-muted">' + esc(c.phone || "") + '</span></span></label>';
         }).join("") + '</div>' +
         '<div class="rr-bar">' +
           '<button type="button" class="btn" id="rr-cancel">Cancel</button>' +
