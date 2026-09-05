@@ -57,6 +57,7 @@ import {
 import { verifyCancelToken } from "./replyDelay.js";
 import { publicContactEmail, publicContactMailtoHref } from "./publicContact.js";
 import { registerReviewFeed } from "./reviewFeed.js";
+import { registerReviewRequests } from "./reviewRequests.js";
 import {
   getPlanAmountsCents,
   computeMrr,
@@ -241,6 +242,7 @@ app.post("/webhooks/twilio/sms", express.urlencoded({ extended: true }), twilioS
 app.use(express.json());
 app.use(express.static("public"));
 registerReviewFeed(app);
+registerReviewRequests(app);
 
 const proUpload = multer({
   storage: multer.memoryStorage(),
@@ -2998,6 +3000,7 @@ app.get("/pro", async (req, res, next) => {
   </div>
 </div>
 <script src="/pro.js"></script>
+<script src="/review-requests.js"></script>
 </body>
 </html>`);
   } catch (err) {
