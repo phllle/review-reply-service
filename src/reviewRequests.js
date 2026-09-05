@@ -10,7 +10,8 @@ import * as db from "./db.js";
 import { getBusiness } from "./businesses.js";
 import { canAccessAccount, readSessionAccountId } from "./sessionAuth.js";
 import { getCurrentMonthKey, getIncludedSmsForTier, normalizeProTier } from "./proPlan.js";
-import { sendProCampaignSms } from "./campaignSms.js";
+import { sendProCampaignSms, normalizePhone } from "./campaignSms.js";
+import { sendCampaignEmail } from "./campaignEmail.js";
 
 const REQUEST_COOLDOWN_DAYS = 90;
 
@@ -68,9 +69,24 @@ function reviewUrl(business) {
   return `https://www.google.com/maps/search/?api=1&query=${q}`;
 }
 
+function greetName(firstName) {
+  return (firstName || "").trim() || "there";
+}
+
+/** SMS copy (kept short for one segment; STOP line for A2P compliance). */
 function buildMessage(firstName, businessName, url) {
-  const first = (firstName || "there").trim() || "there";
-  return `Hi ${first}, it's ${businessName}. Thanks for coming in. If we earned it, a quick Google review helps: ${url}`;
+  return `Hi ${greetName(firstName)}, it's ${businessName}. Thanks for coming in. If we earned it, a quick Google review helps: ${url} Reply STOP to opt out.`;
+}
+
+/** Email copy — explicitly invites a 5-star review. */
+function buildEmail(firstName, businessName, url) {
+  const subject = `A quick favor from ${businessName}`;
+  const bodyContent =
+    `Hi ${greetName(firstName)},\n\n` +
+    `Thanks for coming in to ${businessName}! If you enjoyed your visit, a 5-star Google review would be truly appreciated — it helps our small business more than you know.\n\n` +
+    `Leave a review here: ${url}\n\n` +
+    `Thank you!\n${businessName}`;
+  return { subject, bodyContent };
 }
 
 /** Resolve account + enforce Pro + session access. Returns { business } or sends an error and returns null. */
@@ -168,17 +184,28 @@ export function registerReviewRequests(app) {
       if (!phone && !email) {
         return res.status(400).json({ error: "Add a phone or email." });
       }
-      const digits = phoneDigits(phone);
+
+      // Normalize + validate phone up front so bad numbers never enter the DB
+      // (and every stored number is send-ready E.164, e.g. +15551234567).
+      let normalizedPhone = "";
+      if (phone) {
+        normalizedPhone = normalizePhone(phone) || "";
+        if (!normalizedPhone) {
+          return res.status(400).json({ error: "Enter a 10-digit US mobile number." });
+        }
+      }
+      // Match existing contacts on the last 10 digits (handles CSV rows stored
+      // as 10-digit, 11-digit, or formatted) or on lowercased email.
+      const matchTen = phoneDigits(normalizedPhone).slice(-10);
       const today = todayLA();
 
-      // Merge on phone digits or lowercased email; else insert.
       const existing = await db.query(
         `SELECT id FROM pro_contacts
           WHERE account_id = $1
-            AND ( ($2 <> '' AND regexp_replace(COALESCE(phone,''), '\\D', '', 'g') = $2)
+            AND ( ($2 <> '' AND RIGHT(regexp_replace(COALESCE(phone,''), '\\D', '', 'g'), 10) = $2)
                OR ($3 <> '' AND LOWER(COALESCE(email,'')) = $3) )
           LIMIT 1`,
-        [accountId, digits, email]
+        [accountId, matchTen, email]
       );
 
       let id;
@@ -192,14 +219,14 @@ export function registerReviewRequests(app) {
              birthday = COALESCE($5, birthday),
              visited_on = CASE WHEN $6 THEN $7::date ELSE visited_on END
            WHERE id = $1 AND account_id = $8`,
-          [id, firstName, phone, email, birthday, markToday, today, accountId]
+          [id, firstName, normalizedPhone, email, birthday, markToday, today, accountId]
         );
       } else {
         const inserted = await db.query(
           `INSERT INTO pro_contacts (account_id, email, first_name, birthday, phone, source, visited_on, created_at)
            VALUES ($1, NULLIF($2,''), NULLIF($3,''), $4, NULLIF($5,''), 'manual', $6, NOW())
            RETURNING id`,
-          [accountId, email, firstName, birthday, phone, markToday ? today : null]
+          [accountId, email, firstName, birthday, normalizedPhone, markToday ? today : null]
         );
         id = inserted.rows[0].id;
       }
@@ -242,15 +269,18 @@ export function registerReviewRequests(app) {
       const today = todayLA();
       const businessName = business.name || "your business";
       const url = reviewUrl(business);
+      const replyTo = business.contact && /\S+@\S+/.test(business.contact) ? business.contact : undefined;
 
+      // Reach today's visitors on any channel they have (SMS and/or email).
       const rows = (
         await db.query(
-          `SELECT id, first_name, phone
+          `SELECT id, first_name, phone, email
              FROM pro_contacts
             WHERE account_id = $1
               AND visited_on = $2
               AND unsubscribed_at IS NULL
-              AND phone IS NOT NULL AND TRIM(phone) <> ''
+              AND ( (phone IS NOT NULL AND TRIM(phone) <> '')
+                 OR (email IS NOT NULL AND TRIM(email) <> '') )
               AND (review_requested_at IS NULL OR review_requested_at < NOW() - INTERVAL '${REQUEST_COOLDOWN_DAYS} days')`,
           [accountId, today]
         )
@@ -259,21 +289,34 @@ export function registerReviewRequests(app) {
       let sent = 0;
       let failed = 0;
       for (const c of rows) {
-        try {
-          const msg = buildMessage(c.first_name, businessName, url);
-          const ok = await sendProCampaignSms(accountId, c.phone, msg, req.log || console);
-          if (ok) {
-            sent += 1;
-            await db.query(
-              "UPDATE pro_contacts SET review_requested_at = NOW(), visited_on = NULL WHERE id = $1 AND account_id = $2",
-              [c.id, accountId]
-            );
-          } else {
-            failed += 1;
+        let reached = false;
+        const phone = (c.phone || "").trim();
+        const email = (c.email || "").trim();
+        if (phone) {
+          try {
+            const ok = await sendProCampaignSms(accountId, phone, buildMessage(c.first_name, businessName, url), req.log || console);
+            if (ok) reached = true;
+          } catch (err) {
+            req.log?.error?.({ err, accountId, id: c.id }, "Review request SMS failed");
           }
-        } catch (err) {
+        }
+        if (email) {
+          try {
+            const { subject, bodyContent } = buildEmail(c.first_name, businessName, url);
+            await sendCampaignEmail({ to: email, subject, bodyContent, businessName, accountId, replyTo });
+            reached = true;
+          } catch (err) {
+            req.log?.error?.({ err, accountId, id: c.id }, "Review request email failed");
+          }
+        }
+        if (reached) {
+          sent += 1;
+          await db.query(
+            "UPDATE pro_contacts SET review_requested_at = NOW(), visited_on = NULL WHERE id = $1 AND account_id = $2",
+            [c.id, accountId]
+          );
+        } else {
           failed += 1;
-          req.log?.error?.({ err, accountId, id: c.id }, "Review request SMS failed");
         }
       }
       res.json({ ok: true, sent, failed, sms: await smsUsage(business) });

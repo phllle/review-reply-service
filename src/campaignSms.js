@@ -52,7 +52,7 @@ export function getCampaignSmsDiagnostics() {
 }
 
 /** Normalize US phone to E.164 (+1XXXXXXXXXX). Returns null if not valid. */
-function normalizePhone(phone) {
+export function normalizePhone(phone) {
   if (!phone || typeof phone !== "string") return null;
   const digits = phone.replace(/\D/g, "");
   if (digits.length === 10) return `+1${digits}`;
