@@ -1114,7 +1114,6 @@ app.get("/connected", async (req, res, next) => {
     <a class="app-nav-brand" href="/connected${accountId ? "?accountId=" + encodeURIComponent(accountId) : ""}"><div class="logo-icon">💬</div>Replyr</a>
     <div class="app-nav-tabs">
       <a class="app-nav-tab active" href="/connected${accountId ? "?accountId=" + encodeURIComponent(accountId) : ""}">Reviews</a>
-      <a class="app-nav-tab" href="/connected${accountId ? "?accountId=" + encodeURIComponent(accountId) : ""}#settings">Settings</a>
       <a class="app-nav-tab" href="${accountId ? "/pro?accountId=" + encodeURIComponent(accountId) : "/subscribe"}">Campaigns</a>
       <a class="app-nav-tab" href="/subscribe${accountId ? "?accountId=" + encodeURIComponent(accountId) : ""}">Billing</a>
     </div>
