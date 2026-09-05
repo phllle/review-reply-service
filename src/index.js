@@ -2641,6 +2641,7 @@ app.get("/pro", async (req, res, next) => {
 <title>Replyr Pro – Campaigns</title>
 <link rel="icon" type="image/svg+xml" href="/favicon.svg">
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,wght@0,300;0,400;0,600;1,300&family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/review-requests.css">
 <style>
   :root {
     --bg: #0f0f11;

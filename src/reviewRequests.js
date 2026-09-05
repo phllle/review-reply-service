@@ -118,21 +118,6 @@ export function registerReviewRequests(app) {
       const { accountId, business } = ctx;
       const today = todayLA();
 
-      const todayRows = await db.query(
-        `SELECT id, first_name, phone, email, visited_on, review_requested_at
-           FROM pro_contacts
-          WHERE account_id = $1 AND visited_on = $2
-          ORDER BY first_name ASC NULLS LAST`,
-        [accountId, today]
-      );
-      const allRows = await db.query(
-        `SELECT id, first_name, phone, email, birthday, visited_on, review_requested_at, unsubscribed_at
-           FROM pro_contacts
-          WHERE account_id = $1
-          ORDER BY first_name ASC NULLS LAST
-          LIMIT 1000`,
-        [accountId]
-      );
       const mapRow = (r) => ({
         id: r.id,
         firstName: r.first_name || "",
@@ -144,10 +129,17 @@ export function registerReviewRequests(app) {
         unsubscribed: r.unsubscribed_at != null
       });
 
+      const todayRows = await db.query(
+        `SELECT id, first_name, phone, email, visited_on, review_requested_at
+           FROM pro_contacts
+          WHERE account_id = $1 AND visited_on = $2
+          ORDER BY first_name ASC NULLS LAST`,
+        [accountId, today]
+      );
+
       const preview = buildMessage("there", business.name || "your business", reviewUrl(business));
       res.json({
         today: todayRows.rows.map(mapRow),
-        contacts: allRows.rows.map(mapRow),
         preview,
         sms: await smsUsage(business)
       });
