@@ -38,6 +38,10 @@ function poolOptionsFromUrl(url) {
   return opts;
 }
 
+export async function query(text, params) {
+  return getPool().query(text, params);
+}
+
 function getPool() {
   if (!pool) {
     const url = process.env.DATABASE_URL;
