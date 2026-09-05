@@ -13,8 +13,6 @@ import { getCurrentMonthKey, getIncludedSmsForTier, normalizeProTier } from "./p
 import { sendProCampaignSms, normalizePhone } from "./campaignSms.js";
 import { sendCampaignEmail } from "./campaignEmail.js";
 
-const REQUEST_COOLDOWN_DAYS = 90;
-
 let schemaReady = null;
 function ensureSchema() {
   if (!schemaReady) {
@@ -200,7 +198,7 @@ export function registerReviewRequests(app) {
       const today = todayLA();
 
       const existing = await db.query(
-        `SELECT id FROM pro_contacts
+        `SELECT id, review_requested_at FROM pro_contacts
           WHERE account_id = $1
             AND ( ($2 <> '' AND RIGHT(regexp_replace(COALESCE(phone,''), '\\D', '', 'g'), 10) = $2)
                OR ($3 <> '' AND LOWER(COALESCE(email,'')) = $3) )
@@ -209,7 +207,13 @@ export function registerReviewRequests(app) {
       );
 
       let id;
-      if (existing.rows[0]) {
+      const existed = !!existing.rows[0];
+      // Once a contact has been sent a review request, we never ask again.
+      const alreadyRequested = existed && existing.rows[0].review_requested_at != null;
+      // Only mark "came in today" if we'd actually send — i.e. not already asked.
+      const willMarkToday = markToday && !alreadyRequested;
+
+      if (existed) {
         id = existing.rows[0].id;
         await db.query(
           `UPDATE pro_contacts SET
@@ -219,18 +223,18 @@ export function registerReviewRequests(app) {
              birthday = COALESCE($5, birthday),
              visited_on = CASE WHEN $6 THEN $7::date ELSE visited_on END
            WHERE id = $1 AND account_id = $8`,
-          [id, firstName, normalizedPhone, email, birthday, markToday, today, accountId]
+          [id, firstName, normalizedPhone, email, birthday, willMarkToday, today, accountId]
         );
       } else {
         const inserted = await db.query(
           `INSERT INTO pro_contacts (account_id, email, first_name, birthday, phone, source, visited_on, created_at)
            VALUES ($1, NULLIF($2,''), NULLIF($3,''), $4, NULLIF($5,''), 'manual', $6, NOW())
            RETURNING id`,
-          [accountId, email, firstName, birthday, normalizedPhone, markToday ? today : null]
+          [accountId, email, firstName, birthday, normalizedPhone, willMarkToday ? today : null]
         );
         id = inserted.rows[0].id;
       }
-      res.json({ ok: true, id, markedToday: markToday });
+      res.json({ ok: true, id, existed, alreadyRequested, markedToday: willMarkToday });
     } catch (err) {
       next(err);
     }
@@ -281,7 +285,7 @@ export function registerReviewRequests(app) {
               AND unsubscribed_at IS NULL
               AND ( (phone IS NOT NULL AND TRIM(phone) <> '')
                  OR (email IS NOT NULL AND TRIM(email) <> '') )
-              AND (review_requested_at IS NULL OR review_requested_at < NOW() - INTERVAL '${REQUEST_COOLDOWN_DAYS} days')`,
+              AND review_requested_at IS NULL`,
           [accountId, today]
         )
       ).rows.filter((r) => !excludeIds.includes(String(r.id)));
