@@ -142,7 +142,19 @@
         msg.textContent = (res.data && res.data.error) || "Could not add.";
         return;
       }
-      load();
+      var d = res.data;
+      var note = "";
+      if (d.alreadyRequested) {
+        note = "Already in your list — this customer was already asked for a Google review, so they won't be asked again.";
+      } else if (d.existed) {
+        note = "Already in your list — marked as visited today.";
+      } else {
+        note = "Added and marked for today.";
+      }
+      load().then(function () {
+        var m2 = document.getElementById("rr-add-msg");
+        if (m2) m2.textContent = note;
+      });
     });
   }
 
@@ -153,7 +165,7 @@
     bg.innerHTML =
       '<div class="rr-modal">' +
         '<h3>Send review requests</h3>' +
-        '<p class="rr-muted">Unchecked people will be skipped. We won\'t re-ask anyone messaged in the last 90 days.</p>' +
+        '<p class="rr-muted">Unchecked people will be skipped. Anyone already asked for a Google review won\'t be asked again.</p>' +
         '<div class="rr-preview">' + esc(state.preview) + '</div>' +
         '<div id="rr-people">' + state.today.map(function (c) {
           return '<label class="rr-check"><input type="checkbox" class="rr-send-check" data-id="' + esc(c.id) + '" checked> <span>' +
