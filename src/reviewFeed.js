@@ -3,13 +3,7 @@ import { listReviews } from "./google.js";
 import { getBusiness } from "./businesses.js";
 import { canAccessAccount, readSessionAccountId } from "./sessionAuth.js";
 
-const STAR = {
-  STAR_RATING_ONE: 1,
-  STAR_RATING_TWO: 2,
-  STAR_RATING_THREE: 3,
-  STAR_RATING_FOUR: 4,
-  STAR_RATING_FIVE: 5
-};
+const STAR = { ONE: 1, TWO: 2, THREE: 3, FOUR: 4, FIVE: 5 };
 
 export function registerReviewFeed(app) {
   app.get("/reviews", async (req, res, next) => {
