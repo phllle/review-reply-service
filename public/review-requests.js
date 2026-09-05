@@ -28,33 +28,17 @@
     });
   }
   var qs = "accountId=" + encodeURIComponent(accountId);
-  var SEARCH_MIN = 2;
-  var SEARCH_MAX = 25;
 
   var root = document.createElement("div");
   root.id = "review-requests-root";
   root.className = "rr-wrap";
   wrapper.insertBefore(root, wrapper.firstChild);
 
-  var state = { today: [], contacts: [], preview: "", sms: null, query: "" };
+  var state = { today: [], preview: "", sms: null };
 
   function smsLine() {
     if (!state.sms) return "";
     return "SMS this month: " + state.sms.used + "/" + state.sms.included + " · " + state.sms.remaining + " left";
-  }
-
-  function matchesQuery(c, q) {
-    return ((c.firstName || "") + " " + (c.phone || "") + " " + (c.email || "")).toLowerCase().indexOf(q) !== -1;
-  }
-
-  function filteredContacts() {
-    var q = (state.query || "").trim().toLowerCase();
-    if (q.length < SEARCH_MIN) return [];
-    var out = [];
-    for (var i = 0; i < state.contacts.length && out.length < SEARCH_MAX; i++) {
-      if (matchesQuery(state.contacts[i], q)) out.push(state.contacts[i]);
-    }
-    return out;
   }
 
   function render() {
@@ -81,18 +65,12 @@
           '</div>' +
           '<p id="rr-send-msg" class="rr-msg" aria-live="polite"></p>' +
         '</div>' +
-      '</div>' +
-      '<div class="rr-card" style="margin-top:14px">' +
-        '<h3>Find a customer</h3>' +
-        '<p class="rr-muted">' + state.contacts.length + ' on file. Type at least 2 letters or digits of a name, phone, or email.</p>' +
-        '<input id="rr-search" class="rr-search" type="text" placeholder="Search name, phone, or email" value="' + esc(state.query) + '">' +
-        '<div id="rr-all">' + renderAll(filteredContacts()) + '</div>' +
       '</div>';
     wire();
   }
 
   function renderToday() {
-    if (!state.today.length) return '<p class="rr-muted">No one marked yet today.</p>';
+    if (!state.today.length) return '<p class="rr-muted">No one marked yet today. Add a customer to include them in today\'s send.</p>';
     return state.today.map(function (c) {
       return '<div class="rr-row"><span>' + esc(displayName(c.firstName)) +
         ' <span class="rr-muted">' + esc(c.phone || c.email || "") + '</span></span>' +
@@ -100,44 +78,15 @@
     }).join("");
   }
 
-  function renderAll(list) {
-    var q = (state.query || "").trim();
-    if (q.length < SEARCH_MIN) {
-      return '<p class="rr-muted">Search to mark someone who is already on your list.</p>';
-    }
-    if (!list.length) return '<p class="rr-muted">No matches.</p>';
-    var extra = "";
-    var totalHits = 0;
-    var ql = q.toLowerCase();
-    for (var i = 0; i < state.contacts.length; i++) {
-      if (matchesQuery(state.contacts[i], ql)) totalHits++;
-    }
-    if (totalHits > list.length) extra = '<p class="rr-muted">Showing ' + list.length + ' of ' + totalHits + '. Narrow the search.</p>';
-    return extra + '<table class="rr-table"><thead><tr><th>Name</th><th>Contact</th><th>Status</th><th></th></tr></thead><tbody>' +
-      list.map(function (c) {
-        var status = c.visitedToday ? '<span class="rr-chip">Today</span>' : (c.requestedAt ? '<span class="rr-muted">Requested</span>' : "");
-        var action = c.visitedToday
-          ? '<button type="button" class="btn rr-unmark" data-id="' + esc(c.id) + '">Remove</button>'
-          : '<button type="button" class="btn rr-mark" data-id="' + esc(c.id) + '">Came in today</button>';
-        var nameClass = displayName(c.firstName) === "No name" ? "rr-muted" : "";
-        return '<tr><td class="' + nameClass + '">' + esc(displayName(c.firstName)) + '</td><td class="rr-muted">' +
-          esc(c.phone || c.email || "") + '</td><td>' + status + '</td><td>' + action + '</td></tr>';
-      }).join("") +
-      '</tbody></table>';
-  }
-
   function load() {
-    var keep = state.query;
     return api("/pro/review-requests?" + qs).then(function (res) {
       if (!res.ok || !res.data || res.data.error) {
         root.innerHTML = '<div class="rr-card"><p class="rr-muted">' + esc((res.data && res.data.error) || "Could not load review requests.") + "</p></div>";
         return;
       }
       state.today = res.data.today || [];
-      state.contacts = res.data.contacts || [];
       state.preview = res.data.preview || "";
       state.sms = res.data.sms || null;
-      state.query = keep || "";
       render();
     });
   }
@@ -153,23 +102,12 @@
   function wire() {
     var addBtn = document.getElementById("rr-add");
     if (addBtn) addBtn.addEventListener("click", onAdd);
-    var search = document.getElementById("rr-search");
-    if (search) {
-      search.addEventListener("input", function () {
-        state.query = search.value;
-        document.getElementById("rr-all").innerHTML = renderAll(filteredContacts());
-        bindRowButtons();
-      });
-    }
     var sendBtn = document.getElementById("rr-send");
     if (sendBtn) sendBtn.addEventListener("click", openConfirm);
     bindRowButtons();
   }
 
   function bindRowButtons() {
-    Array.prototype.forEach.call(document.querySelectorAll(".rr-mark"), function (b) {
-      b.onclick = function () { setVisit(b.getAttribute("data-id"), true); };
-    });
     Array.prototype.forEach.call(document.querySelectorAll(".rr-unmark"), function (b) {
       b.onclick = function () { setVisit(b.getAttribute("data-id"), false); };
     });
