@@ -28,17 +28,33 @@
     });
   }
   var qs = "accountId=" + encodeURIComponent(accountId);
+  var SEARCH_MIN = 2;
+  var SEARCH_MAX = 25;
 
   var root = document.createElement("div");
   root.id = "review-requests-root";
   root.className = "rr-wrap";
   wrapper.insertBefore(root, wrapper.firstChild);
 
-  var state = { today: [], contacts: [], preview: "", sms: null };
+  var state = { today: [], contacts: [], preview: "", sms: null, query: "" };
 
   function smsLine() {
     if (!state.sms) return "";
     return "SMS this month: " + state.sms.used + "/" + state.sms.included + " · " + state.sms.remaining + " left";
+  }
+
+  function matchesQuery(c, q) {
+    return ((c.firstName || "") + " " + (c.phone || "") + " " + (c.email || "")).toLowerCase().indexOf(q) !== -1;
+  }
+
+  function filteredContacts() {
+    var q = (state.query || "").trim().toLowerCase();
+    if (q.length < SEARCH_MIN) return [];
+    var out = [];
+    for (var i = 0; i < state.contacts.length && out.length < SEARCH_MAX; i++) {
+      if (matchesQuery(state.contacts[i], q)) out.push(state.contacts[i]);
+    }
+    return out;
   }
 
   function render() {
@@ -67,9 +83,10 @@
         '</div>' +
       '</div>' +
       '<div class="rr-card" style="margin-top:14px">' +
-        '<h3>All customers (' + state.contacts.length + ')</h3>' +
-        '<input id="rr-search" class="rr-search" type="text" placeholder="Search name, phone, or email">' +
-        '<div id="rr-all">' + renderAll(state.contacts) + '</div>' +
+        '<h3>Find a customer</h3>' +
+        '<p class="rr-muted">' + state.contacts.length + ' on file. Type at least 2 letters or digits of a name, phone, or email.</p>' +
+        '<input id="rr-search" class="rr-search" type="text" placeholder="Search name, phone, or email" value="' + esc(state.query) + '">' +
+        '<div id="rr-all">' + renderAll(filteredContacts()) + '</div>' +
       '</div>';
     wire();
   }
@@ -84,8 +101,19 @@
   }
 
   function renderAll(list) {
-    if (!list.length) return '<p class="rr-muted">No customers yet.</p>';
-    return '<table class="rr-table"><thead><tr><th>Name</th><th>Contact</th><th>Status</th><th></th></tr></thead><tbody>' +
+    var q = (state.query || "").trim();
+    if (q.length < SEARCH_MIN) {
+      return '<p class="rr-muted">Search to mark someone who is already on your list.</p>';
+    }
+    if (!list.length) return '<p class="rr-muted">No matches.</p>';
+    var extra = "";
+    var totalHits = 0;
+    var ql = q.toLowerCase();
+    for (var i = 0; i < state.contacts.length; i++) {
+      if (matchesQuery(state.contacts[i], ql)) totalHits++;
+    }
+    if (totalHits > list.length) extra = '<p class="rr-muted">Showing ' + list.length + ' of ' + totalHits + '. Narrow the search.</p>';
+    return extra + '<table class="rr-table"><thead><tr><th>Name</th><th>Contact</th><th>Status</th><th></th></tr></thead><tbody>' +
       list.map(function (c) {
         var status = c.visitedToday ? '<span class="rr-chip">Today</span>' : (c.requestedAt ? '<span class="rr-muted">Requested</span>' : "");
         var action = c.visitedToday
@@ -99,6 +127,7 @@
   }
 
   function load() {
+    var keep = state.query;
     return api("/pro/review-requests?" + qs).then(function (res) {
       if (!res.ok || !res.data || res.data.error) {
         root.innerHTML = '<div class="rr-card"><p class="rr-muted">' + esc((res.data && res.data.error) || "Could not load review requests.") + "</p></div>";
@@ -108,6 +137,7 @@
       state.contacts = res.data.contacts || [];
       state.preview = res.data.preview || "";
       state.sms = res.data.sms || null;
+      state.query = keep || "";
       render();
     });
   }
@@ -124,14 +154,13 @@
     var addBtn = document.getElementById("rr-add");
     if (addBtn) addBtn.addEventListener("click", onAdd);
     var search = document.getElementById("rr-search");
-    if (search) search.addEventListener("input", function () {
-      var q = search.value.trim().toLowerCase();
-      var filtered = !q ? state.contacts : state.contacts.filter(function (c) {
-        return ((c.firstName || "") + " " + (c.phone || "") + " " + (c.email || "")).toLowerCase().indexOf(q) !== -1;
+    if (search) {
+      search.addEventListener("input", function () {
+        state.query = search.value;
+        document.getElementById("rr-all").innerHTML = renderAll(filteredContacts());
+        bindRowButtons();
       });
-      document.getElementById("rr-all").innerHTML = renderAll(filtered);
-      bindRowButtons();
-    });
+    }
     var sendBtn = document.getElementById("rr-send");
     if (sendBtn) sendBtn.addEventListener("click", openConfirm);
     bindRowButtons();
