@@ -1,0 +1,25 @@
+.rr-wrap { margin: 0 0 28px; }
+.rr-wrap h2 { font-family: Fraunces, serif; font-size: 26px; font-weight: 400; margin-bottom: 6px; }
+.rr-sub { color: var(--muted); font-size: 13px; margin-bottom: 16px; }
+.rr-grid { display: grid; grid-template-columns: 280px 1fr; gap: 14px; }
+@media (max-width: 820px) { .rr-grid { grid-template-columns: 1fr; } }
+.rr-card { background: var(--surface); border: 1px solid var(--border); border-radius: 16px; padding: 16px 18px; }
+.rr-card h3 { font-size: 14px; margin-bottom: 10px; }
+.rr-field { display: flex; flex-direction: column; gap: 4px; margin-bottom: 10px; font-size: 12px; color: var(--muted); }
+.rr-field input { background: #121214; border: 1px solid var(--border); color: var(--text); border-radius: 8px; padding: 8px 10px; font: inherit; color-scheme: dark; }
+.rr-check { display: flex; gap: 8px; align-items: flex-start; font-size: 12px; color: var(--muted); margin: 8px 0 12px; }
+.rr-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--border); font-size: 13px; }
+.rr-row:last-child { border-bottom: none; }
+.rr-chip { font-size: 11px; font-weight: 600; padding: 3px 8px; border-radius: 999px; border: 1px solid rgba(74,158,255,0.35); color: var(--accent); }
+.rr-muted { color: var(--muted); font-size: 12px; }
+.rr-bar { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-top: 14px; }
+.rr-msg { font-size: 13px; color: var(--muted); margin-top: 8px; }
+.rr-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.rr-table th { text-align: left; color: var(--muted); font-size: 11px; font-weight: 600; letter-spacing: 0.04em; padding: 6px 8px; }
+.rr-table td { padding: 8px; border-top: 1px solid var(--border); }
+.rr-search { width: 100%; margin-bottom: 10px; background: #121214; border: 1px solid var(--border); color: var(--text); border-radius: 8px; padding: 8px 10px; font: inherit; }
+.rr-modal-bg { position: fixed; inset: 0; background: rgba(0,0,0,0.65); display: flex; align-items: center; justify-content: center; z-index: 80; padding: 20px; }
+.rr-modal { background: var(--surface); border: 1px solid var(--border); border-radius: 16px; max-width: 480px; width: 100%; padding: 22px; }
+.rr-modal h3 { font-family: Fraunces, serif; font-size: 22px; font-weight: 400; margin-bottom: 8px; }
+.rr-preview { font-size: 13px; color: var(--muted); background: #121214; border-radius: 10px; padding: 12px; margin: 12px 0; line-height: 1.5; }
+.btn { cursor: pointer; }
