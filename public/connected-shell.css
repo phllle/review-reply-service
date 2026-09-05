@@ -1,0 +1,25 @@
+.app-nav { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 28px; flex-wrap: wrap; }
+.app-nav-brand { display: inline-flex; align-items: center; gap: 9px; text-decoration: none; color: var(--text); font-weight: 700; font-size: 15px; }
+.app-nav-tabs { display: inline-flex; gap: 4px; padding: 4px; background: var(--surface); border: 1px solid var(--border); border-radius: 12px; flex-wrap: wrap; }
+.app-nav-tab { display: inline-flex; align-items: center; padding: 7px 14px; border-radius: 8px; font-size: 13px; font-weight: 600; color: var(--muted); text-decoration: none; }
+.app-nav-tab:hover { color: var(--text); background: rgba(255,255,255,0.04); }
+.app-nav-tab.active { color: var(--text); background: linear-gradient(135deg, rgba(124,106,247,0.18), rgba(74,158,255,0.14)); border: 1px solid rgba(124,106,247,0.35); padding: 6px 13px; }
+.page-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 20px; flex-wrap: wrap; }
+.page-head h1 { font-family: 'Fraunces', serif; font-size: 28px; font-weight: 400; letter-spacing: -0.02em; }
+.reviews-card { min-height: 240px; margin-bottom: 16px; }
+.reviews-list { display: flex; flex-direction: column; }
+.review-row { padding: 14px 0; border-bottom: 1px solid var(--border); }
+.review-row:last-child { border-bottom: none; }
+.review-row-top { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 6px; }
+.review-name { font-weight: 600; font-size: 14px; }
+.review-time { font-size: 12px; color: var(--muted); }
+.review-stars { color: #f59e0b; letter-spacing: 1px; font-size: 12px; }
+.review-comment { font-size: 13px; color: var(--muted); line-height: 1.55; margin-bottom: 8px; }
+.review-row-bottom { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.review-reply { font-size: 12px; color: var(--muted); line-height: 1.5; }
+.review-reply strong { color: var(--accent2); font-weight: 600; }
+.status-pill { flex-shrink: 0; font-size: 11px; font-weight: 600; letter-spacing: 0.04em; padding: 4px 10px; border-radius: 999px; }
+.status-posted { color: #6ee7a3; background: rgba(110,231,163,0.12); border: 1px solid rgba(110,231,163,0.25); }
+.status-holding { color: #f5c16c; background: rgba(245,193,108,0.12); border: 1px solid rgba(245,193,108,0.28); }
+.status-unreplied { color: var(--muted); background: rgba(255,255,255,0.04); border: 1px solid var(--border); }
+.reviews-empty, .reviews-loading, .reviews-error { color: var(--muted); font-size: 13px; padding: 24px 0; text-align: center; }
