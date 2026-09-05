@@ -55,6 +55,8 @@ import {
   getProTierFromSubscription as proTierFromSub
 } from "./stripePricing.js";
 import { verifyCancelToken } from "./replyDelay.js";
+import { publicContactEmail, publicContactMailtoHref } from "./publicContact.js";
+import { registerReviewFeed } from "./reviewFeed.js";
 import {
   getPlanAmountsCents,
   computeMrr,
@@ -238,6 +240,7 @@ app.post("/webhooks/stripe", express.raw({ type: "application/json" }), stripeWe
 app.post("/webhooks/twilio/sms", express.urlencoded({ extended: true }), twilioSmsWebhook);
 app.use(express.json());
 app.use(express.static("public"));
+registerReviewFeed(app);
 
 const proUpload = multer({
   storage: multer.memoryStorage(),
@@ -843,7 +846,7 @@ app.get("/connected", async (req, res, next) => {
       }
     }
     const displayName = nameFromQuery || businessName || "your business";
-    const contactUs = process.env.REPLYR_CONTACT || ""; // e.g. "hello@replyr.com" or "https://..."
+    const contactUs = publicContactEmail();
     const billingPortalUrl = (process.env.STRIPE_CUSTOMER_PORTAL_URL || "").trim();
     const hasBillingPortal = billingPortalUrl.startsWith("http");
     const nextStepLine = contactUs
@@ -970,12 +973,18 @@ app.get("/connected", async (req, res, next) => {
   <p><a href="/subscribe?accountId=${encodeURIComponent(accountId)}" class="manage-link">Upgrade to Pro →</a> to unlock the customer list and automated campaigns.</p>`}
 </div>`
       : "";
+    const reviewsCard = accountId
+      ? `<div class="card reviews-card" id="recent-reviews">
+  <div class="card-title">Recent reviews</div>
+  <div id="reviews-list" class="reviews-list"><p class="reviews-loading">Loading reviews…</p></div>
+</div>`
+      : "";
     const freeReplySection = accountId
       ? `<div class="connected-body">
-  <aside class="connected-sidebar" aria-label="Account and review tools">
+  <aside class="connected-sidebar" id="settings" aria-label="Account and review tools">
     <div class="connected-stack">${trialCard}${autoReplyCard}${previewModeCard}${digestCard}${tryItCard}${contactCard}</div>
   </aside>
-  <div class="connected-pro-wrap">${proCard}</div>
+  <div class="connected-pro-wrap">${reviewsCard}${proCard}</div>
 </div>`
       : "";
     res.set("Content-Type", "text/html; charset=utf-8");
@@ -988,6 +997,7 @@ app.get("/connected", async (req, res, next) => {
 <title>Replyr – Connected</title>
 <link rel="icon" type="image/svg+xml" href="/favicon.svg">
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,wght@0,300;0,400;0,600;1,300&family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/connected-shell.css">
 <style>
   :root { --bg: #0f0f11; --surface: #17171a; --surface2: #1e1e22; --border: rgba(255,255,255,0.07); --accent: #4a9eff; --accent2: #7c6af7; --text: #f0ede8; --muted: #7a7880; --danger: #ff6b6b; }
   * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -1100,20 +1110,25 @@ app.get("/connected", async (req, res, next) => {
 </head>
 <body>
 <div class="wrapper" ${accountId ? `data-account-id="${escapeHtml(accountId)}"` : ""}>
-  <div class="hero-card">
-    <div class="logo-mark"><div class="logo-icon">💬</div>Replyr</div>
+  <nav class="app-nav" aria-label="Replyr">
+    <a class="app-nav-brand" href="/connected${accountId ? "?accountId=" + encodeURIComponent(accountId) : ""}"><div class="logo-icon">💬</div>Replyr</a>
+    <div class="app-nav-tabs">
+      <a class="app-nav-tab active" href="/connected${accountId ? "?accountId=" + encodeURIComponent(accountId) : ""}">Reviews</a>
+      <a class="app-nav-tab" href="/connected${accountId ? "?accountId=" + encodeURIComponent(accountId) : ""}#settings">Settings</a>
+      <a class="app-nav-tab" href="${accountId ? "/pro?accountId=" + encodeURIComponent(accountId) : "/subscribe"}">Campaigns</a>
+      <a class="app-nav-tab" href="/subscribe${accountId ? "?accountId=" + encodeURIComponent(accountId) : ""}">Billing</a>
+    </div>
+  </nav>
+  <div class="page-head">
+    <h1>${escapeHtml(displayName)}</h1>
     <div class="connected-badge">Connected</div>
-    <h1 class="hero-title">You're <span>connected</span></h1>
-    ${justSubscribed ? '<p class="thanks-msg">Thanks for subscribing. Auto-reply will continue after your trial.</p>' : ""}
-    <p class="hero-desc">${escapeHtml(displayName)} is set up. We'll help you reply to Google reviews from here.</p>
-    <p class="hero-desc" style="margin-top:6px">Come back anytime via <a href="/dashboard">Dashboard</a> (we'll have you sign in with Google again).</p>
-    ${hasBillingPortal ? `<p class="hero-desc" style="margin-top:8px"><a href="${escapeHtml(billingPortalUrl)}" target="_blank" rel="noopener">Manage billing</a></p>` : ""}
-    ${nextStepLine ? `<p class="hero-desc" style="margin-top:8px">${nextStepLine}</p>` : ""}
   </div>
+  ${justSubscribed ? '<p class="thanks-msg">Thanks for subscribing. Auto-reply will continue after your trial.</p>' : ""}
   ${freeReplySection}
   <footer class="connected-page-footer"><a href="/contact">Contact us</a> — questions or concerns?</footer>
 </div>
 <script src="/connected.js"></script>
+<script src="/connected-reviews.js"></script>
 </body>
 </html>
   `);
@@ -1125,7 +1140,7 @@ app.get("/connected", async (req, res, next) => {
 // Subscribe / upgrade page – plan details and link to Stripe or contact
 app.get("/subscribe", (req, res) => {
   const subscribeUrl = process.env.SUBSCRIBE_URL || ""; // Stripe Payment Link or Checkout URL
-  const contact = process.env.REPLYR_CONTACT || "";
+  const contact = publicContactEmail();
   const priceLabel = process.env.SUBSCRIBE_PRICE || "$19 / month";
   const proStarterPriceLabel = (process.env.SUBSCRIBE_PRO_STARTER_PRICE || "").trim() || "$39 / month";
   const proGrowthPriceLabel = (process.env.SUBSCRIBE_PRO_GROWTH_PRICE || "").trim() || "$89 / month";
@@ -3527,10 +3542,8 @@ app.get("/digest/unsubscribe", async (req, res, next) => {
 
 // Contact us – for current and potential users (questions, concerns)
 app.get("/contact", (req, res) => {
-  const contactEmail = (process.env.ALERT_EMAIL || "").trim();
-  const emailHtml = contactEmail
-    ? `<p><a href="mailto:${escapeHtml(contactEmail)}" class="contact-link">Email Replyr Pro →</a></p>`
-    : "<p style=\"font-size:13px\">Set <code>ALERT_EMAIL</code> in your environment to enable the contact link.</p>";
+  const contactEmail = publicContactEmail();
+  const emailHtml = `<p><a href="${publicContactMailtoHref()}" class="contact-link">${escapeHtml(contactEmail)} →</a></p>`;
   res.set("Content-Type", "text/html; charset=utf-8");
   res.send(darkShellHtml({
     title: "Replyr – Contact us",
