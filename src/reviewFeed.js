@@ -15,6 +15,8 @@ export function registerReviewFeed(app) {
       if (!canAccessAccount(req, accountId)) {
         return res.status(403).json({ error: "Forbidden" });
       }
+      const parsedLimit = parseInt(req.query.limit, 10);
+      const limit = Number.isNaN(parsedLimit) ? 5 : Math.max(1, Math.min(20, parsedLimit));
       const business = await getBusiness(accountId);
       if (!business?.locationId) return res.json({ reviews: [] });
 
@@ -34,7 +36,7 @@ export function registerReviewFeed(app) {
         }
       }
 
-      const reviews = (raw || []).slice(0, 12).map((r) => {
+      const reviews = (raw || []).slice(0, limit).map((r) => {
         const reviewId = r.reviewId || (r.name ? String(r.name).split("/").pop() : "");
         const pending = reviewId ? pendingByReview[reviewId] : null;
         const replyComment = r.reviewReply?.comment ? String(r.reviewReply.comment) : "";
