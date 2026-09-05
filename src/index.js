@@ -2066,7 +2066,8 @@ app.get("/auth/google/callback", authRouteLimiter, async (req, res, next) => {
     await upsertBusiness({
       accountId,
       locationId: locationId || "",
-      name
+      name,
+      placeId: firstLocation?.metadata?.placeId || undefined
     });
     if (ownerEmail) {
       try {
@@ -2105,7 +2106,7 @@ app.get("/auth/choose-location", authRouteLimiter, async (req, res, next) => {
       const loc = locations[0];
       const locationId = loc?.name ? loc.name.split("/").pop() : "";
       const name = loc?.title || "";
-      await upsertBusiness({ accountId, locationId, name });
+      await upsertBusiness({ accountId, locationId, name, placeId: loc?.metadata?.placeId || undefined });
       setSessionCookie(res, accountId);
       return res.redirect(
         "/connected?name=" + encodeURIComponent(name || "your business") + "&accountId=" + encodeURIComponent(accountId)
@@ -2160,7 +2161,7 @@ app.post("/auth/choose-location", authRouteLimiter, express.urlencoded({ extende
     }
     const picked = locations.find((loc) => (loc?.name ? loc.name.split("/").pop() : "") === locationId);
     const name = picked?.title || "";
-    await upsertBusiness({ accountId, locationId, name });
+    await upsertBusiness({ accountId, locationId, name, placeId: picked?.metadata?.placeId || undefined });
     setSessionCookie(res, accountId);
     res.redirect(
       "/connected?name=" + encodeURIComponent(name || "your business") + "&accountId=" + encodeURIComponent(accountId)
