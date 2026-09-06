@@ -235,6 +235,27 @@ app.use(sentry.requestHandler());
 app.use(helmet());
 app.use(cors(corsOptions));
 app.use(pinoHttp({ logger }));
+
+// Canonical host + URL normalization (SEO). Applies to GET/HEAD only so it
+// never interferes with webhooks or API POSTs.
+// - www.replyr.pro -> https://replyr.pro (requires www TLS to terminate; see
+//   the DNS/hosting note in the PR — Railway must serve a cert for www).
+// - Strip trailing slashes (except root) so each page has one canonical URL.
+app.use((req, res, next) => {
+  if (req.method !== "GET" && req.method !== "HEAD") return next();
+  const host = (req.headers.host || "").toLowerCase();
+  if (host === "www.replyr.pro") {
+    return res.redirect(301, "https://replyr.pro" + (req.originalUrl || "/"));
+  }
+  const qIdx = (req.originalUrl || "").indexOf("?");
+  const pathOnly = qIdx === -1 ? req.originalUrl : req.originalUrl.slice(0, qIdx);
+  const query = qIdx === -1 ? "" : req.originalUrl.slice(qIdx);
+  if (pathOnly && pathOnly.length > 1 && pathOnly.endsWith("/")) {
+    const trimmed = pathOnly.replace(/\/+$/, "") || "/";
+    return res.redirect(301, trimmed + query);
+  }
+  next();
+});
 // Stripe webhook needs raw body for signature verification (must be before express.json())
 app.post("/webhooks/stripe", express.raw({ type: "application/json" }), stripeWebhook);
 // Twilio incoming SMS webhook (form-urlencoded) – handle STOP / UNSUBSCRIBE etc.
@@ -1194,10 +1215,41 @@ app.get("/subscribe", (req, res) => {
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Subscribe – Replyr</title>
+  <meta name="description" content="Choose a Replyr plan. Keep auto-replies to your Google reviews after your 30-day free trial — from $19/month. Cancel anytime.">
+  <link rel="canonical" href="https://replyr.pro/subscribe">
   <link rel="icon" type="image/svg+xml" href="/favicon.svg">
-  <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,wght@0,300;0,400;0,600;1,300&family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
+  <meta property="og:type" content="website">
+  <meta property="og:title" content="Subscribe – Replyr">
+  <meta property="og:description" content="Keep auto-replies to your Google reviews after your free trial — from $19/month. Cancel anytime.">
+  <meta property="og:url" content="https://replyr.pro/subscribe">
+  <meta property="og:image" content="https://replyr.pro/review-example-1.png">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Subscribe – Replyr">
+  <meta name="twitter:description" content="Keep auto-replies to your Google reviews after your free trial — from $19/month.">
+  <meta name="twitter:image" content="https://replyr.pro/review-example-1.png">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,wght@0,300;0,400;0,600;1,300&family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet" media="print" onload="this.media='all'">
+  <noscript><link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,wght@0,300;0,400;0,600;1,300&family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet"></noscript>
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Product",
+    "name": "Replyr",
+    "description": "Automatic replies to your Google Business Profile reviews, in your voice.",
+    "brand": { "@type": "Brand", "name": "Replyr" },
+    "url": "https://replyr.pro/subscribe",
+    "offers": {
+      "@type": "Offer",
+      "price": "19",
+      "priceCurrency": "USD",
+      "url": "https://replyr.pro/subscribe",
+      "availability": "https://schema.org/InStock"
+    }
+  }
+  </script>
   <style>
-    :root { --bg: #0f0f11; --surface: #17171a; --surface2: #1e1e22; --border: rgba(255,255,255,0.07); --accent: #4a9eff; --accent2: #7c6af7; --text: #f0ede8; --muted: #7a7880; --danger: #ff6b6b; }
+    :root { --bg: #0f0f11; --surface: #17171a; --surface2: #1e1e22; --border: rgba(255,255,255,0.07); --accent: #4a9eff; --accent2: #7c6af7; --text: #f0ede8; --muted: #8b8a92; --danger: #ff6b6b; }
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body { background: var(--bg); color: var(--text); font-family: 'DM Sans', sans-serif; font-size: 15px; min-height: 100vh; padding: 48px 24px 80px; overflow-x: hidden; }
     body::before { content: ''; position: fixed; top: -200px; left: 50%; transform: translateX(-50%); width: 800px; height: 500px; background: radial-gradient(ellipse, rgba(124,106,247,0.12) 0%, transparent 70%); pointer-events: none; z-index: 0; }
@@ -1240,10 +1292,11 @@ app.get("/subscribe", (req, res) => {
 </head>
 <body>
   <div class="subscribe-page" data-account-id="${escapeHtml(accountId)}" data-fallback-url="${escapeHtml(ctaHref)}" data-base-requires-account="${basePlanNeedsSignIn ? "1" : "0"}" data-pro-url="${escapeHtml(subscribeProUrl)}" data-pro-use-checkout="${hasProPrice ? "1" : "0"}">
-    <div class="brand">
+    <header class="brand">
       <div class="brand-icon" aria-hidden="true">💬</div>
       <span class="brand-name">Replyr</span>
-    </div>
+    </header>
+    <main>
     <h1>Choose your <em>plan</em></h1>
     <p class="tagline">Keep auto-reply after your 30-day trial. Cancel anytime from the billing portal.</p>
     <div class="plan-card">
@@ -1312,9 +1365,12 @@ app.get("/subscribe", (req, res) => {
       </div>
     </div>
 ` : ""}
+    </main>
+    <footer>
     ${hasBillingPortal ? `<p class="back-row"><a href="${escapeHtml(billingPortalUrl)}" target="_blank" rel="noopener">Manage billing / subscription →</a></p>` : ""}
     <p class="back-row"><a href="/">← Back to Replyr</a></p>
     <p class="back-row"><a href="/contact">Contact us</a></p>
+    </footer>
   </div>
   <script src="/subscribe.js"></script>
 </body>
@@ -1909,10 +1965,13 @@ function escapeHtml(s) {
 // Shared dark-brand shell for the simple static-style pages
 // (no-business, contact, compliance, privacy, terms).
 // Body content is rendered inside .doc-card.
-function darkShellHtml({ title, bodyHtml, narrow = false, description = "" }) {
+function darkShellHtml({ title, bodyHtml, narrow = false, description = "", canonicalPath = "" }) {
   const pageWidth = narrow ? "440px" : "720px";
   const descMeta = description
     ? `<meta name="description" content="${escapeHtml(description)}">`
+    : "";
+  const canonicalMeta = canonicalPath
+    ? `<link rel="canonical" href="https://replyr.pro${escapeHtml(canonicalPath)}">`
     : "";
   return `<!DOCTYPE html>
 <html lang="en">
@@ -1921,10 +1980,14 @@ function darkShellHtml({ title, bodyHtml, narrow = false, description = "" }) {
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>${escapeHtml(title)}</title>
 ${descMeta}
+${canonicalMeta}
 <link rel="icon" type="image/svg+xml" href="/favicon.svg">
-<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,wght@0,300;0,400;0,600;1,300&family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,wght@0,300;0,400;0,600;1,300&family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet" media="print" onload="this.media='all'">
+<noscript><link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,wght@0,300;0,400;0,600;1,300&family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet"></noscript>
 <style>
-  :root { --bg: #0f0f11; --surface: #17171a; --surface2: #1e1e22; --border: rgba(255,255,255,0.07); --accent: #4a9eff; --accent2: #7c6af7; --text: #f0ede8; --muted: #7a7880; }
+  :root { --bg: #0f0f11; --surface: #17171a; --surface2: #1e1e22; --border: rgba(255,255,255,0.07); --accent: #4a9eff; --accent2: #7c6af7; --text: #f0ede8; --muted: #8b8a92; }
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { background: var(--bg); color: var(--text); font-family: 'DM Sans', sans-serif; font-size: 15px; min-height: 100vh; padding: 48px 24px 80px; overflow-x: hidden; line-height: 1.6; }
   body::before { content: ''; position: fixed; top: -200px; left: 50%; transform: translateX(-50%); width: 800px; height: 500px; background: radial-gradient(ellipse, rgba(124,106,247,0.12) 0%, transparent 70%); pointer-events: none; z-index: 0; }
@@ -1956,13 +2019,13 @@ ${descMeta}
 </head>
 <body>
 <div class="doc-wrap">
-  <div class="doc-brand">
+  <header class="doc-brand">
     <div class="doc-brand-icon" aria-hidden="true">💬</div>
     <span class="doc-brand-name">Replyr</span>
-  </div>
-  <div class="doc-card">
+  </header>
+  <main class="doc-card">
 ${bodyHtml}
-  </div>
+  </main>
 </div>
 </body>
 </html>`;
@@ -3552,6 +3615,7 @@ app.get("/contact", (req, res) => {
   res.set("Content-Type", "text/html; charset=utf-8");
   res.send(darkShellHtml({
     title: "Replyr – Contact us",
+    canonicalPath: "/contact",
     bodyHtml: `    <h1>Contact <em>us</em></h1>
     <p>Questions or concerns? We're here to help — whether you're already using Replyr or thinking about signing up.</p>
     ${emailHtml}
@@ -3579,6 +3643,7 @@ app.get("/compliance", (req, res) => {
     <p style="margin-top:24px"><a href="/">← Back to Replyr</a> · <a href="/contact">Contact us</a></p>`;
   res.send(darkShellHtml({
     title: "Replyr – Messaging compliance",
+    canonicalPath: "/compliance",
     bodyHtml: body,
     description: "Replyr Pro messaging compliance — opt-in workflow, business confirmation, opt-out handling."
   }));
@@ -3605,6 +3670,7 @@ app.get("/privacy", (req, res) => {
     <p style="margin-top:24px"><a href="/">← Back to Replyr</a> · <a href="/contact">Contact us</a></p>`;
   res.send(darkShellHtml({
     title: "Replyr – Privacy policy",
+    canonicalPath: "/privacy",
     bodyHtml: body,
     description: "Replyr privacy policy — what we collect, how we use it, and your choices."
   }));
@@ -3629,6 +3695,7 @@ app.get("/terms", (req, res) => {
     <p style="margin-top:24px"><a href="/">← Back to Replyr</a> · <a href="/contact">Contact us</a></p>`;
   res.send(darkShellHtml({
     title: "Replyr – Terms of service",
+    canonicalPath: "/terms",
     bodyHtml: body,
     description: "Replyr terms of service."
   }));
