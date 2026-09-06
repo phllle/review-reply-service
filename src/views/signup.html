@@ -16,9 +16,42 @@
 <meta name="twitter:title" content="Replyr – AI replies to Google reviews on autopilot">
 <meta name="twitter:description" content="Connect your Google Business Profile and Replyr replies to every review — automatically, in your voice.">
 <meta name="twitter:image" content="https://replyr.pro/review-example-1.png">
-<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,wght@0,300;0,400;0,600;1,300&family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,wght@0,300;0,400;0,600;1,300&family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet" media="print" onload="this.media='all'">
+<noscript><link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,wght@0,300;0,400;0,600;1,300&family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet"></noscript>
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@graph": [
+    {
+      "@type": "Organization",
+      "@id": "https://replyr.pro/#organization",
+      "name": "Replyr",
+      "url": "https://replyr.pro/",
+      "logo": "https://replyr.pro/favicon.svg"
+    },
+    {
+      "@type": "SoftwareApplication",
+      "name": "Replyr",
+      "url": "https://replyr.pro/",
+      "applicationCategory": "BusinessApplication",
+      "operatingSystem": "Web",
+      "description": "Replyr connects to your Google Business Profile and replies to every review automatically, in your voice.",
+      "publisher": { "@id": "https://replyr.pro/#organization" },
+      "offers": {
+        "@type": "Offer",
+        "price": "19",
+        "priceCurrency": "USD",
+        "url": "https://replyr.pro/subscribe",
+        "description": "Replyr — automatic replies to Google reviews. 30-day free trial, then $19/month."
+      }
+    }
+  ]
+}
+</script>
 <style>
-  :root { --bg: #0f0f11; --surface: #17171a; --surface2: #1e1e22; --border: rgba(255,255,255,0.07); --accent: #4a9eff; --accent2: #7c6af7; --text: #f0ede8; --muted: #7a7880; }
+  :root { --bg: #0f0f11; --surface: #17171a; --surface2: #1e1e22; --border: rgba(255,255,255,0.07); --accent: #4a9eff; --accent2: #7c6af7; --text: #f0ede8; --muted: #8b8a92; }
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { background: var(--bg); color: var(--text); font-family: 'DM Sans', sans-serif; font-size: 15px; min-height: 100vh; overflow-x: hidden; }
   .glow-top { position: fixed; top: -300px; left: 50%; transform: translateX(-50%); width: 900px; height: 600px; background: radial-gradient(ellipse, rgba(124,106,247,0.15) 0%, transparent 65%); pointer-events: none; z-index: 0; }
@@ -149,6 +182,7 @@
 <div class="glow-top"></div>
 <div class="glow-bottom"></div>
 <div class="wrapper">
+  <header>
   <nav class="nav">
     <div class="nav-logo"><div class="nav-logo-icon">💬</div>Replyr</div>
     <div class="nav-links">
@@ -156,6 +190,8 @@
       <a href="/dashboard" class="nav-link">Already connected? Manage →</a>
     </div>
   </nav>
+  </header>
+  <main>
   <section class="hero">
     <div class="hero-badge"><div class="hero-badge-dot"></div>AI Reply Assistant</div>
     <h1 class="hero-title">Reply to Google reviews<br><em>on autopilot</em></h1>
@@ -211,27 +247,27 @@
   </div>
   <div class="pro-showcase-grid" style="max-width: 820px; margin: 0 auto; padding: 0 24px;">
     <div class="pro-showcase-item" role="button" tabindex="0" aria-label="View screenshot">
-      <img src="/images/pro-sms.png" alt="Sample birthday SMS from Replyr Pro" loading="lazy">
+      <img src="/images/pro-sms.webp" alt="Sample birthday SMS from Replyr Pro" loading="lazy">
       <div class="pro-showcase-caption">Birthday SMS — what customers receive on their phone</div>
     </div>
     <div class="pro-showcase-item" role="button" tabindex="0" aria-label="View screenshot">
-      <img src="/images/pro-email.png" alt="Sample campaign email from Replyr Pro" loading="lazy">
+      <img src="/images/pro-email.webp" alt="Sample campaign email from Replyr Pro" loading="lazy">
       <div class="pro-showcase-caption">Campaign email — same message, delivered by email</div>
     </div>
     <div class="pro-showcase-item" role="button" tabindex="0" aria-label="View screenshot">
-      <img src="/images/pro-birthday.png" alt="Replyr Pro dashboard — Birthday messages" loading="lazy">
+      <img src="/images/pro-birthday.webp" alt="Replyr Pro dashboard — Birthday messages" loading="lazy">
       <div class="pro-showcase-caption">Dashboard — set your birthday message and offer</div>
     </div>
     <div class="pro-showcase-item" role="button" tabindex="0" aria-label="View screenshot">
-      <img src="/images/pro-events.png" alt="Replyr Pro dashboard — Upcoming events" loading="lazy">
+      <img src="/images/pro-events.webp" alt="Replyr Pro dashboard — Upcoming events" loading="lazy">
       <div class="pro-showcase-caption">Upcoming events — confirm which holidays to send</div>
     </div>
     <div class="pro-showcase-item" role="button" tabindex="0" aria-label="View screenshot">
-      <img src="/images/pro-one-off.png" alt="Replyr Pro — One-off promo" loading="lazy">
+      <img src="/images/pro-one-off.webp" alt="Replyr Pro — One-off promo" loading="lazy">
       <div class="pro-showcase-caption">One-off promo — describe your offer; Replyr drafts subject and message</div>
     </div>
     <div class="pro-showcase-item" role="button" tabindex="0" aria-label="View screenshot">
-      <img src="/images/pro-csv.png" alt="Replyr Pro — Upload customer CSV" loading="lazy">
+      <img src="/images/pro-csv.webp" alt="Replyr Pro — Upload customer CSV" loading="lazy">
       <div class="pro-showcase-caption">Customer list — upload your CSV (email, name, birthday, phone)</div>
     </div>
   </div>
@@ -278,7 +314,8 @@
     </div>
   </div>
   </div>
-  <div class="cta-strip">
+  </main>
+  <footer class="cta-strip">
     <a href="/auth/google" class="btn-google">
       <svg viewBox="0 0 24 24" width="18" height="18" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" fill="#4285F4"/><path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853"/><path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l3.66-2.84z" fill="#FBBC05"/><path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335"/></svg>
       Connect with Google — it's free
@@ -288,7 +325,7 @@
     <div class="legal-footer">
       <a href="https://replyr.pro/privacy">Privacy</a> · <a href="https://replyr.pro/terms">Terms</a>
     </div>
-  </div>
+  </footer>
 </div>
 <script src="/signup.js"></script>
 </body>
