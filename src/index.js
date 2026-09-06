@@ -414,10 +414,13 @@ function renderCancelConfirmPage({ token }) {
 // Test failure alert (sends a sample email/SMS). Set TEST_ALERT_SECRET in env, then: GET /test-alert?secret=YOUR_SECRET
 app.get("/test-alert", async (req, res, next) => {
   try {
-    const secret = (req.query.secret || "").trim();
     const expected = process.env.TEST_ALERT_SECRET?.trim();
-    if (!expected || secret !== expected) {
-      return res.status(400).json({ error: "Missing or invalid secret. Set TEST_ALERT_SECRET and use ?secret= that value." });
+    if (!expected) {
+      return res.status(503).json({ error: "Disabled. Set TEST_ALERT_SECRET in the server environment." });
+    }
+    const secret = (req.query.secret || "").trim();
+    if (secret !== expected) {
+      return res.status(401).json({ error: "Unauthorized. Provide the correct ?secret= value." });
     }
     const { sendFailureAlert } = await import("./alert.js");
     await sendFailureAlert({
@@ -435,10 +438,13 @@ app.get("/test-alert", async (req, res, next) => {
 // Test: send one campaign-style SMS. Set TEST_ALERT_SECRET and Twilio env vars. GET /test-sms?secret=...&to=4252899410 (to optional; defaults to ALERT_PHONE)
 app.get("/test-sms", async (req, res, next) => {
   try {
-    const secret = (req.query.secret || "").trim();
     const expected = process.env.TEST_ALERT_SECRET?.trim();
-    if (!expected || secret !== expected) {
-      return res.status(400).json({ error: "Missing or invalid secret. Set TEST_ALERT_SECRET and use ?secret= that value." });
+    if (!expected) {
+      return res.status(503).json({ error: "Disabled. Set TEST_ALERT_SECRET in the server environment." });
+    }
+    const secret = (req.query.secret || "").trim();
+    if (secret !== expected) {
+      return res.status(401).json({ error: "Unauthorized. Provide the correct ?secret= value." });
     }
     const toParam = (req.query.to || "").trim();
     const alertPhone = process.env.ALERT_PHONE?.trim();
@@ -465,10 +471,13 @@ app.get("/test-sms", async (req, res, next) => {
 
 // Diagnose campaign SMS env (no secrets). GET /test-sms-diag?secret=... — use after deploy if /test-sms says "not configured"
 app.get("/test-sms-diag", async (req, res) => {
-  const secret = (req.query.secret || "").trim();
   const expected = process.env.TEST_ALERT_SECRET?.trim();
-  if (!expected || secret !== expected) {
-    return res.status(400).json({ error: "Missing or invalid secret. Set TEST_ALERT_SECRET and use ?secret= that value." });
+  if (!expected) {
+    return res.status(503).json({ error: "Disabled. Set TEST_ALERT_SECRET in the server environment." });
+  }
+  const secret = (req.query.secret || "").trim();
+  if (secret !== expected) {
+    return res.status(401).json({ error: "Unauthorized. Provide the correct ?secret= value." });
   }
   const { getCampaignSmsDiagnostics } = await import("./campaignSms.js");
   res.json(getCampaignSmsDiagnostics());
@@ -478,10 +487,13 @@ app.get("/test-sms-diag", async (req, res) => {
 // GET /test-trigger-event?secret=...&accountId=...&eventKey=easter&year=2026&email=you@x.com&to=+1425... (email/to optional; default ALERT_EMAIL / ALERT_PHONE)
 app.get("/test-trigger-event", async (req, res, next) => {
   try {
-    const secret = (req.query.secret || "").trim();
     const expected = process.env.TEST_ALERT_SECRET?.trim();
-    if (!expected || secret !== expected) {
-      return res.status(400).json({ error: "Missing or invalid secret. Set TEST_ALERT_SECRET and use ?secret= that value." });
+    if (!expected) {
+      return res.status(503).json({ error: "Disabled. Set TEST_ALERT_SECRET in the server environment." });
+    }
+    const secret = (req.query.secret || "").trim();
+    if (secret !== expected) {
+      return res.status(401).json({ error: "Unauthorized. Provide the correct ?secret= value." });
     }
     const accountId = (req.query.accountId || "").trim();
     const eventKey = (req.query.eventKey || "").trim();
@@ -512,10 +524,13 @@ app.get("/test-trigger-event", async (req, res, next) => {
 // Test: trigger birthday campaign for a date (e.g. 3/1/26). Set TEST_ALERT_SECRET. GET /test-trigger-birthday?secret=...&accountId=...&date=2026-03-01
 app.get("/test-trigger-birthday", async (req, res, next) => {
   try {
-    const secret = (req.query.secret || "").trim();
     const expected = process.env.TEST_ALERT_SECRET?.trim();
-    if (!expected || secret !== expected) {
-      return res.status(400).json({ error: "Missing or invalid secret. Set TEST_ALERT_SECRET and use ?secret= that value." });
+    if (!expected) {
+      return res.status(503).json({ error: "Disabled. Set TEST_ALERT_SECRET in the server environment." });
+    }
+    const secret = (req.query.secret || "").trim();
+    if (secret !== expected) {
+      return res.status(401).json({ error: "Unauthorized. Provide the correct ?secret= value." });
     }
     const accountId = (req.query.accountId || "").trim();
     const date = (req.query.date || "").trim();

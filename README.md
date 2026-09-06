@@ -88,6 +88,23 @@ You can set only one or both. Alerts are sent when the scheduler tick throws (e.
 - **ADMIN_SECRET** – Protects `/admin` and `/admin.js`. Open **`/admin?secret=YOUR_SECRET`** (or send header `X-Admin-Secret`). Full JSON export uses the same secret on `GET /businesses`.
 - **BASE_URL** – Set to your public origin (e.g. `https://replyr.pro`) so Twilio can verify webhook signatures for `POST /webhooks/twilio/sms`.
 
+### Secret rotation (ops)
+`ADMIN_SECRET` and `TEST_ALERT_SECRET` are passed as `?secret=` query params on some routes, so they can leak via server logs, Sentry, screenshots, tickets, or browser history. Treat any exposure as compromise and rotate. Routes fail closed: if a secret is **unset** the route returns `503`; after rotation, old `?secret=` URLs return `401`.
+
+Rotation runbook:
+1. **Make the repo private** (once): GitHub → repo → Settings → General → Danger Zone → Change repository visibility → Private.
+2. **Generate new values** (locally; do not paste real secrets into commits, tickets, or chat):
+   ```
+   openssl rand -hex 32   # ADMIN_SECRET
+   openssl rand -hex 32   # TEST_ALERT_SECRET
+   ```
+   Also rotate `REPLYR_SESSION_SECRET` and `UNSUBSCRIBE_SECRET` the same way **if** they ever appeared in logs/screenshots. (Rotating `REPLYR_SESSION_SECRET` invalidates existing signed session cookies and reply-cancel/unsubscribe tokens — users just sign in again.)
+3. **Update Railway** → the web service → Variables → replace the values → **restart** the service.
+4. **Verify old secrets are dead:** an old `/admin?secret=OLD` and `/test-alert?secret=OLD` must return `401`. A route with its secret unset returns `503`.
+5. **Scrub the old values** from: Railway deploy/HTTP logs, Sentry events, saved screenshots, support tickets, and your browser history/bookmarks.
+
+Never commit `.env` (it is git-ignored). Prefer the `X-Admin-Secret` header over `?secret=` for admin requests so the secret stays out of URLs/logs.
+
 ### Twilio: A2P 10DLC & spending (operator checklist)
 These are **Twilio Console** steps (not env vars):
 1. **A2P 10DLC** – For US long-code SMS to customers, complete **Standard** brand registration and a suitable **campaign** (platform sending on behalf of multiple businesses). Sole Proprietor registration is not appropriate for multi-tenant campaign SMS.
