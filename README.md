@@ -50,7 +50,7 @@ Each business has an `auto_reply_mode`: `'instant'` (default — current behavio
 The owner's email is auto-filled at OAuth time when the user grants the `openid email` scopes (asked alongside `business.manage`). Existing users who connected before this scope was requested can still set the email manually on `/connected`.
 
 ### Admin metrics
-`/admin/metrics` (HTML) and `/admin/metrics.json` (same data as JSON) — gated by `ADMIN_SECRET`. Shows MRR, plans by tier, 30-day funnel (trials started, trial→paid conversion, active trials, trial-end attrition), and current activity (connected businesses, auto-reply enabled, queued replies, Pro SMS this month). MRR is computed locally from the `businesses` table using `STRIPE_*_AMOUNT_CENTS` env vars; if the Stripe webhook drifts, MRR will surface that drift.
+`/admin/metrics` (HTML) and `/admin/metrics.json` (same data as JSON) — gated by `ADMIN_SECRET` (sign in at `/admin`, or send the `X-Admin-Secret` header). Shows MRR, plans by tier, 30-day funnel (trials started, trial→paid conversion, active trials, trial-end attrition), and current activity (connected businesses, auto-reply enabled, queued replies, Pro SMS this month). MRR is computed locally from the `businesses` table using `STRIPE_*_AMOUNT_CENTS` env vars; if the Stripe webhook drifts, MRR will surface that drift.
 
 ### Reply example
 POST /google/reviews/{ACCOUNT_ID}/{LOCATION_ID}/{REVIEW_ID}/reply with { "comment": "Thank you!" }.
@@ -85,7 +85,8 @@ You can set only one or both. Alerts are sent when the scheduler tick throws (e.
 
 ### Security & sessions
 - **REPLYR_SESSION_SECRET** – Required in production. After Google OAuth, Replyr sets an HttpOnly session cookie so API routes (`/businesses`, `/free-reply`, Pro endpoints, etc.) only work for the signed-in Google account.
-- **ADMIN_SECRET** – Protects `/admin` and `/admin.js`. Open **`/admin?secret=YOUR_SECRET`** (or send header `X-Admin-Secret`). Full JSON export uses the same secret on `GET /businesses`.
+- **ADMIN_SECRET** – Protects `/admin`, `/admin.js`, `/admin/metrics(.json)`, `/admin/backfill-place-ids`, and the admin JSON export on `GET /businesses`. **Auth is header or cookie only — never a query string.** Open **`/admin`**, enter the secret in the sign-in form (POSTed once), and Replyr sets a short-lived HttpOnly `replyr_admin` cookie (~12h) bound to a hash of the current `ADMIN_SECRET` — rotating the secret immediately invalidates outstanding admin cookies. Scripts/automation can send the `X-Admin-Secret` header instead. Secrets are compared with `crypto.timingSafeEqual`.
+- **Test senders** (`/test-alert`, `/test-sms`, `/test-sms-diag`, `/test-trigger-event`, `/test-trigger-birthday`) **return 404 in production** (`NODE_ENV=production`). Outside production they require the `X-Test-Secret` header (= `TEST_ALERT_SECRET`) or `X-Admin-Secret` — never `?secret=`.
 - **BASE_URL** – Set to your public origin (e.g. `https://replyr.pro`) so Twilio can verify webhook signatures for `POST /webhooks/twilio/sms`.
 
 ### Secret rotation (ops)
