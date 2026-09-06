@@ -11,11 +11,11 @@
 <meta property="og:title" content="Replyr – AI replies to Google reviews on autopilot">
 <meta property="og:description" content="Connect your Google Business Profile and Replyr replies to every review — automatically, in your voice. 30-day free trial.">
 <meta property="og:url" content="https://replyr.pro/">
-<meta property="og:image" content="https://replyr.pro/review-example-1.png">
+<meta property="og:image" content="https://replyr.pro/review-example-1-og.jpg">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="Replyr – AI replies to Google reviews on autopilot">
 <meta name="twitter:description" content="Connect your Google Business Profile and Replyr replies to every review — automatically, in your voice.">
-<meta name="twitter:image" content="https://replyr.pro/review-example-1.png">
+<meta name="twitter:image" content="https://replyr.pro/review-example-1-og.jpg">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,wght@0,300;0,400;0,600;1,300&family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet" media="print" onload="this.media='all'">
@@ -50,9 +50,49 @@
   ]
 }
 </script>
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "FAQPage",
+  "mainEntity": [
+    {
+      "@type": "Question",
+      "name": "How does Replyr work with Google?",
+      "acceptedAnswer": { "@type": "Answer", "text": "You connect your Google Business Profile, and Replyr automatically replies to new reviews as the business owner. You choose the schedule and can turn it off anytime." }
+    },
+    {
+      "@type": "Question",
+      "name": "Is there a free trial, and how much is it after?",
+      "acceptedAnswer": { "@type": "Answer", "text": "Yes — a 30-day free trial, then $19/month for the base plan. No credit card is required to start." }
+    },
+    {
+      "@type": "Question",
+      "name": "Can I cancel anytime?",
+      "acceptedAnswer": { "@type": "Answer", "text": "Yes. You can cancel anytime from the billing portal; auto-reply simply stops at the end of your billing period." }
+    },
+    {
+      "@type": "Question",
+      "name": "Will the replies sound like my business?",
+      "acceptedAnswer": { "@type": "Answer", "text": "You add your own contact and can describe your business so replies fit your voice. For 1–3 star reviews you can enable preview mode, which holds the reply for 15 minutes and emails you a one-click cancel link before it posts." }
+    },
+    {
+      "@type": "Question",
+      "name": "What does Replyr Pro add?",
+      "acceptedAnswer": { "@type": "Answer", "text": "Replyr Pro adds email and SMS campaigns (birthday, holiday and event, and one-off promos) plus review requests, sent to the customer list you upload. The message and offer are yours; sending is handled for you." }
+    },
+    {
+      "@type": "Question",
+      "name": "How do you handle SMS and email opt-outs?",
+      "acceptedAnswer": { "@type": "Answer", "text": "Every campaign email includes an unsubscribe link and every SMS includes “Reply STOP to opt out.” We process opt-outs and do not message unsubscribed contacts. See our Messaging compliance page for details." }
+    }
+  ]
+}
+</script>
 <style>
   :root { --bg: #0f0f11; --surface: #17171a; --surface2: #1e1e22; --border: rgba(255,255,255,0.07); --accent: #4a9eff; --accent2: #7c6af7; --text: #f0ede8; --muted: #8b8a92; }
   * { box-sizing: border-box; margin: 0; padding: 0; }
+  .skip-link { position: absolute; left: -9999px; top: 0; z-index: 200; background: var(--accent); color: #0f0f11; padding: 10px 16px; border-radius: 0 0 10px 0; font-weight: 700; font-size: 14px; text-decoration: none; }
+  .skip-link:focus { left: 0; }
   body { background: var(--bg); color: var(--text); font-family: 'DM Sans', sans-serif; font-size: 15px; min-height: 100vh; overflow-x: hidden; }
   .glow-top { position: fixed; top: -300px; left: 50%; transform: translateX(-50%); width: 900px; height: 600px; background: radial-gradient(ellipse, rgba(124,106,247,0.15) 0%, transparent 65%); pointer-events: none; z-index: 0; }
   .glow-bottom { position: fixed; bottom: -200px; left: 30%; width: 600px; height: 400px; background: radial-gradient(ellipse, rgba(74,158,255,0.08) 0%, transparent 65%); pointer-events: none; z-index: 0; }
@@ -176,9 +216,19 @@
   .hero-legal a { color: var(--muted); text-decoration: underline; }
   .hero-legal a:hover { color: var(--text); }
   @keyframes fadeUp { from { opacity: 0; transform: translateY(18px); } to { opacity: 1; transform: translateY(0); } }
+  .faq { max-width: 640px; margin: 0 auto 72px; }
+  .faq h2 { font-family: 'Fraunces', serif; font-size: 28px; font-weight: 400; text-align: center; margin-bottom: 24px; color: var(--text); }
+  .faq h2 em { font-style: italic; color: var(--accent); }
+  .faq details { background: var(--surface); border: 1px solid var(--border); border-radius: 14px; padding: 0 18px; margin-bottom: 10px; }
+  .faq summary { cursor: pointer; padding: 16px 0; font-weight: 600; font-size: 15px; color: var(--text); list-style: none; display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+  .faq summary::-webkit-details-marker { display: none; }
+  .faq summary::after { content: "+"; color: var(--muted); font-size: 20px; line-height: 1; flex-shrink: 0; }
+  .faq details[open] summary::after { content: "–"; }
+  .faq details p { color: var(--muted); font-size: 14px; line-height: 1.65; margin: 0; padding: 0 0 16px; }
 </style>
 </head>
 <body>
+<a class="skip-link" href="#main">Skip to content</a>
 <div class="glow-top"></div>
 <div class="glow-bottom"></div>
 <div class="wrapper">
@@ -191,7 +241,7 @@
     </div>
   </nav>
   </header>
-  <main>
+  <main id="main">
   <section class="hero">
     <div class="hero-badge"><div class="hero-badge-dot"></div>AI Reply Assistant</div>
     <h1 class="hero-title">Reply to Google reviews<br><em>on autopilot</em></h1>
@@ -314,6 +364,33 @@
     </div>
   </div>
   </div>
+  <section class="faq" aria-label="Frequently asked questions">
+    <h2>Frequently asked <em>questions</em></h2>
+    <details>
+      <summary>How does Replyr work with Google?</summary>
+      <p>You connect your Google Business Profile, and Replyr automatically replies to new reviews as the business owner. You choose the schedule and can turn it off anytime.</p>
+    </details>
+    <details>
+      <summary>Is there a free trial, and how much is it after?</summary>
+      <p>Yes — a 30-day free trial, then $19/month for the base plan. No credit card is required to start.</p>
+    </details>
+    <details>
+      <summary>Can I cancel anytime?</summary>
+      <p>Yes. You can cancel anytime from the billing portal; auto-reply simply stops at the end of your billing period.</p>
+    </details>
+    <details>
+      <summary>Will the replies sound like my business?</summary>
+      <p>You add your own contact and can describe your business so replies fit your voice. For 1–3 star reviews you can enable preview mode, which holds the reply for 15 minutes and emails you a one-click cancel link before it posts.</p>
+    </details>
+    <details>
+      <summary>What does Replyr Pro add?</summary>
+      <p>Replyr Pro adds email and SMS campaigns (birthday, holiday and event, and one-off promos) plus review requests, sent to the customer list you upload. The message and offer are yours; sending is handled for you.</p>
+    </details>
+    <details>
+      <summary>How do you handle SMS and email opt-outs?</summary>
+      <p>Every campaign email includes an unsubscribe link and every SMS includes “Reply STOP to opt out.” We process opt-outs and do not message unsubscribed contacts. See our Messaging compliance page for details.</p>
+    </details>
+  </section>
   </main>
   <footer class="cta-strip">
     <a href="/auth/google" class="btn-google">
@@ -323,7 +400,7 @@
     <p>Already set up? <a href="/dashboard">Manage your account →</a></p>
     <p>Questions or concerns? <a href="/contact">Contact us</a></p>
     <div class="legal-footer">
-      <a href="https://replyr.pro/privacy">Privacy</a> · <a href="https://replyr.pro/terms">Terms</a>
+      <a href="https://replyr.pro/privacy">Privacy</a> · <a href="https://replyr.pro/terms">Terms</a> · <a href="https://replyr.pro/compliance">Messaging compliance</a>
     </div>
   </footer>
 </div>
