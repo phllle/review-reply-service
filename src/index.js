@@ -17,8 +17,11 @@ import {
   setSessionCookie,
   readSessionAccountId,
   isValidAdminRequest,
-  getAdminSecretFromRequest,
+  isAdminSecretValid,
+  setAdminCookie,
+  clearAdminCookie,
   canAccessAccount,
+  isValidTestRequest,
   signChooseLocationToken,
   verifyChooseLocationToken
 } from "./sessionAuth.js";
@@ -411,16 +414,14 @@ function renderCancelConfirmPage({ token }) {
 </body></html>`;
 }
 
-// Test failure alert (sends a sample email/SMS). Set TEST_ALERT_SECRET in env, then: GET /test-alert?secret=YOUR_SECRET
+// Test failure alert (sends a sample email/SMS). Dev only (404 in production). Auth: X-Test-Secret (= TEST_ALERT_SECRET) or X-Admin-Secret header.
 app.get("/test-alert", async (req, res, next) => {
   try {
-    const expected = process.env.TEST_ALERT_SECRET?.trim();
-    if (!expected) {
-      return res.status(503).json({ error: "Disabled. Set TEST_ALERT_SECRET in the server environment." });
+    if (process.env.NODE_ENV === "production") {
+      return res.status(404).json({ error: "Not found" });
     }
-    const secret = (req.query.secret || "").trim();
-    if (secret !== expected) {
-      return res.status(401).json({ error: "Unauthorized. Provide the correct ?secret= value." });
+    if (!isValidTestRequest(req)) {
+      return res.status(401).json({ error: "Unauthorized. Send X-Admin-Secret or X-Test-Secret header (dev only)." });
     }
     const { sendFailureAlert } = await import("./alert.js");
     await sendFailureAlert({
@@ -435,16 +436,14 @@ app.get("/test-alert", async (req, res, next) => {
   }
 });
 
-// Test: send one campaign-style SMS. Set TEST_ALERT_SECRET and Twilio env vars. GET /test-sms?secret=...&to=4252899410 (to optional; defaults to ALERT_PHONE)
+// Test: send one campaign-style SMS. Dev only (404 in production). Auth: X-Test-Secret or X-Admin-Secret header. GET /test-sms?to=4252899410 (to optional; defaults to ALERT_PHONE)
 app.get("/test-sms", async (req, res, next) => {
   try {
-    const expected = process.env.TEST_ALERT_SECRET?.trim();
-    if (!expected) {
-      return res.status(503).json({ error: "Disabled. Set TEST_ALERT_SECRET in the server environment." });
+    if (process.env.NODE_ENV === "production") {
+      return res.status(404).json({ error: "Not found" });
     }
-    const secret = (req.query.secret || "").trim();
-    if (secret !== expected) {
-      return res.status(401).json({ error: "Unauthorized. Provide the correct ?secret= value." });
+    if (!isValidTestRequest(req)) {
+      return res.status(401).json({ error: "Unauthorized. Send X-Admin-Secret or X-Test-Secret header (dev only)." });
     }
     const toParam = (req.query.to || "").trim();
     const alertPhone = process.env.ALERT_PHONE?.trim();
@@ -469,31 +468,27 @@ app.get("/test-sms", async (req, res, next) => {
   }
 });
 
-// Diagnose campaign SMS env (no secrets). GET /test-sms-diag?secret=... — use after deploy if /test-sms says "not configured"
+// Diagnose campaign SMS env (dev only). Send X-Test-Secret or X-Admin-Secret header.
 app.get("/test-sms-diag", async (req, res) => {
-  const expected = process.env.TEST_ALERT_SECRET?.trim();
-  if (!expected) {
-    return res.status(503).json({ error: "Disabled. Set TEST_ALERT_SECRET in the server environment." });
+  if (process.env.NODE_ENV === "production") {
+    return res.status(404).json({ error: "Not found" });
   }
-  const secret = (req.query.secret || "").trim();
-  if (secret !== expected) {
-    return res.status(401).json({ error: "Unauthorized. Provide the correct ?secret= value." });
+  if (!isValidTestRequest(req)) {
+    return res.status(401).json({ error: "Unauthorized. Send X-Admin-Secret or X-Test-Secret header (dev only)." });
   }
   const { getCampaignSmsDiagnostics } = await import("./campaignSms.js");
   res.json(getCampaignSmsDiagnostics());
 });
 
 // Test: upcoming event campaign (one email and/or SMS to you only). Saves must include message body. Does not mark event sent.
-// GET /test-trigger-event?secret=...&accountId=...&eventKey=easter&year=2026&email=you@x.com&to=+1425... (email/to optional; default ALERT_EMAIL / ALERT_PHONE)
+// Dev only (404 in production). Auth: X-Test-Secret or X-Admin-Secret header. GET /test-trigger-event?accountId=...&eventKey=easter&year=2026&email=you@x.com&to=+1425... (email/to optional; default ALERT_EMAIL / ALERT_PHONE)
 app.get("/test-trigger-event", async (req, res, next) => {
   try {
-    const expected = process.env.TEST_ALERT_SECRET?.trim();
-    if (!expected) {
-      return res.status(503).json({ error: "Disabled. Set TEST_ALERT_SECRET in the server environment." });
+    if (process.env.NODE_ENV === "production") {
+      return res.status(404).json({ error: "Not found" });
     }
-    const secret = (req.query.secret || "").trim();
-    if (secret !== expected) {
-      return res.status(401).json({ error: "Unauthorized. Provide the correct ?secret= value." });
+    if (!isValidTestRequest(req)) {
+      return res.status(401).json({ error: "Unauthorized. Send X-Admin-Secret or X-Test-Secret header (dev only)." });
     }
     const accountId = (req.query.accountId || "").trim();
     const eventKey = (req.query.eventKey || "").trim();
@@ -521,16 +516,14 @@ app.get("/test-trigger-event", async (req, res, next) => {
   }
 });
 
-// Test: trigger birthday campaign for a date (e.g. 3/1/26). Set TEST_ALERT_SECRET. GET /test-trigger-birthday?secret=...&accountId=...&date=2026-03-01
+// Test: trigger birthday campaign for a date (e.g. 3/1/26). Dev only (404 in production). Auth: X-Test-Secret or X-Admin-Secret header. GET /test-trigger-birthday?accountId=...&date=2026-03-01
 app.get("/test-trigger-birthday", async (req, res, next) => {
   try {
-    const expected = process.env.TEST_ALERT_SECRET?.trim();
-    if (!expected) {
-      return res.status(503).json({ error: "Disabled. Set TEST_ALERT_SECRET in the server environment." });
+    if (process.env.NODE_ENV === "production") {
+      return res.status(404).json({ error: "Not found" });
     }
-    const secret = (req.query.secret || "").trim();
-    if (secret !== expected) {
-      return res.status(401).json({ error: "Unauthorized. Provide the correct ?secret= value." });
+    if (!isValidTestRequest(req)) {
+      return res.status(401).json({ error: "Unauthorized. Send X-Admin-Secret or X-Test-Secret header (dev only)." });
     }
     const accountId = (req.query.accountId || "").trim();
     const date = (req.query.date || "").trim();
@@ -2110,18 +2103,17 @@ function adminBaseCss() {
 }
 
 // Shared top nav for /admin and /admin/metrics. activeTab is "businesses" or
-// "metrics" — controls which tab pill is highlighted.
-function adminNavHtml(activeTab, encodedSecret) {
-  const s = encodedSecret || "";
+// "metrics". Auth rides on the HttpOnly admin cookie, so links carry no secret.
+function adminNavHtml(activeTab) {
   const cls = (id) => `admin-tab${activeTab === id ? " active" : ""}`;
   return `<nav class="admin-nav" aria-label="Admin">
-      <a href="/admin?secret=${s}" class="admin-brand">
+      <a href="/admin" class="admin-brand">
         <span class="admin-brand-icon" aria-hidden="true">💬</span>
         <span class="admin-brand-name">Replyr admin</span>
       </a>
       <div class="admin-tabs" role="tablist">
-        <a href="/admin?secret=${s}" class="${cls("businesses")}" role="tab" aria-selected="${activeTab === "businesses"}">Businesses</a>
-        <a href="/admin/metrics?secret=${s}" class="${cls("metrics")}" role="tab" aria-selected="${activeTab === "metrics"}">Metrics</a>
+        <a href="/admin" class="${cls("businesses")}" role="tab" aria-selected="${activeTab === "businesses"}">Businesses</a>
+        <a href="/admin/metrics" class="${cls("metrics")}" role="tab" aria-selected="${activeTab === "metrics"}">Metrics</a>
       </div>
     </nav>`;
 }
@@ -3768,7 +3760,7 @@ app.get("/terms", (req, res) => {
   }));
 });
 
-// Admin page: list businesses, edit contact and auto-reply (requires ADMIN_SECRET via ?secret= or X-Admin-Secret)
+// Admin page: list businesses, edit contact and auto-reply. Auth via the admin cookie (sign in at /admin) or the X-Admin-Secret header.
 async function buildAdminMetrics() {
   const businessesObj = await getAllBusinesses();
   const businesses = Object.values(businessesObj || {});
@@ -3811,13 +3803,48 @@ async function buildAdminMetrics() {
   };
 }
 
+// Admin sign-in page (POST-only secret; sets an HttpOnly cookie). Renders on any
+// unauthorized admin HTML route. The secret never appears in a URL or in JS.
+function renderAdminLoginHtml(message = "") {
+  return darkShellHtml({
+    title: "Replyr – Admin sign in",
+    narrow: true,
+    bodyHtml: `    <h1>Admin <em>sign in</em></h1>
+    <p>Enter your admin secret. It's sent once over POST and stored in a short-lived, HttpOnly cookie — never in the URL.</p>
+    ${message ? `<p style="color:var(--danger,#ff6b6b)">${escapeHtml(message)}</p>` : ""}
+    <form method="post" action="/admin/login" style="margin-top:8px">
+      <input type="password" name="secret" placeholder="Admin secret" autocomplete="off" aria-label="Admin secret" style="width:100%;background:var(--surface2);border:1px solid var(--border);border-radius:12px;color:var(--text);font:inherit;padding:12px 14px;margin-bottom:12px">
+      <button type="submit" class="doc-btn">Sign in</button>
+    </form>`
+  });
+}
+
+app.post("/admin/login", express.urlencoded({ extended: false }), (req, res) => {
+  if (!(process.env.ADMIN_SECRET || "").trim()) {
+    res.status(503).set("Content-Type", "text/html; charset=utf-8");
+    return res.send(renderAdminLoginHtml("Admin is disabled — set ADMIN_SECRET in the server environment."));
+  }
+  const secret = String(req.body?.secret || "");
+  if (!isAdminSecretValid(secret)) {
+    res.status(401).set("Content-Type", "text/html; charset=utf-8");
+    return res.send(renderAdminLoginHtml("Incorrect secret."));
+  }
+  setAdminCookie(res);
+  res.redirect("/admin");
+});
+
+app.post("/admin/logout", (req, res) => {
+  clearAdminCookie(res);
+  res.redirect("/admin");
+});
+
 app.get("/admin/metrics.json", async (req, res, next) => {
   try {
     if (!(process.env.ADMIN_SECRET || "").trim()) {
       return res.status(503).json({ error: "Admin disabled. Set ADMIN_SECRET in the server environment." });
     }
     if (!isValidAdminRequest(req)) {
-      return res.status(401).json({ error: "Unauthorized. Provide ADMIN_SECRET via X-Admin-Secret header or ?secret=." });
+      return res.status(401).json({ error: "Unauthorized. Sign in at /admin or send the X-Admin-Secret header." });
     }
     const data = await buildAdminMetrics();
     res.json(data);
@@ -3836,7 +3863,7 @@ app.get("/admin/backfill-place-ids", async (req, res, next) => {
       return res.status(503).json({ error: "Admin disabled. Set ADMIN_SECRET in the server environment." });
     }
     if (!isValidAdminRequest(req)) {
-      return res.status(401).json({ error: "Unauthorized. Provide ADMIN_SECRET via X-Admin-Secret header or ?secret=." });
+      return res.status(401).json({ error: "Unauthorized. Sign in at /admin or send the X-Admin-Secret header." });
     }
     const businesses = Object.values((await getAllBusinesses()) || {});
     let updated = 0;
@@ -3884,24 +3911,18 @@ app.get("/admin/metrics", async (req, res, next) => {
     }
     if (!isValidAdminRequest(req)) {
       res.status(401).set("Content-Type", "text/html; charset=utf-8");
-      return res.send(darkShellHtml({
-        title: "Replyr – Unauthorized",
-        bodyHtml: `    <h1>Unauthorized</h1>
-    <p>Add your admin secret to the URL: <code>/admin/metrics?secret=YOUR_ADMIN_SECRET</code> — or send it as the <code>X-Admin-Secret</code> header.</p>`,
-        narrow: true
-      }));
+      return res.send(renderAdminLoginHtml());
     }
     const data = await buildAdminMetrics();
-    const adminSecret = getAdminSecretFromRequest(req);
     res.set("Content-Type", "text/html; charset=utf-8");
-    res.send(renderAdminMetricsHtml(data, adminSecret));
+    res.send(renderAdminMetricsHtml(data));
   } catch (err) {
     req.log?.error(err, "Admin metrics page failed");
     next(err);
   }
 });
 
-function renderAdminMetricsHtml(data, adminSecret) {
+function renderAdminMetricsHtml(data) {
   const pct = (n) => `${(n * 100).toFixed(1)}%`;
   const cents = (c) => formatCentsAsUsd(c);
   const counts = data.mrr.countsByPlan;
@@ -3916,7 +3937,6 @@ function renderAdminMetricsHtml(data, adminSecret) {
   const warningHtml = planConfigWarnings.length
     ? `<div class="warn">⚠ MRR may be undercounted — these env vars aren't set: ${planConfigWarnings.map((s) => `<code>${s}</code>`).join(", ")}</div>`
     : "";
-  const encodedSecret = encodeURIComponent(adminSecret || "");
   return `<!DOCTYPE html>
 <html lang="en"><head>
 <meta charset="utf-8">
@@ -3963,7 +3983,7 @@ function renderAdminMetricsHtml(data, adminSecret) {
 </head>
 <body>
 <div class="admin-wrap">
-  ${adminNavHtml("metrics", encodedSecret)}
+  ${adminNavHtml("metrics")}
   <div class="admin-page">
     <div class="admin-header">
       <h1>Metrics</h1>
@@ -4005,7 +4025,7 @@ function renderAdminMetricsHtml(data, adminSecret) {
       <div class="stat-card"><div class="stat-label">Pro SMS this month</div><div class="stat-value">${data.activity.proSmsThisMonth.toLocaleString()}</div><div class="stat-sub">${escapeHtml(data.activity.monthKey)} · across all Pro tiers</div></div>
     </div>
 
-    <div class="footer">JSON view: <a href="/admin/metrics.json?secret=${encodedSecret}">/admin/metrics.json</a></div>
+    <div class="footer">JSON view: <a href="/admin/metrics.json">/admin/metrics.json</a></div>
   </div>
 </div>
 </body></html>`;
@@ -4018,20 +4038,14 @@ app.get("/admin", (req, res) => {
     return res.send(darkShellHtml({
       title: "Replyr – Admin disabled",
       bodyHtml: `    <h1>Admin <em>disabled</em></h1>
-    <p>Set <code>ADMIN_SECRET</code> in the server environment, then open <code>/admin?secret=…</code></p>`,
+    <p>Set <code>ADMIN_SECRET</code> in the server environment to enable admin pages.</p>`,
       narrow: true
     }));
   }
   if (!isValidAdminRequest(req)) {
     res.status(401).set("Content-Type", "text/html; charset=utf-8");
-    return res.send(darkShellHtml({
-      title: "Replyr – Unauthorized",
-      bodyHtml: `    <h1>Unauthorized</h1>
-    <p>Add your admin secret to the URL: <code>/admin?secret=YOUR_ADMIN_SECRET</code> — or send it as the <code>X-Admin-Secret</code> header.</p>`,
-      narrow: true
-    }));
+    return res.send(renderAdminLoginHtml());
   }
-  const adminSecretForScript = encodeURIComponent(getAdminSecretFromRequest(req));
   res.set("Content-Type", "text/html; charset=utf-8");
   res.send(`
 <!DOCTYPE html>
@@ -4104,7 +4118,7 @@ app.get("/admin", (req, res) => {
 </head>
 <body>
   <div class="admin-wrap">
-    ${adminNavHtml("businesses", adminSecretForScript)}
+    ${adminNavHtml("businesses")}
     <div class="admin-page">
       <div class="admin-header">
         <h1>Businesses</h1>
@@ -4117,13 +4131,14 @@ app.get("/admin", (req, res) => {
       </div>
     </div>
   </div>
-  <script src="/admin.js?secret=${adminSecretForScript}"></script>
+  <script src="/admin.js"></script>
 </body>
 </html>
   `);
 });
 
-// Admin script (separate so CSP allows it) — secret must match ADMIN_SECRET (query or header)
+// Admin script (separate so CSP allows it). Auth rides on the HttpOnly admin
+// cookie via credentials:"same-origin" — no secret in JS, URLs, or location.search.
 app.get("/admin.js", (req, res) => {
   if (!(process.env.ADMIN_SECRET || "").trim()) {
     return res.status(404).type("text/plain").send("Not found");
@@ -4134,25 +4149,13 @@ app.get("/admin.js", (req, res) => {
   const adminShowProScaleTier = !!(process.env.STRIPE_PRO_SCALE_PRICE_ID || "").trim();
   res.set("Content-Type", "application/javascript; charset=utf-8");
   res.send(`
-var REPLYR_ADMIN_SECRET = (function() {
-  try {
-    var sc = document.currentScript && document.currentScript.src;
-    if (sc) return new URL(sc).searchParams.get("secret") || "";
-  } catch (e) {}
-  return new URLSearchParams(location.search).get("secret") || "";
-})();
 var REPLYR_ADMIN_SHOW_PRO_SCALE = ${JSON.stringify(adminShowProScaleTier)};
 function replyrAdminHeaders(json) {
   var h = {};
   if (json) h["Content-Type"] = "application/json";
-  if (REPLYR_ADMIN_SECRET) h["X-Admin-Secret"] = REPLYR_ADMIN_SECRET;
   return h;
 }
 (function initAdminLinks() {
-  var s = REPLYR_ADMIN_SECRET;
-  if (!s) return;
-  var r = document.getElementById("admin-refresh-link");
-  if (r) r.href = "/admin?secret=" + encodeURIComponent(s);
   var j = document.getElementById("admin-json-link");
   if (j) {
     j.href = "#";

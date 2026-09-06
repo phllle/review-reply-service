@@ -83,27 +83,101 @@ export function clearSessionCookie(res) {
   res.append("Set-Cookie", `${COOKIE_NAME}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0${secure}`);
 }
 
+/** Constant-time string compare. Hash both sides with sha256 so length isn't leaked. */
+function timingSafeEqualStr(a, b) {
+  const ah = crypto.createHash("sha256").update(String(a ?? "")).digest();
+  const bh = crypto.createHash("sha256").update(String(b ?? "")).digest();
+  return crypto.timingSafeEqual(ah, bh);
+}
+
+/** Admin secret from headers ONLY — never query strings. */
 export function getAdminSecretFromRequest(req) {
   const header =
     (req.headers["x-admin-secret"] && String(req.headers["x-admin-secret"])) ||
     (req.headers.authorization?.startsWith("Bearer ")
       ? req.headers.authorization.slice(7)
       : "");
-  if (header.trim()) return header.trim();
-  const q = req.query?.adminSecret ?? req.query?.secret;
-  if (q != null && String(q).trim()) return String(q).trim();
-  return "";
+  return header.trim();
+}
+
+// Admin session cookie: set after a correct secret is POSTed to /admin/login.
+// Bound to a hash of the CURRENT ADMIN_SECRET so rotating the secret
+// immediately invalidates outstanding admin cookies.
+const ADMIN_COOKIE_NAME = "replyr_admin";
+const ADMIN_MAX_AGE_SEC = 12 * 60 * 60; // 12h
+
+function adminSecretFingerprint() {
+  const expected = process.env.ADMIN_SECRET?.trim();
+  if (!expected) return null;
+  return crypto.createHash("sha256").update(expected).digest("base64url").slice(0, 16);
+}
+
+export function setAdminCookie(res) {
+  const fp = adminSecretFingerprint();
+  if (!fp) return;
+  const exp = Date.now() + ADMIN_MAX_AGE_SEC * 1000;
+  const payload = `admin|${fp}|${exp}`;
+  const token = `${Buffer.from(payload, "utf8").toString("base64url")}.${hmac(payload)}`;
+  const secure = process.env.NODE_ENV === "production" ? "; Secure" : "";
+  res.append(
+    "Set-Cookie",
+    `${ADMIN_COOKIE_NAME}=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${ADMIN_MAX_AGE_SEC}${secure}`
+  );
+}
+
+export function clearAdminCookie(res) {
+  const secure = process.env.NODE_ENV === "production" ? "; Secure" : "";
+  res.append("Set-Cookie", `${ADMIN_COOKIE_NAME}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0${secure}`);
+}
+
+function hasValidAdminCookie(req) {
+  const fp = adminSecretFingerprint();
+  if (!fp) return false;
+  const val = parseCookies(req)[ADMIN_COOKIE_NAME];
+  if (!val || typeof val !== "string") return false;
+  const dot = val.lastIndexOf(".");
+  if (dot === -1) return false;
+  const payload = Buffer.from(val.slice(0, dot), "base64url").toString("utf8");
+  if (hmac(payload) !== val.slice(dot + 1)) return false;
+  const parts = payload.split("|");
+  if (parts.length !== 3 || parts[0] !== "admin" || parts[1] !== fp) return false;
+  const exp = parseInt(parts[2], 10);
+  if (Number.isNaN(exp) || Date.now() > exp) return false;
+  return true;
+}
+
+/** True if the POSTed secret matches ADMIN_SECRET (constant-time). For /admin/login. */
+export function isAdminSecretValid(secret) {
+  const expected = process.env.ADMIN_SECRET?.trim();
+  if (!expected) return false;
+  return timingSafeEqualStr(secret, expected);
 }
 
 export function isValidAdminRequest(req) {
   const expected = process.env.ADMIN_SECRET?.trim();
   if (!expected) return false;
-  return getAdminSecretFromRequest(req) === expected;
+  const header = getAdminSecretFromRequest(req);
+  if (header && timingSafeEqualStr(header, expected)) return true;
+  return hasValidAdminCookie(req);
 }
 
 export function requireAdminOr401(req, res) {
   if (isValidAdminRequest(req)) return true;
-  res.status(401).json({ error: "Unauthorized. Provide ADMIN_SECRET via X-Admin-Secret header or ?secret= on the admin page." });
+  res.status(401).json({ error: "Unauthorized. Sign in at /admin or send the X-Admin-Secret header." });
+  return false;
+}
+
+/**
+ * Auth for the dev-only /test-* senders. Header only — never query strings.
+ * Accepts X-Admin-Secret (== ADMIN_SECRET) or X-Test-Secret (== TEST_ALERT_SECRET).
+ */
+export function isValidTestRequest(req) {
+  const adminExpected = process.env.ADMIN_SECRET?.trim();
+  const adminHeader = getAdminSecretFromRequest(req);
+  if (adminExpected && adminHeader && timingSafeEqualStr(adminHeader, adminExpected)) return true;
+  const testExpected = process.env.TEST_ALERT_SECRET?.trim();
+  const testHeader = req.headers["x-test-secret"] && String(req.headers["x-test-secret"]).trim();
+  if (testExpected && testHeader && timingSafeEqualStr(testHeader, testExpected)) return true;
   return false;
 }
 
