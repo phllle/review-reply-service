@@ -1222,11 +1222,11 @@ app.get("/subscribe", (req, res) => {
   <meta property="og:title" content="Subscribe – Replyr">
   <meta property="og:description" content="Keep auto-replies to your Google reviews after your free trial — from $19/month. Cancel anytime.">
   <meta property="og:url" content="https://replyr.pro/subscribe">
-  <meta property="og:image" content="https://replyr.pro/review-example-1.png">
+  <meta property="og:image" content="https://replyr.pro/review-example-1-og.jpg">
   <meta name="twitter:card" content="summary_large_image">
   <meta name="twitter:title" content="Subscribe – Replyr">
   <meta name="twitter:description" content="Keep auto-replies to your Google reviews after your free trial — from $19/month.">
-  <meta name="twitter:image" content="https://replyr.pro/review-example-1.png">
+  <meta name="twitter:image" content="https://replyr.pro/review-example-1-og.jpg">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,wght@0,300;0,400;0,600;1,300&family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet" media="print" onload="this.media='all'">
@@ -1251,6 +1251,8 @@ app.get("/subscribe", (req, res) => {
   <style>
     :root { --bg: #0f0f11; --surface: #17171a; --surface2: #1e1e22; --border: rgba(255,255,255,0.07); --accent: #4a9eff; --accent2: #7c6af7; --text: #f0ede8; --muted: #8b8a92; --danger: #ff6b6b; }
     * { box-sizing: border-box; margin: 0; padding: 0; }
+    .skip-link { position: absolute; left: -9999px; top: 0; z-index: 200; background: var(--accent); color: #0f0f11; padding: 10px 16px; border-radius: 0 0 10px 0; font-weight: 700; font-size: 14px; text-decoration: none; }
+    .skip-link:focus { left: 0; }
     body { background: var(--bg); color: var(--text); font-family: 'DM Sans', sans-serif; font-size: 15px; min-height: 100vh; padding: 48px 24px 80px; overflow-x: hidden; }
     body::before { content: ''; position: fixed; top: -200px; left: 50%; transform: translateX(-50%); width: 800px; height: 500px; background: radial-gradient(ellipse, rgba(124,106,247,0.12) 0%, transparent 70%); pointer-events: none; z-index: 0; }
     .subscribe-page { max-width: 480px; width: 100%; margin: 0 auto; position: relative; z-index: 1; }
@@ -1291,12 +1293,13 @@ app.get("/subscribe", (req, res) => {
   </style>
 </head>
 <body>
+  <a class="skip-link" href="#main">Skip to content</a>
   <div class="subscribe-page" data-account-id="${escapeHtml(accountId)}" data-fallback-url="${escapeHtml(ctaHref)}" data-base-requires-account="${basePlanNeedsSignIn ? "1" : "0"}" data-pro-url="${escapeHtml(subscribeProUrl)}" data-pro-use-checkout="${hasProPrice ? "1" : "0"}">
     <header class="brand">
       <div class="brand-icon" aria-hidden="true">💬</div>
       <span class="brand-name">Replyr</span>
     </header>
-    <main>
+    <main id="main">
     <h1>Choose your <em>plan</em></h1>
     <p class="tagline">Keep auto-reply after your 30-day trial. Cancel anytime from the billing portal.</p>
     <div class="plan-card">
@@ -1369,7 +1372,7 @@ app.get("/subscribe", (req, res) => {
     <footer>
     ${hasBillingPortal ? `<p class="back-row"><a href="${escapeHtml(billingPortalUrl)}" target="_blank" rel="noopener">Manage billing / subscription →</a></p>` : ""}
     <p class="back-row"><a href="/">← Back to Replyr</a></p>
-    <p class="back-row"><a href="/contact">Contact us</a></p>
+    <p class="back-row"><a href="/contact">Contact us</a> · <a href="/compliance">Messaging compliance</a></p>
     </footer>
   </div>
   <script src="/subscribe.js"></script>
@@ -1989,6 +1992,11 @@ ${canonicalMeta}
 <style>
   :root { --bg: #0f0f11; --surface: #17171a; --surface2: #1e1e22; --border: rgba(255,255,255,0.07); --accent: #4a9eff; --accent2: #7c6af7; --text: #f0ede8; --muted: #8b8a92; }
   * { box-sizing: border-box; margin: 0; padding: 0; }
+  .skip-link { position: absolute; left: -9999px; top: 0; z-index: 200; background: var(--accent); color: #0f0f11; padding: 10px 16px; border-radius: 0 0 10px 0; font-weight: 700; font-size: 14px; text-decoration: none; }
+  .skip-link:focus { left: 0; }
+  .doc-footer { max-width: ${pageWidth}; margin: 24px auto 0; text-align: center; font-size: 12px; color: var(--muted); position: relative; z-index: 1; }
+  .doc-footer a { color: var(--muted); text-decoration: underline; }
+  .doc-footer a:hover { color: var(--text); }
   body { background: var(--bg); color: var(--text); font-family: 'DM Sans', sans-serif; font-size: 15px; min-height: 100vh; padding: 48px 24px 80px; overflow-x: hidden; line-height: 1.6; }
   body::before { content: ''; position: fixed; top: -200px; left: 50%; transform: translateX(-50%); width: 800px; height: 500px; background: radial-gradient(ellipse, rgba(124,106,247,0.12) 0%, transparent 70%); pointer-events: none; z-index: 0; }
   .doc-wrap { max-width: ${pageWidth}; margin: 0 auto; position: relative; z-index: 1; }
@@ -2018,15 +2026,19 @@ ${canonicalMeta}
 </style>
 </head>
 <body>
+<a class="skip-link" href="#main">Skip to content</a>
 <div class="doc-wrap">
   <header class="doc-brand">
     <div class="doc-brand-icon" aria-hidden="true">💬</div>
     <span class="doc-brand-name">Replyr</span>
   </header>
-  <main class="doc-card">
+  <main id="main" class="doc-card">
 ${bodyHtml}
   </main>
 </div>
+<footer class="doc-footer">
+  <a href="/privacy">Privacy</a> · <a href="/terms">Terms</a> · <a href="/compliance">Messaging compliance</a>
+</footer>
 </body>
 </html>`;
 }
@@ -3617,8 +3629,10 @@ app.get("/contact", (req, res) => {
     title: "Replyr – Contact us",
     canonicalPath: "/contact",
     bodyHtml: `    <h1>Contact <em>us</em></h1>
-    <p>Questions or concerns? We're here to help — whether you're already using Replyr or thinking about signing up.</p>
+    <p>Questions about connecting Google, billing, or Replyr Pro? Whether you're already set up or just exploring, email us and we'll help.</p>
     ${emailHtml}
+    <p style="font-size:13px">We typically reply within one business day.</p>
+    <p style="margin-top:14px">Ready to start? <a href="/subscribe">View plans and pricing →</a></p>
     <p class="doc-back" style="margin-top:24px;text-align:left"><a href="/">← Back to Replyr</a></p>`,
     narrow: true,
     description: "Get in touch with Replyr — questions, support, or feedback."

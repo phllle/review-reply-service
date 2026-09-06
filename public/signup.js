@@ -53,6 +53,9 @@
     lightbox.classList.remove("open");
     if (contentBox) contentBox.classList.remove("has-clone");
     if (cloneEl) cloneEl.innerHTML = "";
+    // Clear the image + alt while hidden so the closed lightbox exposes no
+    // stale/meaningless image to assistive tech.
+    if (img) { img.src = ""; img.alt = ""; }
     document.body.style.overflow = "";
     if (wasOpen && lastFocused && typeof lastFocused.focus === "function") {
       lastFocused.focus();
