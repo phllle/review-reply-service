@@ -83,6 +83,22 @@ async function initSchema() {
   } catch (err) {
     if (err.code !== "42701") throw err;
   }
+  // Trial free replies: replace the 1-shot boolean with a counter (up to 5).
+  try {
+    await client.query("ALTER TABLE businesses ADD COLUMN free_replies_used INTEGER NOT NULL DEFAULT 0");
+  } catch (err) {
+    if (err.code !== "42701") throw err;
+  }
+  // One-time migration: a used 1-shot free reply counts as all 5 consumed.
+  // Idempotent — only touches legacy rows still at 0. We stop writing the
+  // boolean after this, so new rows never re-trigger it.
+  try {
+    await client.query(
+      "UPDATE businesses SET free_replies_used = 5 WHERE free_reply_used = true AND free_replies_used = 0"
+    );
+  } catch (err) {
+    if (err.code !== "42703") throw err; // ignore if legacy column is already gone
+  }
   try {
     await client.query("ALTER TABLE businesses ADD COLUMN trial_ends_at TIMESTAMPTZ");
   } catch (err) {
@@ -352,7 +368,7 @@ export async function writeTokens(data) {
 // --- Businesses ---
 
 const BUSINESS_COLUMNS =
-  "account_id, location_id, name, contact, auto_reply_enabled, interval_minutes, updated_at, free_reply_used, trial_ends_at, subscribed_at, stripe_customer_id, is_pro, pro_tier, auto_reply_mode, notification_email, weekly_digest_enabled, last_weekly_digest_at, last_digest_rating_avg, place_id";
+  "account_id, location_id, name, contact, auto_reply_enabled, interval_minutes, updated_at, free_replies_used, trial_ends_at, subscribed_at, stripe_customer_id, is_pro, pro_tier, auto_reply_mode, notification_email, weekly_digest_enabled, last_weekly_digest_at, last_digest_rating_avg, place_id";
 
 function rowToBusiness(row) {
   return {
@@ -363,7 +379,7 @@ function rowToBusiness(row) {
     autoReplyEnabled: row.auto_reply_enabled,
     intervalMinutes: row.interval_minutes,
     updatedAt: row.updated_at,
-    freeReplyUsed: row.free_reply_used ?? false,
+    freeRepliesUsed: row.free_replies_used ?? 0,
     trialEndsAt: row.trial_ends_at ? new Date(row.trial_ends_at).toISOString() : null,
     subscribedAt: row.subscribed_at ? new Date(row.subscribed_at).toISOString() : null,
     stripeCustomerId: row.stripe_customer_id ?? null,
@@ -411,6 +427,7 @@ export async function upsertBusinessInDb(config) {
   const lastWeeklyDigestAt = config.lastWeeklyDigestAt !== undefined ? config.lastWeeklyDigestAt : existing?.lastWeeklyDigestAt ?? null;
   const lastDigestRatingAvg = config.lastDigestRatingAvg !== undefined ? config.lastDigestRatingAvg : existing?.lastDigestRatingAvg ?? null;
   const placeId = config.placeId !== undefined ? config.placeId : existing?.placeId ?? null;
+  const freeRepliesUsed = config.freeRepliesUsed !== undefined ? config.freeRepliesUsed : existing?.freeRepliesUsed ?? 0;
   const row = {
     account_id: config.accountId,
     location_id: config.locationId,
@@ -419,7 +436,7 @@ export async function upsertBusinessInDb(config) {
     auto_reply_enabled: config.autoReplyEnabled ?? existing?.autoReplyEnabled ?? false,
     interval_minutes: config.intervalMinutes ?? existing?.intervalMinutes ?? 30,
     updated_at: now,
-    free_reply_used: config.freeReplyUsed ?? existing?.freeReplyUsed ?? false,
+    free_replies_used: freeRepliesUsed,
     trial_ends_at: trialEndsAt,
     subscribed_at: subscribedAt,
     stripe_customer_id: stripeCustomerId,
@@ -433,11 +450,11 @@ export async function upsertBusinessInDb(config) {
     place_id: placeId
   };
   await getPool().query(
-    `INSERT INTO businesses (account_id, location_id, name, contact, auto_reply_enabled, interval_minutes, updated_at, free_reply_used, trial_ends_at, subscribed_at, stripe_customer_id, is_pro, pro_tier, auto_reply_mode, notification_email, weekly_digest_enabled, last_weekly_digest_at, last_digest_rating_avg, place_id)
+    `INSERT INTO businesses (account_id, location_id, name, contact, auto_reply_enabled, interval_minutes, updated_at, free_replies_used, trial_ends_at, subscribed_at, stripe_customer_id, is_pro, pro_tier, auto_reply_mode, notification_email, weekly_digest_enabled, last_weekly_digest_at, last_digest_rating_avg, place_id)
      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
      ON CONFLICT (account_id) DO UPDATE SET
-       location_id = $2, name = $3, contact = $4, auto_reply_enabled = $5, interval_minutes = $6, updated_at = $7, free_reply_used = $8, trial_ends_at = $9, subscribed_at = $10, stripe_customer_id = $11, is_pro = $12, pro_tier = $13, auto_reply_mode = $14, notification_email = $15, weekly_digest_enabled = $16, last_weekly_digest_at = $17, last_digest_rating_avg = $18, place_id = $19`,
-    [row.account_id, row.location_id, row.name, row.contact, row.auto_reply_enabled, row.interval_minutes, row.updated_at, row.free_reply_used, row.trial_ends_at, row.subscribed_at, row.stripe_customer_id, row.is_pro, row.pro_tier, row.auto_reply_mode, row.notification_email, row.weekly_digest_enabled, row.last_weekly_digest_at, row.last_digest_rating_avg, row.place_id]
+       location_id = $2, name = $3, contact = $4, auto_reply_enabled = $5, interval_minutes = $6, updated_at = $7, free_replies_used = $8, trial_ends_at = $9, subscribed_at = $10, stripe_customer_id = $11, is_pro = $12, pro_tier = $13, auto_reply_mode = $14, notification_email = $15, weekly_digest_enabled = $16, last_weekly_digest_at = $17, last_digest_rating_avg = $18, place_id = $19`,
+    [row.account_id, row.location_id, row.name, row.contact, row.auto_reply_enabled, row.interval_minutes, row.updated_at, row.free_replies_used, row.trial_ends_at, row.subscribed_at, row.stripe_customer_id, row.is_pro, row.pro_tier, row.auto_reply_mode, row.notification_email, row.weekly_digest_enabled, row.last_weekly_digest_at, row.last_digest_rating_avg, row.place_id]
   );
   return rowToBusiness(row);
 }

@@ -22,7 +22,8 @@ import {
   signChooseLocationToken,
   verifyChooseLocationToken
 } from "./sessionAuth.js";
-import { processPendingReviews, startScheduler, getReplyText, addRepliedReviewId } from "./auto.js";
+import { processPendingReviews, startScheduler, getReplyText, addRepliedReviewId, getRepliedReviewIds } from "./auto.js";
+import { FREE_REPLY_CAP, freeReplyEligibility, selectUnrepliedNewestFirst, freeRepliesToPost, reviewIdOf } from "./freeReply.js";
 import {
   getAllBusinesses,
   getBusiness,
@@ -832,6 +833,7 @@ app.get("/connected", async (req, res, next) => {
     let trialEndedNoSubscription = false;
     let isPro = false;
     let gratisAccess = false;
+    let freeRepliesUsed = 0;
     if (accountId) {
       let business = await getBusiness(accountId);
       // Backfill trial for existing businesses that connected before trial existed
@@ -853,6 +855,7 @@ app.get("/connected", async (req, res, next) => {
         trialEndDateFormatted = end.toLocaleDateString("en-US", { weekday: "short", year: "numeric", month: "short", day: "numeric" });
       }
       isPro = !!(business && business.isPro);
+      freeRepliesUsed = Number(business?.freeRepliesUsed || 0);
       gratisAccess = isGratisAccount(accountId);
       trialEndedNoSubscription =
         !gratisAccess &&
@@ -946,14 +949,19 @@ app.get("/connected", async (req, res, next) => {
   <p id="weekly-digest-msg" class="connected-msg" aria-live="polite"></p>
 </div>`
       : "";
-    // Hide the "Try it now" demo once auto-reply is enabled — once the system is
-    // replying automatically, the one-shot demo is just noise. The card toggles
-    // with the auto-reply switch (see /connected.js).
-    const tryItCard = accountId
-      ? `<div class="card" id="free-reply-section" data-account-id="${escapeHtml(accountId)}"${currentAutoReply ? ' style="display:none"' : ""}>
+    // Trial-only "Try it now": up to 5 free replies to latest unreplied reviews.
+    // Shown only on an active trial, not subscribed, auto-reply OFF, under the cap.
+    // The card also toggles with the auto-reply switch (see /connected.js).
+    const trialActive = trialEndsAt != null && new Date(trialEndsAt) > new Date();
+    const freeRepliesRemaining = Math.max(0, 5 - freeRepliesUsed);
+    const freeReplyCountLabel = freeRepliesUsed === 0 ? "5 free replies ready" : `${freeRepliesUsed} of 5 used`;
+    const showTryIt = accountId && trialActive && !subscribedAt && !currentAutoReply && freeRepliesUsed < 5;
+    const tryItCard = showTryIt
+      ? `<div class="card" id="free-reply-section" data-account-id="${escapeHtml(accountId)}">
   <div class="card-title">Try it now</div>
-  <div class="card-desc">We'll reply to your latest unreplied review once, free. You'll see it on your Google listing.</div>
-  <button type="button" id="free-reply-btn" class="btn btn-primary"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M13 2L3 6l4 3 3 4 3-11z"/></svg>Send my 1 free reply</button>
+  <div class="card-desc">We'll reply to your latest unreplied Google reviews, free (up to 5). You'll see them on your listing.</div>
+  <button type="button" id="free-reply-btn" class="btn btn-primary"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M13 2L3 6l4 3 3 4 3-11z"/></svg>Reply to latest reviews</button>
+  <p id="free-reply-count" class="card-desc" style="margin:8px 0 0;font-size:12px">${escapeHtml(freeReplyCountLabel)}</p>
   <p id="free-reply-msg" class="connected-msg" aria-live="polite"></p>
 </div>`
       : "";
@@ -1528,6 +1536,7 @@ app.get("/connected.js", (req, res) => {
   if (!accountId) return;
   var btn = document.getElementById("free-reply-btn");
   var msg = document.getElementById("free-reply-msg");
+  var countEl = document.getElementById("free-reply-count");
   if (btn && msg) {
     btn.addEventListener("click", function() {
       btn.disabled = true;
@@ -1545,16 +1554,27 @@ app.get("/connected.js", (req, res) => {
         if (data.ok) {
           msg.textContent = data.message || "Done! Check your Google listing.";
           msg.classList.add("ok");
+          var remaining = typeof data.remaining === "number" ? data.remaining : null;
+          if (countEl && remaining !== null) {
+            countEl.textContent = (5 - remaining) + " of 5 used";
+          }
+          if (remaining === 0) {
+            btn.disabled = true;
+            btn.textContent = "5 free replies used";
+          } else {
+            btn.disabled = false;
+          }
         } else {
           msg.textContent = data.error || "Something went wrong.";
           msg.classList.add("err");
+          btn.disabled = false;
         }
       })
       .catch(function() {
         msg.textContent = "Something went wrong. Try again.";
         msg.classList.remove("ok"); msg.classList.add("err");
-      })
-      .finally(function() { btn.disabled = false; });
+        btn.disabled = false;
+      });
     });
   }
 
@@ -2276,30 +2296,48 @@ app.post("/free-reply", freeReplyLimiter, async (req, res, next) => {
     if (!business) {
       return res.status(404).json({ error: "Business not found. Connect via the signup link first." });
     }
-    if (business.freeReplyUsed) {
-      return res.status(400).json({ error: "You've already used your one free reply." });
+    // Trial-only offer, capped — see src/freeReply.js.
+    const eligibility = freeReplyEligibility(business);
+    if (!eligibility.ok) {
+      return res.status(400).json({ error: eligibility.error });
     }
+    const { used } = eligibility;
     const { locationId, contact } = business;
     if (!locationId) {
       return res.status(400).json({ error: "No location linked. Reconnect via the signup link." });
     }
     const reviews = await listReviews(accountId, locationId);
-    const unreplied = reviews.find((r) => !r.reviewReply || !r.reviewReply.comment);
-    if (!unreplied) {
-      return res.status(400).json({ error: "You have no unreplied reviews right now. When you get one, come back and we'll reply for free." });
+    const repliedIds = await getRepliedReviewIds(accountId, locationId);
+    const unreplied = selectUnrepliedNewestFirst(reviews, repliedIds);
+    if (unreplied.length === 0) {
+      return res.status(400).json({ error: "You have no unreplied reviews right now." });
     }
-    const reviewId = unreplied.reviewId || unreplied.name?.split("/").pop();
-    if (!reviewId) {
-      return res.status(500).json({ error: "Could not get review id" });
+    const toPost = unreplied.slice(0, freeRepliesToPost(FREE_REPLY_CAP - used, unreplied.length));
+    let posted = 0;
+    for (const review of toPost) {
+      const reviewId = reviewIdOf(review);
+      if (!reviewId) continue;
+      try {
+        const comment = await getReplyText(review, { contact, businessName: business.name || "our business" });
+        await replyToReview(accountId, locationId, reviewId, comment);
+        await addRepliedReviewId(accountId, locationId, reviewId);
+        posted += 1;
+      } catch (err) {
+        req.log?.error?.({ err, accountId, reviewId }, "Free reply post failed");
+      }
     }
-    const comment = await getReplyText(unreplied, {
-      contact,
-      businessName: business.name || "our business"
+    if (posted === 0) {
+      return res.status(400).json({ error: "You have no unreplied reviews right now." });
+    }
+    const newUsed = used + posted;
+    await upsertBusiness({ ...business, freeRepliesUsed: newUsed });
+    const remaining = FREE_REPLY_CAP - newUsed;
+    return res.json({
+      ok: true,
+      posted,
+      remaining,
+      message: `Replied to ${posted} review${posted === 1 ? "" : "s"}. Check your Google listing.${remaining > 0 ? ` ${remaining} free ${remaining === 1 ? "reply" : "replies"} left.` : ""}`
     });
-    await replyToReview(accountId, locationId, reviewId, comment);
-    await addRepliedReviewId(accountId, locationId, reviewId);
-    await upsertBusiness({ ...business, freeReplyUsed: true });
-    return res.json({ ok: true, message: "We replied to your latest review. Check your Google listing." });
   } catch (err) {
     req.log.error(err, "Free reply failed");
     next(err);
