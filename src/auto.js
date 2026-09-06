@@ -52,6 +52,12 @@ async function writeState(accountId, locationId, state) {
   await fs.writeFile(STATE_PATH, JSON.stringify(all, null, 2), "utf8");
 }
 
+/** Read the set of review IDs already replied to (auto-reply, free-reply, or queued). */
+export async function getRepliedReviewIds(accountId, locationId) {
+  const state = await readState(accountId, locationId);
+  return Array.isArray(state.repliedReviewIds) ? state.repliedReviewIds : [];
+}
+
 /** Add a review ID to the replied list (for free-reply or manual). Works with file or DB. */
 export async function addRepliedReviewId(accountId, locationId, reviewId) {
   const state = await readState(accountId, locationId);
