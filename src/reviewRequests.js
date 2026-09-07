@@ -72,16 +72,16 @@ function greetName(firstName) {
 }
 
 /** SMS copy (kept short for one segment; STOP line for A2P compliance). */
-function buildMessage(firstName, businessName, url) {
+export function buildMessage(firstName, businessName, url) {
   return `Hi ${greetName(firstName)}, it's ${businessName}. Thanks for coming in. If we earned it, a quick Google review helps: ${url} Reply STOP to opt out.`;
 }
 
-/** Email copy — explicitly invites a 5-star review. */
-function buildEmail(firstName, businessName, url) {
+/** Email copy — rating-neutral review ask (Google policy forbids soliciting ratings). */
+export function buildEmail(firstName, businessName, url) {
   const subject = `A quick favor from ${businessName}`;
   const bodyContent =
     `Hi ${greetName(firstName)},\n\n` +
-    `Thanks for coming in to ${businessName}! If you enjoyed your visit, a 5-star Google review would be truly appreciated — it helps our small business more than you know.\n\n` +
+    `Thanks for coming in to ${businessName}! If you have a moment, we'd really appreciate an honest Google review — it helps our small business more than you know.\n\n` +
     `Leave a review here: ${url}\n\n` +
     `Thank you!\n${businessName}`;
   return { subject, bodyContent };

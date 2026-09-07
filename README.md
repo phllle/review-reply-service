@@ -110,6 +110,6 @@ Never commit `.env` (it is git-ignored). Prefer the `X-Admin-Secret` header over
 These are **Twilio Console** steps (not env vars):
 1. **A2P 10DLC** – For US long-code SMS to customers, complete **Standard** brand registration and a suitable **campaign** (platform sending on behalf of multiple businesses). Sole Proprietor registration is not appropriate for multi-tenant campaign SMS.
 2. **Spending limit** – In Twilio → Billing → **Spending limits**, set a monthly or all-time cap so unexpected volume cannot drain the account.
-3. **Campaign SMS flag** – Set **`CAMPAIGN_SMS_ENABLED=true`** only when you intend to send Pro campaign SMS; metering and caps apply per business tier in the database.
+3. **Campaign SMS flag** – Set **`CAMPAIGN_SMS_ENABLED=true`** only when you intend to send Pro campaign SMS; metering and caps apply per business tier in the database. **Keep it `false` until 10DLC is approved for a multi-brand platform** (Replyr sends on behalf of many businesses) — otherwise carriers filter/block the traffic. Review-request and campaign SMS both include "Reply STOP to opt out."; review requests never solicit a star rating (Google policy).
 
 Replyr uses **pay-as-you-go** Twilio pricing (per message); there is no separate “plan” to subscribe to beyond registration and carrier fees.
