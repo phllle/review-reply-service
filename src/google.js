@@ -10,33 +10,49 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const TOKENS_PATH = path.resolve(__dirname, "..", "tokens.json");
 
-// In-memory CSRF state store (state → { ts, returnTo }). TTL: 10 minutes.
+// CSRF state store. In production (db.useDb()) it lives in Postgres so it
+// survives restarts and works across replicas; the in-memory Map is local
+// no-DB dev only.
 const _oauthStates = new Map();
 const _STATE_TTL_MS = 10 * 60 * 1000;
+
+/** Pure: is a state created at createdAtMs expired relative to now? (testable) */
+export function isOAuthStateExpired(createdAtMs, now = Date.now()) {
+  return !createdAtMs || now - createdAtMs > _STATE_TTL_MS;
+}
 
 function pruneOAuthStates() {
   const now = Date.now();
   for (const [s, entry] of _oauthStates) {
     const ts = typeof entry === "number" ? entry : entry?.ts;
-    if (now - ts > _STATE_TTL_MS) _oauthStates.delete(s);
+    if (isOAuthStateExpired(ts, now)) _oauthStates.delete(s);
   }
 }
 
-function generateState(returnTo = null) {
+export async function generateState(returnTo = null) {
   const state = crypto.randomBytes(32).toString("base64url");
-  _oauthStates.set(state, { ts: Date.now(), returnTo: returnTo && String(returnTo).trim() ? String(returnTo).trim() : null });
+  const rt = returnTo && String(returnTo).trim() ? String(returnTo).trim() : null;
+  if (db.useDb()) {
+    await db.insertOAuthState(state, rt);
+    return state;
+  }
+  _oauthStates.set(state, { ts: Date.now(), returnTo: rt });
   pruneOAuthStates();
   return state;
 }
 
-/** @returns {{ ok: boolean, returnTo?: string|null }} */
-export function validateState(state) {
-  if (!state || !_oauthStates.has(state)) return { ok: false };
+/** @returns {Promise<{ ok: boolean, returnTo?: string|null }>} one-time consume */
+export async function validateState(state) {
+  if (!state) return { ok: false };
+  if (db.useDb()) {
+    return await db.consumeOAuthState(String(state));
+  }
+  if (!_oauthStates.has(state)) return { ok: false };
   const entry = _oauthStates.get(state);
   _oauthStates.delete(state);
   const ts = typeof entry === "number" ? entry : entry?.ts;
   const returnTo = typeof entry === "object" && entry && "returnTo" in entry ? entry.returnTo : null;
-  if (Date.now() - ts > _STATE_TTL_MS) return { ok: false };
+  if (isOAuthStateExpired(ts)) return { ok: false };
   return { ok: true, returnTo };
 }
 
@@ -124,11 +140,12 @@ export async function getAuthUrl(options = {}) {
     "email"
   ];
   const returnTo = options.returnTo && String(options.returnTo).trim().startsWith("/") ? String(options.returnTo).trim() : null;
+  const state = await generateState(returnTo);
   const url = client.generateAuthUrl({
     access_type: "offline",
     prompt: "consent",
     scope: scopes,
-    state: generateState(returnTo)
+    state
   });
   return url;
 }

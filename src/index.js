@@ -196,6 +196,12 @@ async function start() {
     logger.fatal("REPLYR_SESSION_SECRET is required in production for secure sessions");
     process.exit(1);
   }
+  // Refuse to boot in production without Postgres — the JSON file-store is
+  // local-dev only and would silently lose tokens/businesses on Railway.
+  if (process.env.NODE_ENV === "production" && !db.useDb()) {
+    logger.fatal("DATABASE_URL is required in production. The file-store (tokens.json / businesses.json / auto-state.json) is local-dev only.");
+    process.exit(1);
+  }
   if (sentry.isEnabled()) {
     await sentry.init();
     logger.info("Sentry initialized");
@@ -2137,7 +2143,7 @@ app.get("/auth/google/callback", authRouteLimiter, async (req, res, next) => {
     if (!code) {
       return res.status(400).json({ error: "Missing code" });
     }
-    const stateResult = validateState(state?.toString());
+    const stateResult = await validateState(state?.toString());
     if (!stateResult.ok) {
       return res.status(400).json({ error: "Invalid or expired OAuth state. Please try connecting again." });
     }

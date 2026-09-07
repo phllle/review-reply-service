@@ -305,6 +305,44 @@ async function initSchema() {
       PRIMARY KEY (account_id, month_key)
     );
   `);
+  // OAuth CSRF state — persisted so it survives restarts / multiple replicas.
+  await client.query(`
+    CREATE TABLE IF NOT EXISTS oauth_states (
+      state TEXT PRIMARY KEY,
+      return_to TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+  `);
+}
+
+const OAUTH_STATE_TTL_MS = 10 * 60 * 1000;
+
+/** Persist a one-time OAuth state. */
+export async function insertOAuthState(state, returnTo) {
+  await getPool().query(
+    "INSERT INTO oauth_states (state, return_to) VALUES ($1, $2) ON CONFLICT (state) DO NOTHING",
+    [state, returnTo || null]
+  );
+}
+
+/**
+ * Consume (validate + delete, one-time) an OAuth state. Rejects rows older than
+ * 10 minutes and opportunistically clears expired rows.
+ * @returns {Promise<{ ok: boolean, returnTo?: string|null }>}
+ */
+export async function consumeOAuthState(state) {
+  const pool = getPool();
+  pool
+    .query("DELETE FROM oauth_states WHERE created_at < NOW() - INTERVAL '10 minutes'")
+    .catch(() => {});
+  const res = await pool.query(
+    "DELETE FROM oauth_states WHERE state = $1 RETURNING return_to, created_at",
+    [state]
+  );
+  const row = res.rows[0];
+  if (!row) return { ok: false };
+  if (Date.now() - new Date(row.created_at).getTime() > OAUTH_STATE_TTL_MS) return { ok: false };
+  return { ok: true, returnTo: row.return_to ?? null };
 }
 
 /** Create tables if they don't exist. Retries transient connection errors (Railway Postgres wake-up). */
