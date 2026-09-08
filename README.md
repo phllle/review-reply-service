@@ -56,10 +56,11 @@ The owner's email is auto-filled at OAuth time when the user grants the `openid 
 POST /google/reviews/{ACCOUNT_ID}/{LOCATION_ID}/{REVIEW_ID}/reply with { "comment": "Thank you!" }.
 
 ### Database (production)
-On Railway (or any host with ephemeral filesystem), set **DATABASE_URL** to a PostgreSQL connection string so tokens, businesses, and auto-reply state persist across redeploys. Without it, the app uses JSON files (`tokens.json`, `businesses.json`, `auto-state.json`).
+On Railway (or any host with ephemeral filesystem), set **DATABASE_URL** to a PostgreSQL connection string so tokens, businesses, OAuth CSRF state, auto-reply state, and subscriptions persist across redeploys and replicas.
 
-- **Railway:** Add the Postgres plugin to your project; it sets `DATABASE_URL` automatically. Tables (`tokens`, `businesses`, `auto_state`) are created on first startup.
-- **Local:** Omit `DATABASE_URL` to keep using the file-based store.
+- **Railway:** Add the Postgres plugin to your project; it sets `DATABASE_URL` automatically. Tables (`tokens`, `businesses`, `auto_state`, `oauth_states`, …) are created/migrated on first startup.
+- **Local dev only:** Omit `DATABASE_URL` to use the JSON file store (`tokens.json`, `businesses.json`, `auto-state.json`). This is for local development only — in production the app **refuses to boot** (`process.exit(1)`) if `DATABASE_URL` is missing, and never writes those files.
+- **Multi-location:** One Google login can manage multiple business locations. Businesses are keyed by `(account_id, location_id)`, so picking a second location adds a row instead of overwriting the first. Billing (subscription / Pro tier) is per Google account and is copied onto new location rows; Pro contacts and campaigns stay per account.
 
 ### Stripe (subscriptions & webhook)
 - **SUBSCRIBE_URL** – Stripe Payment Link (fallback when user has no accountId). **SUBSCRIBE_PRICE** – Label shown on subscribe page (e.g. `$10 / month`).
