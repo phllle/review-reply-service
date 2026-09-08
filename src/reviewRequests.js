@@ -105,7 +105,13 @@ async function requireProAccount(req, res) {
     res.status(503).json({ error: "Database required for review requests." });
     return null;
   }
-  const business = await getBusiness(accountId);
+  // Multi-location: honor an explicit locationId so the review link uses that
+  // location's place_id (never a sibling's). Defaults to the account's primary.
+  const locationId =
+    (req.query.locationId && String(req.query.locationId).trim()) ||
+    (req.body && req.body.locationId && String(req.body.locationId).trim()) ||
+    null;
+  const business = await getBusiness(accountId, locationId);
   if (!business) {
     res.status(404).json({ error: "Business not found." });
     return null;

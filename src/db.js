@@ -63,13 +63,15 @@ async function initSchema() {
       data JSONB NOT NULL
     );
     CREATE TABLE IF NOT EXISTS businesses (
-      account_id TEXT PRIMARY KEY,
+      id BIGSERIAL UNIQUE,
+      account_id TEXT NOT NULL,
       location_id TEXT NOT NULL,
       name TEXT,
       contact TEXT,
       auto_reply_enabled BOOLEAN NOT NULL DEFAULT false,
       interval_minutes INTEGER NOT NULL DEFAULT 30,
-      updated_at TIMESTAMPTZ NOT NULL
+      updated_at TIMESTAMPTZ NOT NULL,
+      PRIMARY KEY (account_id, location_id)
     );
     CREATE TABLE IF NOT EXISTS auto_state (
       account_id TEXT NOT NULL,
@@ -158,6 +160,35 @@ async function initSchema() {
     await client.query("ALTER TABLE businesses ADD COLUMN place_id TEXT");
   } catch (err) {
     if (err.code !== "42701") throw err;
+  }
+  // Multi-location: businesses are keyed by (account_id, location_id). Older
+  // deployments used a single-column account_id PK. Migrate in place — safe for
+  // existing single-location rows since each already has a NOT NULL location_id
+  // that is unique within its account, so the composite key holds. Idempotent:
+  // re-running is a no-op once the composite PK and id column exist.
+  try {
+    await client.query("ALTER TABLE businesses ADD COLUMN id BIGSERIAL");
+  } catch (err) {
+    if (err.code !== "42701") throw err; // duplicate_column — already migrated
+  }
+  try {
+    await client.query("ALTER TABLE businesses ADD CONSTRAINT businesses_id_key UNIQUE (id)");
+  } catch (err) {
+    // duplicate_object / duplicate_table — the unique constraint/index already exists
+    if (err.code !== "42710" && err.code !== "42P07") throw err;
+  }
+  {
+    const pk = await client.query(
+      `SELECT a.attname AS col
+         FROM pg_index i
+         JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey)
+        WHERE i.indrelid = 'businesses'::regclass AND i.indisprimary`
+    );
+    const pkCols = pk.rows.map((r) => r.col);
+    if (!(pkCols.includes("account_id") && pkCols.includes("location_id"))) {
+      await client.query("ALTER TABLE businesses DROP CONSTRAINT IF EXISTS businesses_pkey");
+      await client.query("ALTER TABLE businesses ADD PRIMARY KEY (account_id, location_id)");
+    }
   }
   // Auto-reply preview mode: when business has auto_reply_mode='delayed', low-star
   // replies are queued here until send_after passes (or cancelled_at is set).
@@ -406,10 +437,11 @@ export async function writeTokens(data) {
 // --- Businesses ---
 
 const BUSINESS_COLUMNS =
-  "account_id, location_id, name, contact, auto_reply_enabled, interval_minutes, updated_at, free_replies_used, trial_ends_at, subscribed_at, stripe_customer_id, is_pro, pro_tier, auto_reply_mode, notification_email, weekly_digest_enabled, last_weekly_digest_at, last_digest_rating_avg, place_id";
+  "id, account_id, location_id, name, contact, auto_reply_enabled, interval_minutes, updated_at, free_replies_used, trial_ends_at, subscribed_at, stripe_customer_id, is_pro, pro_tier, auto_reply_mode, notification_email, weekly_digest_enabled, last_weekly_digest_at, last_digest_rating_avg, place_id";
 
 function rowToBusiness(row) {
   return {
+    id: row.id ?? null,
     accountId: row.account_id,
     locationId: row.location_id,
     name: row.name,
@@ -433,27 +465,47 @@ function rowToBusiness(row) {
 }
 
 export async function getAllBusinessesFromDb() {
-  const res = await getPool().query(`SELECT ${BUSINESS_COLUMNS} FROM businesses`);
+  const res = await getPool().query(`SELECT ${BUSINESS_COLUMNS} FROM businesses ORDER BY id ASC`);
   const out = {};
   for (const row of res.rows) {
-    out[row.account_id] = rowToBusiness(row);
+    // Composite key so multiple locations under one Google account don't collide.
+    out[`${row.account_id}::${row.location_id}`] = rowToBusiness(row);
   }
   return out;
 }
 
-export async function getBusinessFromDb(accountId) {
+/**
+ * Fetch one business row. With a locationId, returns that exact location. Without
+ * one, returns the account's primary (lowest id) row — the back-compat default
+ * for account-level callers and single-location accounts.
+ */
+export async function getBusinessFromDb(accountId, locationId = null) {
+  if (locationId != null) {
+    const res = await getPool().query(
+      `SELECT ${BUSINESS_COLUMNS} FROM businesses WHERE account_id = $1 AND location_id = $2`,
+      [accountId, locationId]
+    );
+    return res.rows[0] ? rowToBusiness(res.rows[0]) : null;
+  }
   const res = await getPool().query(
-    `SELECT ${BUSINESS_COLUMNS} FROM businesses WHERE account_id = $1`,
+    `SELECT ${BUSINESS_COLUMNS} FROM businesses WHERE account_id = $1 ORDER BY id ASC LIMIT 1`,
     [accountId]
   );
-  const row = res.rows[0];
-  if (!row) return null;
-  return rowToBusiness(row);
+  return res.rows[0] ? rowToBusiness(res.rows[0]) : null;
+}
+
+/** All location rows for one Google account, ordered by id (primary first). */
+export async function getBusinessesForAccountFromDb(accountId) {
+  const res = await getPool().query(
+    `SELECT ${BUSINESS_COLUMNS} FROM businesses WHERE account_id = $1 ORDER BY id ASC`,
+    [accountId]
+  );
+  return res.rows.map(rowToBusiness);
 }
 
 export async function upsertBusinessInDb(config) {
   const now = new Date().toISOString();
-  const existing = await getBusinessFromDb(config.accountId);
+  const existing = await getBusinessFromDb(config.accountId, config.locationId);
   const trialEndsAt = config.trialEndsAt !== undefined ? config.trialEndsAt : existing?.trialEndsAt ?? null;
   const subscribedAt = config.subscribedAt !== undefined ? config.subscribedAt : existing?.subscribedAt ?? null;
   const stripeCustomerId = config.stripeCustomerId !== undefined ? config.stripeCustomerId : existing?.stripeCustomerId ?? null;
@@ -490,8 +542,8 @@ export async function upsertBusinessInDb(config) {
   await getPool().query(
     `INSERT INTO businesses (account_id, location_id, name, contact, auto_reply_enabled, interval_minutes, updated_at, free_replies_used, trial_ends_at, subscribed_at, stripe_customer_id, is_pro, pro_tier, auto_reply_mode, notification_email, weekly_digest_enabled, last_weekly_digest_at, last_digest_rating_avg, place_id)
      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
-     ON CONFLICT (account_id) DO UPDATE SET
-       location_id = $2, name = $3, contact = $4, auto_reply_enabled = $5, interval_minutes = $6, updated_at = $7, free_replies_used = $8, trial_ends_at = $9, subscribed_at = $10, stripe_customer_id = $11, is_pro = $12, pro_tier = $13, auto_reply_mode = $14, notification_email = $15, weekly_digest_enabled = $16, last_weekly_digest_at = $17, last_digest_rating_avg = $18, place_id = $19`,
+     ON CONFLICT (account_id, location_id) DO UPDATE SET
+       name = $3, contact = $4, auto_reply_enabled = $5, interval_minutes = $6, updated_at = $7, free_replies_used = $8, trial_ends_at = $9, subscribed_at = $10, stripe_customer_id = $11, is_pro = $12, pro_tier = $13, auto_reply_mode = $14, notification_email = $15, weekly_digest_enabled = $16, last_weekly_digest_at = $17, last_digest_rating_avg = $18, place_id = $19`,
     [row.account_id, row.location_id, row.name, row.contact, row.auto_reply_enabled, row.interval_minutes, row.updated_at, row.free_replies_used, row.trial_ends_at, row.subscribed_at, row.stripe_customer_id, row.is_pro, row.pro_tier, row.auto_reply_mode, row.notification_email, row.weekly_digest_enabled, row.last_weekly_digest_at, row.last_digest_rating_avg, row.place_id]
   );
   return rowToBusiness(row);
