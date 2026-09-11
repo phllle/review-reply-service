@@ -145,6 +145,22 @@ export async function getBusiness(accountId, locationId = null) {
   return rows[0];
 }
 
+/** Find a business by Google Place ID (attach-by-place for a second manager). */
+export async function getBusinessByPlaceId(placeId) {
+  if (!placeId) return null;
+  if (db.useDb()) return await db.getBusinessByPlaceIdFromDb(placeId);
+  const all = await readBusinesses();
+  return Object.values(all).find((b) => b && b.placeId && b.placeId === placeId) || null;
+}
+
+/** Find a business by location id (fallback when place_id is missing). */
+export async function getBusinessByLocationId(locationId) {
+  if (!locationId) return null;
+  if (db.useDb()) return await db.getBusinessByLocationIdFromDb(locationId);
+  const all = await readBusinesses();
+  return Object.values(all).find((b) => b && b.locationId && b.locationId === locationId) || null;
+}
+
 /** All location rows for one Google account, primary (lowest id) first. */
 export async function getBusinessesForAccount(accountId) {
   const all = await readBusinesses();

@@ -165,6 +165,37 @@ async function fetchAccountsWithAccessToken(accessToken) {
   return accounts;
 }
 
+/** Fetch locations for one account using a raw access token (before tokens are stored). */
+async function fetchLocationsWithAccessToken(accessToken, accountId) {
+  const base = `https://mybusinessbusinessinformation.googleapis.com/v1/accounts/${encodeURIComponent(accountId)}/locations?readMask=name,title,metadata`;
+  let pageToken;
+  const items = [];
+  do {
+    const url = new URL(base);
+    if (pageToken) url.searchParams.set("pageToken", pageToken);
+    const resp = await fetch(url.toString(), { headers: { Authorization: `Bearer ${accessToken}` } });
+    if (!resp.ok) {
+      const text = await resp.text();
+      throw new Error(`Locations API error ${resp.status}: ${text}`);
+    }
+    const data = await resp.json();
+    if (Array.isArray(data.locations)) items.push(...data.locations);
+    pageToken = data.nextPageToken;
+  } while (pageToken);
+  return items;
+}
+
+/**
+ * Exchange the OAuth code and enumerate EVERY location the user can manage,
+ * across ALL of their Google Business accounts. Does NOT persist any token —
+ * the caller decides (via attach-by-placeId) whether this user is a new owner
+ * (persist + create a business) or a manager attaching to an existing tenant
+ * (keep the original owner's token untouched). Two Google users on the same
+ * listing can get different account ids, so we key on placeId/locationId, not
+ * accountId.
+ *
+ * @returns {Promise<{ tokens: object, email: string|null, primaryAccountId: string|null, primaryAccountName: string|null, candidates: Array<{accountId:string, accountName:string|null, locationId:string|null, placeId:string|null, title:string|null}> }>}
+ */
 export async function handleOAuthCallback(code) {
   const client = createOAuthClient();
   const { tokens } = await client.getToken(code);
@@ -173,24 +204,77 @@ export async function handleOAuthCallback(code) {
   if (!accounts.length) {
     throw new Error("No Google Business accounts found for this user.");
   }
-  const first = accounts[0];
-  const accountId = first.name ? first.name.replace(/^accounts\//, "") : null;
-  if (!accountId) {
-    throw new Error("Could not determine account ID");
+  const candidates = [];
+  for (const acc of accounts) {
+    const accId = acc.name ? acc.name.replace(/^accounts\//, "") : null;
+    if (!accId) continue;
+    let locs = [];
+    try {
+      locs = await fetchLocationsWithAccessToken(accessToken, accId);
+    } catch {
+      // Skip accounts whose locations we can't list (partial access); other
+      // accounts may still yield a match.
+      continue;
+    }
+    for (const loc of locs) {
+      candidates.push({
+        accountId: accId,
+        accountName: acc.accountName || null,
+        locationId: loc?.name ? loc.name.split("/").pop() : null,
+        placeId: loc?.metadata?.placeId || null,
+        title: loc?.title || null
+      });
+    }
   }
+  const first = accounts[0];
+  const primaryAccountId = first.name ? first.name.replace(/^accounts\//, "") : null;
+  // Best-effort email capture from the id_token. Used to prefill notification_email
+  // on first connect (never overwrites a value the owner already set).
+  const email = extractEmailFromTokenResponse(tokens);
+  return { tokens, email, primaryAccountId, primaryAccountName: first.accountName || null, candidates };
+}
+
+/** Persist OAuth tokens for an account (used when creating/refreshing a business owner). */
+export async function persistTokenForAccount(accountId, tokens) {
+  if (!accountId || !tokens) return;
   const existing = await readTokens();
-  const tokenData = {
+  await writeTokenForAccount(accountId, {
     access_token: tokens.access_token,
     refresh_token: tokens.refresh_token || existing[accountId]?.refresh_token || null,
     scope: tokens.scope,
     expiry_date: tokens.expiry_date || null
-  };
-  await writeTokenForAccount(accountId, tokenData);
-  // Best-effort email capture from the id_token. Returned to the caller so it
-  // can save it to notification_email on first connect (without overwriting
-  // any value the owner already set manually).
-  const email = extractEmailFromTokenResponse(tokens);
-  return { accountId, accountName: first.accountName, email };
+  });
+}
+
+/**
+ * Pure decision helper: given the OAuth user's candidate locations and lookups
+ * to find an existing business by placeId (preferred) then locationId, decide
+ * how to proceed. Matches attach to the existing tenant's accountId so billing,
+ * Pro contacts, and the customer list all load the original business.
+ *
+ * @returns {Promise<{mode:"none"} | {mode:"attach", accountId:string} | {mode:"create", candidate:object} | {mode:"picker", options:Array<object>}>}
+ */
+export async function resolveAttachDecision(candidates, { byPlaceId, byLocationId } = {}) {
+  if (!Array.isArray(candidates) || candidates.length === 0) return { mode: "none" };
+  const options = [];
+  for (const c of candidates) {
+    let existing = null;
+    if (c.placeId && byPlaceId) existing = await byPlaceId(c.placeId);
+    if (!existing && c.locationId && byLocationId) existing = await byLocationId(c.locationId);
+    options.push({ ...c, attachTo: existing ? existing.accountId : null });
+  }
+  const attachAccounts = new Set(options.filter((o) => o.attachTo).map((o) => o.attachTo));
+  const news = options.filter((o) => !o.attachTo);
+  // One existing tenant and nothing new → attach straight through, no picker.
+  if (news.length === 0 && attachAccounts.size === 1) {
+    return { mode: "attach", accountId: [...attachAccounts][0] };
+  }
+  // A single brand-new location and no matches → create as today.
+  if (attachAccounts.size === 0 && news.length === 1) {
+    return { mode: "create", candidate: news[0] };
+  }
+  // Ambiguous or mixed (several matches, or new + existing) → let the user pick.
+  return { mode: "picker", options };
 }
 
 async function getAuthorizedClient(accountId) {
