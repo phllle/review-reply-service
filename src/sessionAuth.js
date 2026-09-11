@@ -214,3 +214,32 @@ export function verifyChooseLocationToken(token) {
   if (!accountId || Number.isNaN(exp) || Date.now() > exp) return null;
   return accountId;
 }
+
+/**
+ * Short-lived signed token carrying an arbitrary JSON payload for the
+ * location/attach picker (the list of candidate locations and, for each, the
+ * existing accountId to attach to or null to create). HMAC-signed, TTL-bounded.
+ */
+export function signChoosePayload(obj) {
+  const body = JSON.stringify({ ...obj, exp: Date.now() + CHOOSE_LOC_TTL_MS });
+  const b64 = Buffer.from(body, "utf8").toString("base64url");
+  const payload = `choosev2.${b64}`;
+  return `${payload}.${hmac(payload)}`;
+}
+
+/** @returns {object|null} the payload object (minus exp validation), or null */
+export function verifyChoosePayload(token) {
+  if (!token || typeof token !== "string") return null;
+  const parts = token.split(".");
+  if (parts.length !== 3 || parts[0] !== "choosev2") return null;
+  const payload = `${parts[0]}.${parts[1]}`;
+  if (hmac(payload) !== parts[2]) return null;
+  let obj;
+  try {
+    obj = JSON.parse(Buffer.from(parts[1], "base64url").toString("utf8"));
+  } catch {
+    return null;
+  }
+  if (!obj || typeof obj.exp !== "number" || Date.now() > obj.exp) return null;
+  return obj;
+}

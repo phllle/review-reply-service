@@ -12,7 +12,7 @@ import twilio from "twilio";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 import * as db from "./db.js";
-import { getAuthUrl, handleOAuthCallback, getTokenStatus, replyToReview, listAccounts, listLocations, listReviews, validateState } from "./google.js";
+import { getAuthUrl, handleOAuthCallback, persistTokenForAccount, resolveAttachDecision, getTokenStatus, replyToReview, listAccounts, listLocations, listReviews, validateState } from "./google.js";
 import {
   setSessionCookie,
   readSessionAccountId,
@@ -22,8 +22,8 @@ import {
   clearAdminCookie,
   canAccessAccount,
   isValidTestRequest,
-  signChooseLocationToken,
-  verifyChooseLocationToken
+  signChoosePayload,
+  verifyChoosePayload
 } from "./sessionAuth.js";
 import { processPendingReviews, startScheduler, getReplyText, addRepliedReviewId, getRepliedReviewIds } from "./auto.js";
 import { FREE_REPLY_CAP, freeReplyEligibility, selectUnrepliedNewestFirst, freeRepliesToPost, reviewIdOf } from "./freeReply.js";
@@ -33,7 +33,9 @@ import {
   upsertBusiness,
   getAccountIdByStripeCustomerId,
   isGratisAccount,
-  setNotificationEmailIfEmpty
+  setNotificationEmailIfEmpty,
+  getBusinessByPlaceId,
+  getBusinessByLocationId
 } from "./businesses.js";
 import { replaceProContacts, getProContactsCount, getProContactsList, setProContactUnsubscribed } from "./proContacts.js";
 import { parseProCsv, validateFile } from "./csvPro.js";
@@ -2033,85 +2035,112 @@ app.get("/auth/google/callback", authRouteLimiter, async (req, res, next) => {
     if (!stateResult.ok) {
       return res.status(400).json({ error: "Invalid or expired OAuth state. Please try connecting again." });
     }
-    let accountId, accountName, ownerEmail;
+    let candidates, tokens, ownerEmail, primaryAccountName;
     try {
       const result = await handleOAuthCallback(code.toString());
-      accountId = result.accountId;
-      accountName = result.accountName;
+      candidates = result.candidates;
+      tokens = result.tokens;
       ownerEmail = result.email || null;
+      primaryAccountName = result.primaryAccountName || null;
     } catch (err) {
       if (err.message && err.message.includes("No Google Business accounts")) {
         return res.redirect("/no-business?" + new URLSearchParams({ reason: "no_account" }).toString());
       }
       throw err;
     }
-    const locations = await listLocations(accountId);
-    if (!locations || locations.length === 0) {
-      return res.redirect("/no-business?" + new URLSearchParams({ reason: "no_location", accountId }).toString());
+    if (!candidates || candidates.length === 0) {
+      return res.redirect("/no-business?" + new URLSearchParams({ reason: "no_location" }).toString());
     }
-    if (locations.length > 1) {
-      // Multi-location accounts go through the picker; email auto-fill skipped
-      // here (the row doesn't exist yet). Owner can still set it on /connected.
-      const t = signChooseLocationToken(accountId);
-      return res.redirect("/auth/choose-location?t=" + encodeURIComponent(t));
-    }
-    const firstLocation = locations[0];
-    const locationId = firstLocation?.name ? firstLocation.name.split("/").pop() : null;
-    const name = firstLocation?.title || accountName || null;
-    await upsertBusiness({
-      accountId,
-      locationId: locationId || "",
-      name,
-      placeId: firstLocation?.metadata?.placeId || undefined
+
+    const safeReturnTo =
+      stateResult.returnTo && String(stateResult.returnTo).trim().startsWith("/")
+        ? String(stateResult.returnTo).trim()
+        : null;
+    const connectedPath = (accountId, name) =>
+      safeReturnTo ||
+      "/connected?name=" + encodeURIComponent(name || "your business") + "&accountId=" + encodeURIComponent(accountId);
+
+    // Attach-by-place: a second Google user (e.g. a Manager on the same GBP
+    // listing) can receive a different account id for the same location. Match
+    // on placeId first, then locationId, so they load the EXISTING Replyr tenant
+    // (billing, Pro contacts, customer list) instead of a brand-new business.
+    const decision = await resolveAttachDecision(candidates, {
+      byPlaceId: getBusinessByPlaceId,
+      byLocationId: getBusinessByLocationId
     });
-    if (ownerEmail) {
-      try {
-        await setNotificationEmailIfEmpty(accountId, ownerEmail);
-      } catch (err) {
-        req.log?.warn(err, "OAuth email auto-fill failed");
+
+    if (decision.mode === "attach") {
+      // Ride the original tenant's session. Do NOT create a row and do NOT write
+      // the manager's token over the owner's — the owner's refresh token drives
+      // auto-reply.
+      setSessionCookie(res, decision.accountId);
+      const existing = await getBusiness(decision.accountId);
+      return res.redirect(connectedPath(decision.accountId, existing?.name || primaryAccountName));
+    }
+
+    if (decision.mode === "create") {
+      const c = decision.candidate;
+      await persistTokenForAccount(c.accountId, tokens);
+      await upsertBusiness({
+        accountId: c.accountId,
+        locationId: c.locationId || "",
+        name: c.title || primaryAccountName || null,
+        placeId: c.placeId || undefined
+      });
+      if (ownerEmail) {
+        try {
+          await setNotificationEmailIfEmpty(c.accountId, ownerEmail);
+        } catch (err) {
+          req.log?.warn(err, "OAuth email auto-fill failed");
+        }
       }
+      setSessionCookie(res, c.accountId);
+      return res.redirect(connectedPath(c.accountId, c.title || primaryAccountName));
     }
-    setSessionCookie(res, accountId);
-    const redirectName = name || "your business";
-    let redirectPath =
-      "/connected?name=" + encodeURIComponent(redirectName) + "&accountId=" + encodeURIComponent(accountId);
-    if (stateResult.returnTo && String(stateResult.returnTo).trim().startsWith("/")) {
-      redirectPath = String(stateResult.returnTo).trim();
+
+    // decision.mode === "picker": several candidates (matches to different
+    // tenants, or a mix of existing + new). Persist tokens only for accounts we
+    // might create a business under, then let the user pick. Each pick attaches
+    // to that existing accountId or creates a new business.
+    for (const o of decision.options) {
+      if (!o.attachTo) await persistTokenForAccount(o.accountId, tokens);
     }
-    res.redirect(redirectPath);
+    const t = signChoosePayload({
+      email: ownerEmail,
+      returnTo: safeReturnTo,
+      options: decision.options.map((o) => ({
+        accountId: o.accountId,
+        locationId: o.locationId,
+        placeId: o.placeId,
+        title: o.title,
+        attachTo: o.attachTo
+      }))
+    });
+    return res.redirect("/auth/choose-location?t=" + encodeURIComponent(t));
   } catch (err) {
     req.log.error(err, "OAuth callback failed");
     next(err);
   }
 });
 
-// Pick Google Business location when the account has more than one (after OAuth, before session is fully established)
+// Pick which Google Business location to use when the user's OAuth surfaced
+// several candidates (after OAuth, before the session cookie is set). Each
+// option is carried in a signed token, along with whether it attaches to an
+// existing Replyr tenant (attachTo) or creates a new business.
 app.get("/auth/choose-location", authRouteLimiter, async (req, res, next) => {
   try {
     const t = (req.query.t && String(req.query.t)) || "";
-    const accountId = verifyChooseLocationToken(t);
-    if (!accountId) {
+    const payload = verifyChoosePayload(t);
+    if (!payload || !Array.isArray(payload.options) || payload.options.length === 0) {
       return res.status(400).send("Invalid or expired link. Please connect again from the signup page.");
     }
-    const locations = await listLocations(accountId);
-    if (!locations.length) {
-      return res.redirect("/no-business?" + new URLSearchParams({ reason: "no_location", accountId }).toString());
-    }
-    if (locations.length === 1) {
-      const loc = locations[0];
-      const locationId = loc?.name ? loc.name.split("/").pop() : "";
-      const name = loc?.title || "";
-      await upsertBusiness({ accountId, locationId, name, placeId: loc?.metadata?.placeId || undefined });
-      setSessionCookie(res, accountId);
-      return res.redirect(
-        "/connected?name=" + encodeURIComponent(name || "your business") + "&accountId=" + encodeURIComponent(accountId)
-      );
-    }
-    const options = locations
-      .map((loc) => {
-        const id = loc?.name ? loc.name.split("/").pop() : "";
-        const title = escapeHtml(loc?.title || id || "Location");
-        return `<label class="pick-row"><input type="radio" name="locationId" value="${escapeHtml(id)}" required> <span>${title}</span></label>`;
+    const options = payload.options
+      .map((o, i) => {
+        const title = escapeHtml(o.title || o.locationId || "Location");
+        const note = o.attachTo
+          ? ' <span style="color:#888;font-size:12px">(existing Replyr business)</span>'
+          : "";
+        return `<label class="pick-row"><input type="radio" name="idx" value="${i}" required> <span>${title}${note}</span></label>`;
       })
       .join("");
     res.set("Content-Type", "text/html; charset=utf-8");
@@ -2127,7 +2156,7 @@ app.get("/auth/choose-location", authRouteLimiter, async (req, res, next) => {
 </style></head>
 <body><div class="card">
   <h1>Which location should Replyr use?</h1>
-  <p style="color:#555;font-size:14px">Your Google account has multiple business locations. Pick one to connect.</p>
+  <p style="color:#555;font-size:14px">Pick a location to connect. Locations marked as an existing Replyr business will attach you to that team.</p>
   <form method="post" action="/auth/choose-location">
     <input type="hidden" name="t" value="${escapeHtml(t)}">
     ${options}
@@ -2142,24 +2171,49 @@ app.get("/auth/choose-location", authRouteLimiter, async (req, res, next) => {
 app.post("/auth/choose-location", authRouteLimiter, express.urlencoded({ extended: true }), async (req, res, next) => {
   try {
     const t = (req.body?.t && String(req.body.t)) || "";
-    const locationId = (req.body?.locationId && String(req.body.locationId).trim()) || "";
-    const accountId = verifyChooseLocationToken(t);
-    if (!accountId || !locationId) {
+    const payload = verifyChoosePayload(t);
+    if (!payload || !Array.isArray(payload.options)) {
       return res.status(400).send("Invalid request. Please start again from the signup page.");
     }
-    const locations = await listLocations(accountId);
-    const allowed = new Set(
-      locations.map((loc) => (loc?.name ? loc.name.split("/").pop() : "")).filter(Boolean)
-    );
-    if (!allowed.has(locationId)) {
+    const idx = parseInt(req.body?.idx, 10);
+    const picked = Number.isInteger(idx) && idx >= 0 ? payload.options[idx] : null;
+    if (!picked) {
       return res.status(400).send("That location is not available. Please try again.");
     }
-    const picked = locations.find((loc) => (loc?.name ? loc.name.split("/").pop() : "") === locationId);
-    const name = picked?.title || "";
-    await upsertBusiness({ accountId, locationId, name, placeId: picked?.metadata?.placeId || undefined });
-    setSessionCookie(res, accountId);
-    res.redirect(
-      "/connected?name=" + encodeURIComponent(name || "your business") + "&accountId=" + encodeURIComponent(accountId)
+    const safeReturnTo =
+      payload.returnTo && String(payload.returnTo).startsWith("/") ? String(payload.returnTo) : null;
+    if (picked.attachTo) {
+      // Attach to the existing tenant — no new row, no token overwrite.
+      setSessionCookie(res, picked.attachTo);
+      const existing = await getBusiness(picked.attachTo);
+      return res.redirect(
+        safeReturnTo ||
+          "/connected?name=" +
+            encodeURIComponent(existing?.name || picked.title || "your business") +
+            "&accountId=" +
+            encodeURIComponent(picked.attachTo)
+      );
+    }
+    await upsertBusiness({
+      accountId: picked.accountId,
+      locationId: picked.locationId || "",
+      name: picked.title || null,
+      placeId: picked.placeId || undefined
+    });
+    if (payload.email) {
+      try {
+        await setNotificationEmailIfEmpty(picked.accountId, payload.email);
+      } catch (err) {
+        req.log?.warn(err, "OAuth email auto-fill failed");
+      }
+    }
+    setSessionCookie(res, picked.accountId);
+    return res.redirect(
+      safeReturnTo ||
+        "/connected?name=" +
+          encodeURIComponent(picked.title || "your business") +
+          "&accountId=" +
+          encodeURIComponent(picked.accountId)
     );
   } catch (err) {
     next(err);

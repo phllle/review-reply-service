@@ -15,7 +15,9 @@ const {
   getAdminSecretFromRequest,
   isAdminSecretValid,
   setAdminCookie,
-  isValidTestRequest
+  isValidTestRequest,
+  signChoosePayload,
+  verifyChoosePayload
 } = await import("../src/sessionAuth.js");
 
 // Capture a Set-Cookie value and turn it into a request Cookie header.
@@ -180,4 +182,35 @@ test("canAccessAccount: requires session match OR admin", () => {
 test("canAccessAccount: missing accountId is denied", () => {
   assert.equal(canAccessAccount({ headers: {}, query: {} }, ""), false);
   assert.equal(canAccessAccount({ headers: {}, query: {} }, null), false);
+});
+
+test("signChoosePayload round-trips options and rejects tampering", () => {
+  const options = [
+    { accountId: "a1", locationId: "l1", placeId: "P1", title: "One", attachTo: "owner" },
+    { accountId: "a2", locationId: "l2", placeId: null, title: "Two", attachTo: null }
+  ];
+  const token = signChoosePayload({ email: "x@y.com", returnTo: "/connected", options });
+  const decoded = verifyChoosePayload(token);
+  assert.ok(decoded);
+  assert.equal(decoded.email, "x@y.com");
+  assert.deepEqual(decoded.options, options);
+  // Tamper with the payload body → signature no longer matches.
+  const parts = token.split(".");
+  const badBody = Buffer.from(JSON.stringify({ options: [{ attachTo: "attacker" }], exp: Date.now() + 60000 }), "utf8").toString("base64url");
+  assert.equal(verifyChoosePayload(`${parts[0]}.${badBody}.${parts[2]}`), null);
+  assert.equal(verifyChoosePayload("garbage"), null);
+});
+
+test("verifyChoosePayload rejects an expired token", () => {
+  // Sign against a clock ~20 min in the past (TTL is 15 min) so the token is
+  // already expired by the time we verify it against the real clock.
+  const realNow = Date.now;
+  Date.now = () => realNow() - 20 * 60 * 1000;
+  let expiredToken;
+  try {
+    expiredToken = signChoosePayload({ options: [] });
+  } finally {
+    Date.now = realNow;
+  }
+  assert.equal(verifyChoosePayload(expiredToken), null);
 });

@@ -494,6 +494,26 @@ export async function getBusinessFromDb(accountId, locationId = null) {
   return res.rows[0] ? rowToBusiness(res.rows[0]) : null;
 }
 
+/** First business row with this Google Place ID (attach-by-place for managers). */
+export async function getBusinessByPlaceIdFromDb(placeId) {
+  if (!placeId) return null;
+  const res = await getPool().query(
+    `SELECT ${BUSINESS_COLUMNS} FROM businesses WHERE place_id = $1 ORDER BY id ASC LIMIT 1`,
+    [placeId]
+  );
+  return res.rows[0] ? rowToBusiness(res.rows[0]) : null;
+}
+
+/** First business row with this location id (fallback when place_id is missing). */
+export async function getBusinessByLocationIdFromDb(locationId) {
+  if (!locationId) return null;
+  const res = await getPool().query(
+    `SELECT ${BUSINESS_COLUMNS} FROM businesses WHERE location_id = $1 ORDER BY id ASC LIMIT 1`,
+    [locationId]
+  );
+  return res.rows[0] ? rowToBusiness(res.rows[0]) : null;
+}
+
 /** All location rows for one Google account, ordered by id (primary first). */
 export async function getBusinessesForAccountFromDb(accountId) {
   const res = await getPool().query(

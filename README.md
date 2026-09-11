@@ -61,6 +61,7 @@ On Railway (or any host with ephemeral filesystem), set **DATABASE_URL** to a Po
 - **Railway:** Add the Postgres plugin to your project; it sets `DATABASE_URL` automatically. Tables (`tokens`, `businesses`, `auto_state`, `oauth_states`, …) are created/migrated on first startup.
 - **Local dev only:** Omit `DATABASE_URL` to use the JSON file store (`tokens.json`, `businesses.json`, `auto-state.json`). This is for local development only — in production the app **refuses to boot** (`process.exit(1)`) if `DATABASE_URL` is missing, and never writes those files.
 - **Multi-location:** One Google login can manage multiple business locations. Businesses are keyed by `(account_id, location_id)`, so picking a second location adds a row instead of overwriting the first. Billing (subscription / Pro tier) is per Google account and is copied onto new location rows; Pro contacts and campaigns stay per account.
+- **Shared listing:** A second Google manager on the same listing is attached by Place ID to the existing Replyr business, so they load the original tenant's billing, Pro list, and settings instead of getting a new empty account.
 
 ### Stripe (subscriptions & webhook)
 - **SUBSCRIBE_URL** – Stripe Payment Link (fallback when user has no accountId). **SUBSCRIBE_PRICE** – Label shown on subscribe page (e.g. `$10 / month`).
