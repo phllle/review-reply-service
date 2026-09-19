@@ -2,10 +2,12 @@ import * as db from "./db.js";
 import { listReviews } from "./google.js";
 import { getBusiness } from "./businesses.js";
 import { canAccessAccount, readSessionAccountId } from "./sessionAuth.js";
+import { registerBrandOg } from "./brandOg.js";
 
 const STAR = { ONE: 1, TWO: 2, THREE: 3, FOUR: 4, FIVE: 5 };
 
 export function registerReviewFeed(app) {
+  registerBrandOg(app);
   app.get("/reviews", async (req, res, next) => {
     try {
       const accountId =
