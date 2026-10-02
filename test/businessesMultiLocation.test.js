@@ -40,10 +40,14 @@ test("upserting location A does not clobber location B", () => {
   assert.equal(map["acct1::locB"].contact, "call B");
 });
 
-test("getEnabledBusinesses returns both locations when independently enabled", () => {
+test("getEnabledBusinesses returns both locations when independently enabled and paid", () => {
   let map = {};
-  // Both on active trial (no trialEndsAt => active) and independently enabled.
-  map = applyUpsert(map, { accountId: "acct1", locationId: "locA", autoReplyEnabled: true });
+  map = applyUpsert(map, {
+    accountId: "acct1",
+    locationId: "locA",
+    autoReplyEnabled: true,
+    subscribedAt: "2026-01-01T00:00:00.000Z"
+  });
   map = applyUpsert(map, { accountId: "acct1", locationId: "locB", autoReplyEnabled: true });
   const enabled = selectEnabledBusinesses(map, { isGratis: () => false });
   const locs = enabled.map((b) => b.locationId).sort();
@@ -52,11 +56,42 @@ test("getEnabledBusinesses returns both locations when independently enabled", (
 
 test("only the enabled location is returned when the other is disabled", () => {
   let map = {};
-  map = applyUpsert(map, { accountId: "acct1", locationId: "locA", autoReplyEnabled: true });
+  map = applyUpsert(map, {
+    accountId: "acct1",
+    locationId: "locA",
+    autoReplyEnabled: true,
+    subscribedAt: "2026-01-01T00:00:00.000Z"
+  });
   map = applyUpsert(map, { accountId: "acct1", locationId: "locB", autoReplyEnabled: false });
   const enabled = selectEnabledBusinesses(map, { isGratis: () => false });
   assert.equal(enabled.length, 1);
   assert.equal(enabled[0].locationId, "locA");
+});
+
+test("an unpaid trial is not auto-replied even if the toggle is on", () => {
+  let map = {};
+  map = applyUpsert(map, {
+    accountId: "acct1",
+    locationId: "locA",
+    autoReplyEnabled: true,
+    trialEndsAt: "2026-12-01T00:00:00.000Z"
+  });
+  const enabled = selectEnabledBusinesses(map, {
+    isGratis: () => false,
+    now: new Date("2026-06-01T00:00:00.000Z")
+  });
+  assert.equal(enabled.length, 0);
+});
+
+test("Pro or complimentary accounts still auto-reply without a subscription timestamp", () => {
+  let map = {};
+  map = applyUpsert(map, { accountId: "pro", locationId: "locP", autoReplyEnabled: true, isPro: true });
+  map = applyUpsert(map, { accountId: "gift", locationId: "locG", autoReplyEnabled: true });
+  const enabled = selectEnabledBusinesses(map, {
+    isGratis: (id) => id === "gift"
+  });
+  const ids = enabled.map((b) => b.accountId).sort();
+  assert.deepEqual(ids, ["gift", "pro"]);
 });
 
 test("a new sibling location inherits account-level billing (Pro/subscription/customer)", () => {

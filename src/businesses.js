@@ -86,10 +86,19 @@ export function isSubscribed(b) {
 }
 
 /**
+ * Paid, Pro, or complimentary. Trial alone is not enough: unpaid signups use
+ * the 5 free replies, not the scheduler backlog.
+ */
+export function canAutoReply(b, { isGratis = isGratisAccount } = {}) {
+  if (!b) return false;
+  return isSubscribed(b) || !!b.isPro || isGratis(b.accountId);
+}
+
+/**
  * Pure: filter a business map (or array) to rows eligible to auto-reply. isGratis
  * is injected so this stays free of env/IO for testing. Each location is judged
  * on its own auto_reply_enabled flag, so multiple locations under one account are
- * independent.
+ * independent. An active trial is not eligible — only subscribed, Pro, or gratis.
  */
 export function selectEnabledBusinesses(mapOrList, { isGratis = isGratisAccount, now = new Date() } = {}) {
   const list = Array.isArray(mapOrList) ? mapOrList : Object.values(mapOrList || {});
@@ -99,7 +108,7 @@ export function selectEnabledBusinesses(mapOrList, { isGratis = isGratisAccount,
       b.autoReplyEnabled === true &&
       b.accountId &&
       b.locationId &&
-      (isTrialActive(b, now) || isSubscribed(b) || isGratis(b.accountId) || b.isPro)
+      canAutoReply(b, { isGratis })
   );
 }
 
@@ -222,7 +231,7 @@ export async function getAccountIdByStripeCustomerId(stripeCustomerId) {
   return found?.accountId ?? null;
 }
 
-/** Get all businesses that have auto-reply enabled and are allowed to run (trial active, base subscription, Pro, or gratis list) */
+/** Businesses with auto-reply on that are paid, Pro, or complimentary. Trials are excluded. */
 export async function getEnabledBusinesses() {
   return selectEnabledBusinesses(await readBusinesses());
 }
