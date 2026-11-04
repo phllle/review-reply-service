@@ -64,6 +64,7 @@ import { verifyCancelToken } from "./replyDelay.js";
 import { publicContactEmail, publicContactMailtoHref } from "./publicContact.js";
 import { registerReviewFeed } from "./reviewFeed.js";
 import { registerReviewRequests } from "./reviewRequests.js";
+import { logReply, reviewFields, listReplyLog, replyLogToCsv } from "./replyLog.js";
 import { renderProPage, proScript } from "./views/proPage.js";
 import { escapeHtml, darkShellHtml } from "./views/shell.js";
 import {
@@ -71,7 +72,8 @@ import {
   renderAdminDisabledHtml,
   renderAdminPage,
   adminScript,
-  renderAdminMetricsHtml
+  renderAdminMetricsHtml,
+  renderAdminRepliesHtml
 } from "./views/adminPage.js";
 import {
   renderContactPage,
@@ -2273,6 +2275,10 @@ app.post("/free-reply", freeReplyLimiter, async (req, res, next) => {
       try {
         const comment = await getReplyText(review, { contact, businessName: business.name || "our business" });
         await replyToReview(accountId, locationId, reviewId, comment);
+        await logReply(
+          { accountId, locationId, reviewId, replyText: comment, source: "free", ...reviewFields(review) },
+          { logger: req.log }
+        );
         await addRepliedReviewId(accountId, locationId, reviewId);
         posted += 1;
       } catch (err) {
@@ -2875,6 +2881,62 @@ app.get("/admin/metrics.json", async (req, res, next) => {
   }
 });
 
+// Admin reply log: every reply posted to Google (AI + manual). HTML, JSON, CSV.
+function parseReplyLogQuery(req) {
+  const rawSource = (req.query.source && String(req.query.source).trim()) || "";
+  const accountId = (req.query.accountId && String(req.query.accountId).trim()) || null;
+  // "" = AI replies only (default), "all" = include manual, else a specific source.
+  const source = rawSource === "all" || rawSource === "" ? null : rawSource;
+  const aiOnly = rawSource === "";
+  const limit = Math.max(1, Math.min(200, parseInt(req.query.limit, 10) || 50));
+  const offset = Math.max(0, parseInt(req.query.offset, 10) || 0);
+  return { rawSource, accountId, source, aiOnly, limit, offset };
+}
+
+app.get("/admin/replies", async (req, res, next) => {
+  try {
+    if (!(process.env.ADMIN_SECRET || "").trim()) {
+      res.status(503).set("Content-Type", "text/html; charset=utf-8");
+      return res.send(renderAdminDisabledHtml());
+    }
+    if (!isValidAdminRequest(req)) {
+      res.status(401).set("Content-Type", "text/html; charset=utf-8");
+      return res.send(renderAdminLoginHtml());
+    }
+    const q = parseReplyLogQuery(req);
+    const { rows, total } = await listReplyLog(q);
+    res.set("Content-Type", "text/html; charset=utf-8");
+    res.send(renderAdminRepliesHtml({ rows, total, limit: q.limit, offset: q.offset, source: q.rawSource, accountId: q.accountId }));
+  } catch (err) {
+    req.log?.error(err, "Admin replies page failed");
+    next(err);
+  }
+});
+
+app.get(["/admin/replies.json", "/admin/replies.csv"], async (req, res, next) => {
+  try {
+    if (!(process.env.ADMIN_SECRET || "").trim()) {
+      return res.status(503).json({ error: "Admin disabled. Set ADMIN_SECRET in the server environment." });
+    }
+    if (!isValidAdminRequest(req)) {
+      return res.status(401).json({ error: "Unauthorized. Sign in at /admin or send the X-Admin-Secret header." });
+    }
+    const q = parseReplyLogQuery(req);
+    const isCsv = req.path.endsWith(".csv");
+    // Exports default to the full matching set (capped), not one page.
+    const { rows, total } = await listReplyLog({ ...q, limit: isCsv ? 5000 : Math.max(q.limit, 200), offset: isCsv ? 0 : q.offset });
+    if (isCsv) {
+      res.set("Content-Type", "text/csv; charset=utf-8");
+      res.set("Content-Disposition", `attachment; filename="replyr-replies-${new Date().toISOString().slice(0, 10)}.csv"`);
+      return res.send(replyLogToCsv(rows));
+    }
+    res.json({ total, rows });
+  } catch (err) {
+    req.log?.error(err, "Admin replies export failed");
+    next(err);
+  }
+});
+
 // Backfill Google Place IDs for businesses connected before per-business
 // place_id capture existed. Uses each account's stored OAuth token — no
 // reconnect needed. Admin-gated. Safe to re-run; skips ones already set.
@@ -2976,6 +3038,10 @@ app.post("/google/reviews/:accountId/:locationId/:reviewId/reply", async (req, r
       return res.status(400).json({ error: "comment is required" });
     }
     const result = await replyToReview(accountId, locationId, reviewId, comment.trim());
+    await logReply(
+      { accountId, locationId, reviewId, replyText: comment.trim(), source: "manual" },
+      { logger: req.log }
+    );
     res.json({ ok: true, result });
   } catch (err) {
     req.log.error(err, "Failed to reply to review");

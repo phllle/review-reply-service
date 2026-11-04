@@ -4,6 +4,7 @@ import { fileURLToPath } from "url";
 import * as db from "./db.js";
 import { listReviews, replyToReview } from "./google.js";
 import * as sentry from "./sentry.js";
+import { logReply, reviewFields } from "./replyLog.js";
 import {
   shouldDelayReply,
   getDelayMinutes,
@@ -199,6 +200,10 @@ export async function processPendingReviews(accountId, locationId, options = {})
       }
 
       await replyToReview(accountId, locationId, reviewId, comment);
+      await logReply(
+        { accountId, locationId, reviewId, replyText: comment, source: "auto", ...reviewFields(review) },
+        { logger }
+      );
       alreadyReplied.add(reviewId);
       results.succeeded += 1;
       results.details.push({ reviewId, rating, status: "ok" });
@@ -228,6 +233,19 @@ export async function processQueuedReplies(logger = console) {
     try {
       await replyToReview(row.accountId, row.locationId, row.reviewId, row.generatedReply);
       await db.markPendingReplySent(row.id);
+      await logReply(
+        {
+          accountId: row.accountId,
+          locationId: row.locationId,
+          reviewId: row.reviewId,
+          replyText: row.generatedReply,
+          source: "delayed",
+          rating: row.rating ?? null,
+          reviewerName: row.reviewerName ?? null,
+          reviewComment: row.reviewComment ?? null
+        },
+        { logger }
+      );
       await addRepliedReviewId(row.accountId, row.locationId, row.reviewId);
       processed += 1;
     } catch (err) {

@@ -414,3 +414,110 @@ export function renderAdminMetricsHtml(data) {
 </div>
 </body></html>`;
 }
+
+// Admin reply log (/admin/replies). Server-rendered table of every reply posted
+// to Google, newest first, with source filter + pagination + CSV export.
+export function renderAdminRepliesHtml({ rows, total, limit, offset, source, accountId }) {
+  const SOURCES = [
+    ["", "All AI replies"],
+    ["auto", "Auto (instant)"],
+    ["delayed", "Delayed (preview)"],
+    ["free", "Free trial"],
+    ["manual", "Manual (owner)"],
+    ["all", "Everything incl. manual"]
+  ];
+  const qs = (extra) => {
+    const p = new URLSearchParams();
+    if (source) p.set("source", source);
+    if (accountId) p.set("accountId", accountId);
+    for (const [k, v] of Object.entries(extra || {})) {
+      if (v === null || v === undefined || v === "") p.delete(k);
+      else p.set(k, String(v));
+    }
+    const str = p.toString();
+    return str ? "?" + str : "";
+  };
+  const stars = (n) => (n ? "★".repeat(n) + "☆".repeat(Math.max(0, 5 - n)) : "—");
+  const fmt = (iso) => {
+    if (!iso) return "—";
+    const d = new Date(iso);
+    return isNaN(d.getTime()) ? "—" : d.toISOString().replace("T", " ").slice(0, 16) + " UTC";
+  };
+  const body = rows.length
+    ? rows
+        .map(
+          (r) => `<tr>
+        <td class="nowrap">${escapeHtml(fmt(r.postedAt))}</td>
+        <td>${escapeHtml(r.businessName || r.accountId)}<div class="sub">${escapeHtml(r.locationId || "")}</div></td>
+        <td class="nowrap">${escapeHtml(stars(r.rating))}</td>
+        <td>${escapeHtml(r.reviewerName || "—")}<div class="sub clip">${escapeHtml(r.reviewComment || "")}</div></td>
+        <td class="reply">${escapeHtml(r.replyText || "")}</td>
+        <td><span class="src src-${escapeHtml(r.source)}">${escapeHtml(r.source)}</span><div class="sub">${escapeHtml(r.model || "")}</div></td>
+      </tr>`
+        )
+        .join("")
+    : `<tr><td colspan="6" class="empty">No replies logged yet. Logging starts from this release — earlier replies aren't recorded here.</td></tr>`;
+  const opts = SOURCES.map(
+    ([v, label]) => `<option value="${v}"${(source || "") === v ? " selected" : ""}>${escapeHtml(label)}</option>`
+  ).join("");
+  const from = total ? offset + 1 : 0;
+  const to = Math.min(offset + rows.length, total);
+  const prev = offset > 0 ? `<a href="/admin/replies${qs({ offset: Math.max(0, offset - limit) || null })}">← Newer</a>` : "";
+  const next = offset + rows.length < total ? `<a href="/admin/replies${qs({ offset: offset + limit })}">Older →</a>` : "";
+  return `<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Replyr – Admin replies</title>
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,wght@0,300;0,400;0,600;1,300&family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
+<style>${adminBaseCss()}</style>
+<style>
+  .filter-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 14px; background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 10px 14px; font-size: 13px; color: var(--muted); }
+  .filter-row select, .filter-row input { background: var(--surface2); border: 1px solid var(--border); border-radius: 8px; color: var(--text); font: inherit; padding: 6px 10px; }
+  .filter-row button { background: var(--accent); color: #0f0f11; border: none; border-radius: 8px; font-weight: 600; padding: 7px 12px; cursor: pointer; }
+  .filter-row a { color: var(--accent2); text-decoration: none; font-weight: 500; }
+  .table-wrap { background: var(--surface); border: 1px solid var(--border); border-radius: 16px; overflow: auto; }
+  table { width: 100%; border-collapse: collapse; min-width: 960px; }
+  thead th { background: var(--surface2); color: var(--muted); font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; text-align: left; padding: 12px 14px; border-bottom: 1px solid var(--border); position: sticky; top: 0; }
+  tbody td { padding: 10px 14px; border-bottom: 1px solid var(--border); font-size: 13px; vertical-align: top; }
+  tbody tr:last-child td { border-bottom: none; }
+  .nowrap { white-space: nowrap; }
+  .sub { color: var(--muted); font-size: 11px; margin-top: 3px; }
+  .clip { max-width: 260px; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+  .reply { max-width: 420px; white-space: pre-wrap; }
+  .src { display: inline-block; padding: 2px 9px; border-radius: 999px; font-size: 11px; font-weight: 600; text-transform: uppercase; background: rgba(74,158,255,0.15); color: var(--accent); }
+  .src-manual { background: rgba(255,255,255,0.08); color: var(--muted); }
+  .src-free { background: rgba(110,231,163,0.15); color: #6ee7a3; }
+  .src-delayed { background: rgba(124,106,247,0.18); color: #a099f7; }
+  .empty { text-align: center; color: var(--muted); padding: 40px 14px; }
+  .pager { display: flex; justify-content: space-between; margin-top: 12px; font-size: 13px; color: var(--muted); }
+  .pager a { color: var(--accent2); text-decoration: none; font-weight: 500; }
+</style>
+</head>
+<body>
+<div class="admin-wrap">
+  ${adminNavHtml("replies")}
+  <div class="admin-page">
+    <div class="admin-header">
+      <h1>Replies</h1>
+      <p class="admin-subtitle">Every reply Replyr posted to Google, newest first. <strong>${total}</strong> matching.</p>
+    </div>
+    <form class="filter-row" method="get" action="/admin/replies">
+      <label for="source">Source</label>
+      <select id="source" name="source">${opts}</select>
+      <label for="accountId">Account</label>
+      <input id="accountId" name="accountId" value="${escapeHtml(accountId || "")}" placeholder="all accounts">
+      <button type="submit">Filter</button>
+      <a href="/admin/replies.csv${qs({ offset: null })}">Download CSV</a>
+      <a href="/admin/replies.json${qs({ offset: null })}">JSON</a>
+    </form>
+    <div class="table-wrap"><table>
+      <thead><tr><th>Posted</th><th>Business</th><th>Rating</th><th>Review</th><th>Reply</th><th>Source</th></tr></thead>
+      <tbody>${body}</tbody>
+    </table></div>
+    <div class="pager"><span>${from}–${to} of ${total}</span><span>${prev} ${next}</span></div>
+  </div>
+</div>
+</body></html>`;
+}

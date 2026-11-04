@@ -344,6 +344,25 @@ async function initSchema() {
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
   `);
+  // Audit log of every reply posted to Google (AI auto/delayed/free + manual).
+  // Append-only; written best-effort after a successful post.
+  await client.query(`
+    CREATE TABLE IF NOT EXISTS reply_log (
+      id BIGSERIAL PRIMARY KEY,
+      account_id TEXT NOT NULL,
+      location_id TEXT NOT NULL,
+      review_id TEXT NOT NULL,
+      rating INTEGER,
+      reviewer_name TEXT,
+      review_comment TEXT,
+      reply_text TEXT NOT NULL,
+      source TEXT NOT NULL,
+      model TEXT,
+      posted_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS idx_reply_log_posted ON reply_log(posted_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_reply_log_account ON reply_log(account_id, posted_at DESC);
+  `);
 }
 
 const OAUTH_STATE_TTL_MS = 10 * 60 * 1000;

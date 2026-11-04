@@ -117,8 +117,8 @@ export function adminBaseCss() {
   `;
 }
 
-// Shared top nav for /admin and /admin/metrics. activeTab is "businesses" or
-// "metrics". Auth rides on the HttpOnly admin cookie, so links carry no secret.
+// Shared top nav for /admin and /admin/metrics. activeTab is "businesses",
+// "metrics", or "replies". Auth rides on the HttpOnly admin cookie, so links carry no secret.
 export function adminNavHtml(activeTab) {
   const cls = (id) => `admin-tab${activeTab === id ? " active" : ""}`;
   return `<nav class="admin-nav" aria-label="Admin">
@@ -129,6 +129,7 @@ export function adminNavHtml(activeTab) {
       <div class="admin-tabs" role="tablist">
         <a href="/admin" class="${cls("businesses")}" role="tab" aria-selected="${activeTab === "businesses"}">Businesses</a>
         <a href="/admin/metrics" class="${cls("metrics")}" role="tab" aria-selected="${activeTab === "metrics"}">Metrics</a>
+        <a href="/admin/replies" class="${cls("replies")}" role="tab" aria-selected="${activeTab === "replies"}">Replies</a>
       </div>
     </nav>`;
 }
