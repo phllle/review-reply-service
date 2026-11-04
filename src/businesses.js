@@ -2,6 +2,7 @@ import fs from "fs/promises";
 import path from "path";
 import { fileURLToPath } from "url";
 import * as db from "./db.js";
+import { notifyTrialSignup } from "./signupNotify.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -186,12 +187,27 @@ export async function getBusinessesForAccount(accountId) {
 export async function upsertBusiness(config) {
   const all = await readBusinesses();
   const merged = mergeBusinessUpsert(all, config);
+  const newSignup = isNewAccountSignup(all, config);
+  let saved;
   if (db.useDb()) {
-    return await db.upsertBusinessInDb(merged);
+    saved = await db.upsertBusinessInDb(merged);
+  } else {
+    all[businessKey(config.accountId, config.locationId)] = merged;
+    await writeBusinesses(all);
+    saved = merged;
   }
-  all[businessKey(config.accountId, config.locationId)] = merged;
-  await writeBusinesses(all);
-  return merged;
+  if (newSignup) {
+    // Fire-and-forget: the operator email must never slow or fail the signup.
+    // config.signupEmail is the owner's Google email (not persisted here).
+    notifyTrialSignup({ ...merged, ...(saved || {}) }, { ownerEmail: config.signupEmail || null }).catch(() => {});
+  }
+  return saved;
+}
+
+/** Pure: true when no businesses row exists yet for this Google account. */
+export function isNewAccountSignup(map, config) {
+  if (!config?.accountId) return false;
+  return !Object.values(map || {}).some((b) => b && b.accountId === config.accountId);
 }
 
 /**

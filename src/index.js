@@ -2085,7 +2085,8 @@ app.get("/auth/google/callback", authRouteLimiter, async (req, res, next) => {
         accountId: c.accountId,
         locationId: c.locationId || "",
         name: c.title || primaryAccountName || null,
-        placeId: c.placeId || undefined
+        placeId: c.placeId || undefined,
+        signupEmail: ownerEmail
       });
       if (ownerEmail) {
         try {
@@ -2198,7 +2199,8 @@ app.post("/auth/choose-location", authRouteLimiter, express.urlencoded({ extende
       accountId: picked.accountId,
       locationId: picked.locationId || "",
       name: picked.title || null,
-      placeId: picked.placeId || undefined
+      placeId: picked.placeId || undefined,
+      signupEmail: payload.email || null
     });
     if (payload.email) {
       try {

@@ -81,6 +81,7 @@ To use Claude for generating review replies instead of templates, set **ANTHROPI
 When the scheduled auto-reply run throws or any reply fails, you can get notified:
 
 - **Email:** Set **ALERT_EMAIL** (e.g. `you@example.com`) and **RESEND_API_KEY** (from [Resend](https://resend.com)). Optional: **ALERT_FROM_EMAIL** (default `Replyr <onboarding@resend.dev>`; use a verified domain in production).
+- **New trial signups:** When a new Google account connects and starts a free trial, Replyr emails **SIGNUP_NOTIFY_EMAIL** (falls back to **ALERT_EMAIL**) with the business name, owner's Google email (set as reply-to), account/location IDs, Google Maps link, and trial end date. Needs **RESEND_API_KEY**. A second location on an existing account or a manager attaching by Place ID does not trigger it. Set `SIGNUP_NOTIFY_EMAIL=off` to disable.
 - **SMS:** Set **ALERT_PHONE** (e.g. `+15551234567`), **TWILIO_ACCOUNT_SID**, **TWILIO_AUTH_TOKEN**, and **TWILIO_FROM_NUMBER** (from [Twilio](https://twilio.com)).
 
 You can set only one or both. Alerts are sent when the scheduler tick throws (e.g. API error) or when any reply in a run fails (e.g. Claude or Google API failure).
