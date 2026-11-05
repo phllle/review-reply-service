@@ -71,6 +71,19 @@ export function mergeBusinessUpsert(map, config, { now = new Date().toISOString(
     lastWeeklyDigestAt: config.lastWeeklyDigestAt ?? existing.lastWeeklyDigestAt ?? null,
     lastDigestRatingAvg: config.lastDigestRatingAvg ?? existing.lastDigestRatingAvg ?? null,
     placeId: config.placeId ?? existing.placeId ?? null,
+    // Ads attribution (kit §7 step 2): first-touch values captured on the
+    // landing page and passed in config at connect; never overwritten after.
+    gclid: config.gclid ?? existing.gclid ?? null,
+    gaClientId: config.gaClientId ?? existing.gaClientId ?? null,
+    utmSource: config.utmSource ?? existing.utmSource ?? null,
+    utmMedium: config.utmMedium ?? existing.utmMedium ?? null,
+    utmCampaign: config.utmCampaign ?? existing.utmCampaign ?? null,
+    landingPage: config.landingPage ?? existing.landingPage ?? null,
+    signupAt: config.signupAt ?? existing.signupAt ?? (isNewAccount ? now : null),
+    // Onboarding preview window (kit §13 Fix 2) — per-location settings state.
+    previewUntil: config.previewUntil ?? existing.previewUntil ?? null,
+    previewChoice: config.previewChoice ?? existing.previewChoice ?? null,
+    firstReplyAt: config.firstReplyAt ?? existing.firstReplyAt ?? null,
     updatedAt: now
   };
 }

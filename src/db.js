@@ -161,6 +161,43 @@ async function initSchema() {
   } catch (err) {
     if (err.code !== "42701") throw err;
   }
+  // Ads attribution (kit §7 step 2): captured on the landing page at first
+  // touch and persisted at connect so a later Stripe payment can be tied back
+  // to the click that produced it. All nullable; accounts that connected
+  // before this shipped simply have no attribution.
+  for (const col of ["gclid", "ga_client_id", "utm_source", "utm_medium", "utm_campaign", "landing_page"]) {
+    try {
+      await client.query(`ALTER TABLE businesses ADD COLUMN ${col} TEXT`);
+    } catch (err) {
+      if (err.code !== "42701") throw err;
+    }
+  }
+  // Signup timestamp (connect time for the account's first row). trial_ends_at
+  // implies it for trial accounts, but an explicit column survives trial edits.
+  try {
+    await client.query("ALTER TABLE businesses ADD COLUMN signup_at TIMESTAMPTZ");
+  } catch (err) {
+    if (err.code !== "42701") throw err;
+  }
+  // Onboarding preview window (kit §13 Fix 2): new accounts get preview mode
+  // for their first 7 days unless they opt out on the welcome screen.
+  // preview_choice records the explicit choice: 'keep' | 'off' | NULL (no choice yet).
+  try {
+    await client.query("ALTER TABLE businesses ADD COLUMN preview_until TIMESTAMPTZ");
+  } catch (err) {
+    if (err.code !== "42701") throw err;
+  }
+  try {
+    await client.query("ALTER TABLE businesses ADD COLUMN preview_choice TEXT");
+  } catch (err) {
+    if (err.code !== "42701") throw err;
+  }
+  // First auto-reply ever posted for the account (kit §7 first_reply_posted).
+  try {
+    await client.query("ALTER TABLE businesses ADD COLUMN first_reply_at TIMESTAMPTZ");
+  } catch (err) {
+    if (err.code !== "42701") throw err;
+  }
   // Multi-location: businesses are keyed by (account_id, location_id). Older
   // deployments used a single-column account_id PK. Migrate in place — safe for
   // existing single-location rows since each already has a NOT NULL location_id
@@ -437,7 +474,7 @@ export async function writeTokens(data) {
 // --- Businesses ---
 
 const BUSINESS_COLUMNS =
-  "id, account_id, location_id, name, contact, auto_reply_enabled, interval_minutes, updated_at, free_replies_used, trial_ends_at, subscribed_at, stripe_customer_id, is_pro, pro_tier, auto_reply_mode, notification_email, weekly_digest_enabled, last_weekly_digest_at, last_digest_rating_avg, place_id";
+  "id, account_id, location_id, name, contact, auto_reply_enabled, interval_minutes, updated_at, free_replies_used, trial_ends_at, subscribed_at, stripe_customer_id, is_pro, pro_tier, auto_reply_mode, notification_email, weekly_digest_enabled, last_weekly_digest_at, last_digest_rating_avg, place_id, gclid, ga_client_id, utm_source, utm_medium, utm_campaign, landing_page, signup_at, preview_until, preview_choice, first_reply_at";
 
 function rowToBusiness(row) {
   return {
@@ -460,7 +497,17 @@ function rowToBusiness(row) {
     weeklyDigestEnabled: row.weekly_digest_enabled ?? true,
     lastWeeklyDigestAt: row.last_weekly_digest_at ? new Date(row.last_weekly_digest_at).toISOString() : null,
     lastDigestRatingAvg: row.last_digest_rating_avg ?? null,
-    placeId: row.place_id ?? null
+    placeId: row.place_id ?? null,
+    gclid: row.gclid ?? null,
+    gaClientId: row.ga_client_id ?? null,
+    utmSource: row.utm_source ?? null,
+    utmMedium: row.utm_medium ?? null,
+    utmCampaign: row.utm_campaign ?? null,
+    landingPage: row.landing_page ?? null,
+    signupAt: row.signup_at ? new Date(row.signup_at).toISOString() : null,
+    previewUntil: row.preview_until ? new Date(row.preview_until).toISOString() : null,
+    previewChoice: row.preview_choice ?? null,
+    firstReplyAt: row.first_reply_at ? new Date(row.first_reply_at).toISOString() : null
   };
 }
 
@@ -538,6 +585,16 @@ export async function upsertBusinessInDb(config) {
   const lastDigestRatingAvg = config.lastDigestRatingAvg !== undefined ? config.lastDigestRatingAvg : existing?.lastDigestRatingAvg ?? null;
   const placeId = config.placeId !== undefined ? config.placeId : existing?.placeId ?? null;
   const freeRepliesUsed = config.freeRepliesUsed !== undefined ? config.freeRepliesUsed : existing?.freeRepliesUsed ?? 0;
+  const gclid = config.gclid !== undefined ? config.gclid : existing?.gclid ?? null;
+  const gaClientId = config.gaClientId !== undefined ? config.gaClientId : existing?.gaClientId ?? null;
+  const utmSource = config.utmSource !== undefined ? config.utmSource : existing?.utmSource ?? null;
+  const utmMedium = config.utmMedium !== undefined ? config.utmMedium : existing?.utmMedium ?? null;
+  const utmCampaign = config.utmCampaign !== undefined ? config.utmCampaign : existing?.utmCampaign ?? null;
+  const landingPage = config.landingPage !== undefined ? config.landingPage : existing?.landingPage ?? null;
+  const signupAt = config.signupAt !== undefined ? config.signupAt : existing?.signupAt ?? null;
+  const previewUntil = config.previewUntil !== undefined ? config.previewUntil : existing?.previewUntil ?? null;
+  const previewChoice = config.previewChoice !== undefined ? config.previewChoice : existing?.previewChoice ?? null;
+  const firstReplyAt = config.firstReplyAt !== undefined ? config.firstReplyAt : existing?.firstReplyAt ?? null;
   const row = {
     account_id: config.accountId,
     location_id: config.locationId,
@@ -557,14 +614,24 @@ export async function upsertBusinessInDb(config) {
     weekly_digest_enabled: weeklyDigestEnabled,
     last_weekly_digest_at: lastWeeklyDigestAt,
     last_digest_rating_avg: lastDigestRatingAvg,
-    place_id: placeId
+    place_id: placeId,
+    gclid,
+    ga_client_id: gaClientId,
+    utm_source: utmSource,
+    utm_medium: utmMedium,
+    utm_campaign: utmCampaign,
+    landing_page: landingPage,
+    signup_at: signupAt,
+    preview_until: previewUntil,
+    preview_choice: previewChoice,
+    first_reply_at: firstReplyAt
   };
   await getPool().query(
-    `INSERT INTO businesses (account_id, location_id, name, contact, auto_reply_enabled, interval_minutes, updated_at, free_replies_used, trial_ends_at, subscribed_at, stripe_customer_id, is_pro, pro_tier, auto_reply_mode, notification_email, weekly_digest_enabled, last_weekly_digest_at, last_digest_rating_avg, place_id)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
+    `INSERT INTO businesses (account_id, location_id, name, contact, auto_reply_enabled, interval_minutes, updated_at, free_replies_used, trial_ends_at, subscribed_at, stripe_customer_id, is_pro, pro_tier, auto_reply_mode, notification_email, weekly_digest_enabled, last_weekly_digest_at, last_digest_rating_avg, place_id, gclid, ga_client_id, utm_source, utm_medium, utm_campaign, landing_page, signup_at, preview_until, preview_choice, first_reply_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29)
      ON CONFLICT (account_id, location_id) DO UPDATE SET
-       name = $3, contact = $4, auto_reply_enabled = $5, interval_minutes = $6, updated_at = $7, free_replies_used = $8, trial_ends_at = $9, subscribed_at = $10, stripe_customer_id = $11, is_pro = $12, pro_tier = $13, auto_reply_mode = $14, notification_email = $15, weekly_digest_enabled = $16, last_weekly_digest_at = $17, last_digest_rating_avg = $18, place_id = $19`,
-    [row.account_id, row.location_id, row.name, row.contact, row.auto_reply_enabled, row.interval_minutes, row.updated_at, row.free_replies_used, row.trial_ends_at, row.subscribed_at, row.stripe_customer_id, row.is_pro, row.pro_tier, row.auto_reply_mode, row.notification_email, row.weekly_digest_enabled, row.last_weekly_digest_at, row.last_digest_rating_avg, row.place_id]
+       name = $3, contact = $4, auto_reply_enabled = $5, interval_minutes = $6, updated_at = $7, free_replies_used = $8, trial_ends_at = $9, subscribed_at = $10, stripe_customer_id = $11, is_pro = $12, pro_tier = $13, auto_reply_mode = $14, notification_email = $15, weekly_digest_enabled = $16, last_weekly_digest_at = $17, last_digest_rating_avg = $18, place_id = $19, gclid = $20, ga_client_id = $21, utm_source = $22, utm_medium = $23, utm_campaign = $24, landing_page = $25, signup_at = $26, preview_until = $27, preview_choice = $28, first_reply_at = $29`,
+    [row.account_id, row.location_id, row.name, row.contact, row.auto_reply_enabled, row.interval_minutes, row.updated_at, row.free_replies_used, row.trial_ends_at, row.subscribed_at, row.stripe_customer_id, row.is_pro, row.pro_tier, row.auto_reply_mode, row.notification_email, row.weekly_digest_enabled, row.last_weekly_digest_at, row.last_digest_rating_avg, row.place_id, row.gclid, row.ga_client_id, row.utm_source, row.utm_medium, row.utm_campaign, row.landing_page, row.signup_at, row.preview_until, row.preview_choice, row.first_reply_at]
   );
   return rowToBusiness(row);
 }

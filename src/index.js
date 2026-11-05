@@ -30,6 +30,7 @@ import { FREE_REPLY_CAP, freeReplyEligibility, selectUnrepliedNewestFirst, freeR
 import {
   getAllBusinesses,
   getBusiness,
+  getBusinessesForAccount,
   upsertBusiness,
   getAccountIdByStripeCustomerId,
   isGratisAccount,
@@ -60,7 +61,12 @@ import {
   subscriptionHasProPrice as proPriceMatches,
   getProTierFromSubscription as proTierFromSub
 } from "./stripePricing.js";
-import { verifyCancelToken } from "./replyDelay.js";
+import { verifyCancelToken, previewUntilFrom, effectiveAutoReplyMode } from "./replyDelay.js";
+import { googleTagHeadHtml } from "./analytics.js";
+import { attributionFromRequest } from "./attribution.js";
+import { fireTrialStart, fireSubscriptionPaid } from "./gaEvents.js";
+import { sendWelcomeEmail } from "./onboardingEmails.js";
+import { verticalPageHtml } from "./views/verticalPages.js";
 import { publicContactEmail, publicContactMailtoHref } from "./publicContact.js";
 import { registerReviewFeed } from "./reviewFeed.js";
 import { registerReviewRequests } from "./reviewRequests.js";
@@ -661,6 +667,9 @@ async function stripeWebhook(req, res) {
       if (accountId) {
         const business = await getBusiness(accountId);
         if (business) {
+          // First successful payment = this Checkout completion while the
+          // account had no subscription yet (kit §7 subscription_paid).
+          const isFirstPayment = !business.subscribedAt;
           await upsertBusiness({
             ...business,
             subscribedAt: new Date().toISOString(),
@@ -669,6 +678,12 @@ async function stripeWebhook(req, res) {
             ...(isPro ? { proTier } : {})
           });
           req.log?.info({ accountId, customerId, isPro, proTier }, "Stripe: subscription recorded");
+          if (isFirstPayment) {
+            fireSubscriptionPaid(business, {
+              amountCents: typeof session.amount_total === "number" ? session.amount_total : null,
+              logger: req.log
+            }).catch(() => {});
+          }
         }
       }
     } else if (event.type === "customer.subscription.updated") {
@@ -764,8 +779,13 @@ app.post("/create-checkout-session", aiCampaignLimiter, async (req, res, next) =
 });
 
 // Signup/landing page – connect with Google (dark theme, blue accent; see src/views/signup.html)
+// The Google tag snippet is injected at serve time so it can be driven by
+// GA_MEASUREMENT_ID (empty string — nothing injected — when GA is unset).
 function signupPageHtml() {
-  return fs.readFileSync(path.join(__dirname, "views", "signup.html"), "utf8");
+  const html = fs.readFileSync(path.join(__dirname, "views", "signup.html"), "utf8");
+  const tag = googleTagHeadHtml();
+  if (!tag) return html;
+  return html.replace("</head>", `${tag}\n</head>`);
 }
 app.get("/", (req, res) => {
   res.set("Content-Type", "text/html; charset=utf-8");
@@ -1199,8 +1219,15 @@ app.get("/connected", async (req, res, next) => {
 });
 
 // Subscribe / upgrade page – plan details and link to Stripe or contact
-app.get("/subscribe", (req, res) => {
-  const subscribeUrl = process.env.SUBSCRIBE_URL || ""; // Stripe Payment Link or Checkout URL
+// Vertical landing pages (kit §6): one template, three content swaps.
+for (const verticalKey of ["dentists", "restaurants", "salons"]) {
+  app.get(`/for/${verticalKey}`, (req, res) => {
+    res.set("Content-Type", "text/html; charset=utf-8");
+    res.send(verticalPageHtml(verticalKey));
+  });
+}
+
+app.get("/subscribe", (req, res) => {  const subscribeUrl = process.env.SUBSCRIBE_URL || ""; // Stripe Payment Link or Checkout URL
   const contact = publicContactEmail();
   const priceLabel = process.env.SUBSCRIBE_PRICE || "$19 / month";
   const proStarterPriceLabel = (process.env.SUBSCRIBE_PRO_STARTER_PRICE || "").trim() || "$39 / month";
@@ -1254,6 +1281,7 @@ app.get("/subscribe", (req, res) => {
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Subscribe – Replyr</title>
+  ${googleTagHeadHtml()}
   <meta name="description" content="Choose a Replyr plan. Keep auto-replies to your Google reviews after your 30-day free trial — from $19/month. Cancel anytime.">
   <link rel="canonical" href="https://replyr.pro/subscribe">
   <link rel="icon" type="image/svg+xml" href="/favicon.svg">
@@ -2081,11 +2109,20 @@ app.get("/auth/google/callback", authRouteLimiter, async (req, res, next) => {
     if (decision.mode === "create") {
       const c = decision.candidate;
       await persistTokenForAccount(c.accountId, tokens);
+      // A brand-new account (no rows yet) is a trial start; a second location
+      // on an existing account is not. Attribution (kit §7 step 2) is stored
+      // only for the new account so a later reconnect can't overwrite the
+      // first-touch click that actually produced the signup.
+      const isNewAccount = (await getBusinessesForAccount(c.accountId)).length === 0;
+      const attribution = isNewAccount ? attributionFromRequest(req) : null;
       await upsertBusiness({
         accountId: c.accountId,
         locationId: c.locationId || "",
         name: c.title || primaryAccountName || null,
         placeId: c.placeId || undefined,
+        ...(attribution || {}),
+        // Kit §13 Fix 2: new accounts start inside the 7-day preview window.
+        ...(isNewAccount ? { previewUntil: previewUntilFrom(new Date()) } : {}),
         signupEmail: ownerEmail
       });
       if (ownerEmail) {
@@ -2094,6 +2131,30 @@ app.get("/auth/google/callback", authRouteLimiter, async (req, res, next) => {
         } catch (err) {
           req.log?.warn(err, "OAuth email auto-fill failed");
         }
+      }
+      if (isNewAccount) {
+        // Kit §7: PRIMARY conversion, fired server-side so ad-blockers can't
+        // eat it. Fire-and-forget — analytics never blocks the redirect.
+        const saved = await getBusiness(c.accountId, c.locationId || "");
+        if (saved) {
+          fireTrialStart(saved, { userEmail: ownerEmail, logger: req.log }).catch(() => {});
+        }
+        // Kit §13 Fix 3: welcome email — exactly what Replyr will do, up front.
+        if (ownerEmail) {
+          sendWelcomeEmail({ to: ownerEmail, accountId: c.accountId, logger: req.log }).catch(() => {});
+        }
+        setSessionCookie(res, c.accountId);
+        // Kit §13 Fix 2: new accounts land on the safety-net screen first,
+        // unless they were headed somewhere specific (re-auth flows).
+        if (!safeReturnTo) {
+          return res.redirect(
+            "/welcome?accountId=" +
+              encodeURIComponent(c.accountId) +
+              "&name=" +
+              encodeURIComponent(c.title || primaryAccountName || "")
+          );
+        }
+        return res.redirect(connectedPath(c.accountId, c.title || primaryAccountName));
       }
       setSessionCookie(res, c.accountId);
       return res.redirect(connectedPath(c.accountId, c.title || primaryAccountName));
@@ -2195,11 +2256,15 @@ app.post("/auth/choose-location", authRouteLimiter, express.urlencoded({ extende
             encodeURIComponent(picked.attachTo)
       );
     }
+    const isNewAccount = (await getBusinessesForAccount(picked.accountId)).length === 0;
+    const attribution = isNewAccount ? attributionFromRequest(req) : null;
     await upsertBusiness({
       accountId: picked.accountId,
       locationId: picked.locationId || "",
       name: picked.title || null,
       placeId: picked.placeId || undefined,
+      ...(attribution || {}),
+      ...(isNewAccount ? { previewUntil: previewUntilFrom(new Date()) } : {}),
       signupEmail: payload.email || null
     });
     if (payload.email) {
@@ -2209,6 +2274,31 @@ app.post("/auth/choose-location", authRouteLimiter, express.urlencoded({ extende
         req.log?.warn(err, "OAuth email auto-fill failed");
       }
     }
+    if (isNewAccount) {
+      const saved = await getBusiness(picked.accountId, picked.locationId || "");
+      if (saved) {
+        fireTrialStart(saved, { userEmail: payload.email || null, logger: req.log }).catch(() => {});
+      }
+      if (payload.email) {
+        sendWelcomeEmail({ to: payload.email, accountId: picked.accountId, logger: req.log }).catch(() => {});
+      }
+      setSessionCookie(res, picked.accountId);
+      if (!safeReturnTo) {
+        return res.redirect(
+          "/welcome?accountId=" +
+            encodeURIComponent(picked.accountId) +
+            "&name=" +
+            encodeURIComponent(picked.title || "")
+        );
+      }
+      return res.redirect(
+        safeReturnTo ||
+          "/connected?name=" +
+            encodeURIComponent(picked.title || "your business") +
+            "&accountId=" +
+            encodeURIComponent(picked.accountId)
+      );
+    }
     setSessionCookie(res, picked.accountId);
     return res.redirect(
       safeReturnTo ||
@@ -2216,6 +2306,120 @@ app.post("/auth/choose-location", authRouteLimiter, express.urlencoded({ extende
           encodeURIComponent(picked.title || "your business") +
           "&accountId=" +
           encodeURIComponent(picked.accountId)
+    );
+  } catch (err) {
+    next(err);
+  }
+});
+
+// Post-connect safety-net screen (kit §13 Fix 2). New accounts land here
+// before the dashboard: preview mode is on for the first 7 days, and the
+// owner makes one explicit choice — keep it, or turn it off. Also carries
+// the client-side backup of the trial_start event (same event_id as the
+// server-side fire in the OAuth callback, so GA4 deduplicates the pair).
+app.get("/welcome", async (req, res, next) => {
+  try {
+    const accountId = (req.query.accountId && String(req.query.accountId).trim()) || "";
+    if (!accountId || !canAccessAccount(req, accountId)) {
+      return res.redirect("/");
+    }
+    const business = await getBusiness(accountId);
+    if (!business) {
+      return res.redirect("/");
+    }
+    const name = (req.query.name && String(req.query.name).trim()) || business.name || "your business";
+    const choiceMade = business.previewChoice === "keep" || business.previewChoice === "off";
+    const connectedUrl =
+      "/connected?name=" + encodeURIComponent(name) + "&accountId=" + encodeURIComponent(accountId);
+    const choiceNote = choiceMade
+      ? `<p class="welcome-note">You chose: <strong>${business.previewChoice === "off" ? "post everything automatically" : "keep preview mode on"}</strong>. You can change this anytime in your reply settings.</p>
+    <a class="btn-welcome" href="${escapeHtml(connectedUrl)}">Continue to your dashboard →</a>`
+      : `<form method="post" action="/welcome/preview-choice" class="welcome-actions">
+      <input type="hidden" name="accountId" value="${escapeHtml(accountId)}">
+      <input type="hidden" name="name" value="${escapeHtml(name)}">
+      <button type="submit" name="choice" value="keep" class="btn-welcome">Keep preview mode on</button>
+      <button type="submit" name="choice" value="off" class="btn-welcome btn-welcome-ghost">Turn it off — post everything automatically</button>
+    </form>`;
+    res.set("Content-Type", "text/html; charset=utf-8");
+    res.send(`<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Replyr – You're connected</title>
+${googleTagHeadHtml()}
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,wght@0,300;0,400;0,600;1,300&family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet" media="print" onload="this.media='all'">
+<noscript><link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,wght@0,300;0,400;0,600;1,300&family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet"></noscript>
+<style>
+  :root { --bg: #0f0f11; --surface: #17171a; --surface2: #1e1e22; --border: rgba(255,255,255,0.07); --accent: #4a9eff; --accent2: #7c6af7; --text: #f0ede8; --muted: #8b8a92; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--text); font-family: 'DM Sans', sans-serif; font-size: 15px; min-height: 100vh; padding: 48px 24px 80px; line-height: 1.6; }
+  body::before { content: ''; position: fixed; top: -200px; left: 50%; transform: translateX(-50%); width: 800px; height: 500px; background: radial-gradient(ellipse, rgba(124,106,247,0.12) 0%, transparent 70%); pointer-events: none; z-index: 0; }
+  .welcome-wrap { max-width: 520px; margin: 0 auto; position: relative; z-index: 1; }
+  .welcome-brand { display: flex; align-items: center; justify-content: center; gap: 9px; margin-bottom: 24px; }
+  .welcome-brand-icon { width: 30px; height: 30px; background: linear-gradient(135deg, var(--accent2), var(--accent)); border-radius: 9px; display: flex; align-items: center; justify-content: center; font-size: 15px; }
+  .welcome-brand-name { font-size: 16px; font-weight: 700; }
+  .welcome-card { background: var(--surface); border: 1px solid var(--border); border-radius: 20px; padding: 32px; animation: fadeUp 0.4s ease both; }
+  .welcome-card h1 { font-family: 'Fraunces', serif; font-size: 30px; font-weight: 300; letter-spacing: -0.02em; line-height: 1.15; margin-bottom: 14px; }
+  .welcome-card h1 em { color: var(--accent); font-style: italic; }
+  .welcome-card p { color: var(--muted); font-size: 14px; line-height: 1.7; margin-bottom: 14px; }
+  .welcome-card p strong { color: var(--text); font-weight: 600; }
+  .welcome-note { background: var(--surface2); border: 1px solid var(--border); border-radius: 12px; padding: 12px 14px; }
+  .welcome-actions { display: flex; flex-direction: column; gap: 10px; margin-top: 20px; }
+  .btn-welcome { display: inline-flex; align-items: center; justify-content: center; padding: 13px 20px; background: var(--accent); color: #0f0f11; border: none; border-radius: 12px; font-family: 'DM Sans', sans-serif; font-size: 14px; font-weight: 700; cursor: pointer; text-decoration: none; transition: all 0.2s; width: 100%; }
+  .btn-welcome:hover { background: #6bafff; transform: translateY(-1px); }
+  .btn-welcome-ghost { background: var(--surface2); color: var(--text); border: 1px solid var(--border); }
+  .btn-welcome-ghost:hover { background: rgba(124,106,247,0.15); }
+  @keyframes fadeUp { from { opacity: 0; transform: translateY(16px); } to { opacity: 1; transform: translateY(0); } }
+</style>
+</head>
+<body>
+<div class="welcome-wrap">
+  <header class="welcome-brand">
+    <div class="welcome-brand-icon" aria-hidden="true">💬</div>
+    <span class="welcome-brand-name">Replyr</span>
+  </header>
+  <main class="welcome-card">
+    <h1>You're connected. Here's your <em>safety net</em>.</h1>
+    <p><strong>${escapeHtml(name)}</strong> is connected. Preview mode is <strong>ON</strong> for your first 7 days: every 1–3 star reply waits 15 minutes and lands in your inbox first, with a one-click cancel. 4–5 star replies post automatically in your voice.</p>
+    <p>Nothing low-star goes live without your say-so while preview mode is on — and you can pause or turn off replies anytime in your settings.</p>
+    ${choiceNote}
+  </main>
+</div>
+<script>
+if (typeof window.gtag === "function") {
+  window.gtag("event", "trial_start", { event_id: ${JSON.stringify(accountId)}, value: 19, currency: "USD" });
+}
+</script>
+</body>
+</html>`);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// Records the welcome-screen preview choice, then continues to the dashboard.
+app.post("/welcome/preview-choice", express.urlencoded({ extended: false }), async (req, res, next) => {
+  try {
+    const accountId = (req.body?.accountId && String(req.body.accountId).trim()) || "";
+    const name = (req.body?.name && String(req.body.name).trim()) || "";
+    if (!accountId || !canAccessAccount(req, accountId)) {
+      return res.status(403).send("Forbidden");
+    }
+    const business = await getBusiness(accountId);
+    if (!business) {
+      return res.status(404).send("Business not found. Connect via the signup page first.");
+    }
+    const choice = req.body?.choice === "off" ? "off" : "keep";
+    await upsertBusiness({ ...business, previewChoice: choice });
+    return res.redirect(
+      "/connected?name=" +
+        encodeURIComponent(name || business.name || "your business") +
+        "&accountId=" +
+        encodeURIComponent(accountId)
     );
   } catch (err) {
     next(err);
@@ -3042,6 +3246,8 @@ app.post("/auto/process", async (req, res, next) => {
     const result = await processPendingReviews(a, l, {
       contact: business?.contact,
       businessName: business?.name || "our business",
+      autoReplyMode: business ? effectiveAutoReplyMode(business) : "instant",
+      ownerEmail: business?.notificationEmail || null,
       logger: req.log
     });
     res.json({ ok: true, result });

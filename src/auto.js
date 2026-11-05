@@ -7,9 +7,11 @@ import * as sentry from "./sentry.js";
 import {
   shouldDelayReply,
   getDelayMinutes,
-  normalizeMode
+  normalizeMode,
+  effectiveAutoReplyMode
 } from "./replyDelay.js";
 import { sendReplyPreviewEmail, isPreviewEmailConfigured } from "./replyPreviewEmail.js";
+import { handleFirstReplyPosted } from "./firstReply.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -202,6 +204,17 @@ export async function processPendingReviews(accountId, locationId, options = {})
       alreadyReplied.add(reviewId);
       results.succeeded += 1;
       results.details.push({ reviewId, rating, status: "ok" });
+      // Kit §7/§13: first-ever posted reply for this account fires the GA4
+      // event + owner email. No-ops after the first; never throws.
+      await handleFirstReplyPosted({
+        accountId,
+        locationId,
+        reviewerName: review.reviewer?.displayName || null,
+        rating,
+        reviewText: review.comment || null,
+        replyText: comment,
+        logger
+      });
     } catch (err) {
       logger.error?.(err, "Auto-reply failed");
       results.failed += 1;
@@ -230,6 +243,15 @@ export async function processQueuedReplies(logger = console) {
       await db.markPendingReplySent(row.id);
       await addRepliedReviewId(row.accountId, row.locationId, row.reviewId);
       processed += 1;
+      await handleFirstReplyPosted({
+        accountId: row.accountId,
+        locationId: row.locationId,
+        reviewerName: row.reviewerName,
+        rating: row.rating,
+        reviewText: row.reviewComment,
+        replyText: row.generatedReply,
+        logger
+      });
     } catch (err) {
       failed += 1;
       const msg = err?.message || String(err);
@@ -289,7 +311,7 @@ export function startScheduler(appLogger = console) {
         contact: biz.contact,
         businessName: biz.name || "our business",
         logger: appLogger,
-        autoReplyMode: biz.autoReplyMode || "instant",
+        autoReplyMode: effectiveAutoReplyMode(biz),
         ownerEmail: biz.notificationEmail || null
       })
         .then(async (result) => {
