@@ -23,6 +23,42 @@ export function normalizeMode(value) {
   return VALID_MODES.includes(v) ? v : DEFAULT_MODE;
 }
 
+/** Days of preview-mode safety net for brand-new accounts (kit §13 Fix 2). */
+export const PREVIEW_WINDOW_DAYS = 7;
+
+/** ISO timestamp PREVIEW_WINDOW_DAYS after `from` (the connect time). */
+export function previewUntilFrom(from = new Date()) {
+  const d = new Date(from);
+  d.setUTCDate(d.getUTCDate() + PREVIEW_WINDOW_DAYS);
+  return d.toISOString();
+}
+
+/** True while the account is inside its onboarding preview window. */
+export function isPreviewWindowActive(business, now = new Date()) {
+  if (!business?.previewUntil) return false;
+  const until = new Date(business.previewUntil);
+  return !Number.isNaN(until.getTime()) && until > now;
+}
+
+/**
+ * The mode the reply flow should actually honour for this business.
+ *
+ * A saved 'delayed' setting always wins. Otherwise, during the onboarding
+ * preview window (first 7 days from connect) the business is treated as
+ * 'delayed' — unless the owner explicitly turned preview off on the welcome
+ * screen (previewChoice === 'off'). After the window, the saved mode rules.
+ * Pure; `now` is injectable for tests.
+ *
+ * @param {{ autoReplyMode?: string, previewUntil?: string|null, previewChoice?: string|null }} business
+ * @returns {"instant"|"delayed"}
+ */
+export function effectiveAutoReplyMode(business, now = new Date()) {
+  if (normalizeMode(business?.autoReplyMode) === "delayed") return "delayed";
+  if (business?.previewChoice === "off") return "instant";
+  if (isPreviewWindowActive(business, now)) return "delayed";
+  return "instant";
+}
+
 export function getDelayMaxStar(env = process.env) {
   const raw = Number(env.AUTO_REPLY_DELAY_MAX_STAR);
   if (Number.isFinite(raw) && raw >= 1 && raw <= 5) return Math.floor(raw);

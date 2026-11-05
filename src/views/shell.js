@@ -3,6 +3,8 @@
  * (publicPages, adminPage). Extracted verbatim from index.js — no behavior change.
  */
 
+import { googleTagHeadHtml } from "../analytics.js";
+
 export function escapeHtml(s) {
   const d = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" };
   return String(s).replace(/[&<>"]/g, (c) => d[c]);
@@ -25,6 +27,7 @@ export function darkShellHtml({ title, bodyHtml, narrow = false, description = "
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>${escapeHtml(title)}</title>
+${googleTagHeadHtml()}
 ${descMeta}
 ${canonicalMeta}
 <link rel="icon" type="image/svg+xml" href="/favicon.svg">
