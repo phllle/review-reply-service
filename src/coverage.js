@@ -47,6 +47,31 @@ export function coverageStatus(business, now = new Date()) {
 }
 
 /**
+ * Human-readable label for a raw Google failure, for display in the admin
+ * coverage table. The row's `error` field keeps the raw message (JSON
+ * consumers, debugging); this maps the known failure shapes to what the
+ * operator actually needs to know. Unknown errors pass through, trimmed.
+ */
+export function coverageErrorLabel(error) {
+  if (!error) return null;
+  const raw = String(error);
+  if (/invalid_grant/i.test(raw)) {
+    return "Google connection expired — this business needs to reconnect its Google account";
+  }
+  if (/\b404\b|NOT_FOUND|not found/i.test(raw)) {
+    return "Google couldn't find this location — the connection looks stale";
+  }
+  if (/\b503\b|UNAVAILABLE|currently unavailable/i.test(raw)) {
+    return "Google is temporarily unavailable — try again in a few minutes";
+  }
+  if (/\b401\b|\b403\b|PERMISSION_DENIED|unauthori[sz]ed|forbidden/i.test(raw)) {
+    return "Google denied access — account permissions may have changed";
+  }
+  const oneLineRaw = raw.replace(/\s+/g, " ").trim();
+  return oneLineRaw.length > 140 ? `${oneLineRaw.slice(0, 139)}…` : oneLineRaw;
+}
+
+/**
  * Pure aggregation. Inputs:
  * - business: a businesses row (see businesses.js shape)
  * - reviews: array of Google reviews (listReviews output), or null on error

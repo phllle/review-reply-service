@@ -30,7 +30,22 @@ test("buildReviewCardHtml: card rendered twice (2-up), name escaped, print butto
   assert.equal(html.match(/class="rc-card"/g).length, 2);
   assert.ok(html.includes("Bob&#39;s") || html.includes("Bob's"));
   assert.ok(!html.includes("<Cuts>"));
-  assert.ok(html.includes("window.print()"));
   assert.ok(html.includes("Enjoyed your visit?"));
   assert.ok(html.includes("Scan to leave us a Google review"));
+});
+
+test("buildReviewCardHtml: print wired via external script (CSP blocks inline handlers), Replyr branding on the card", () => {
+  const html = buildReviewCardHtml({
+    businessName: "Castle Nail Bar",
+    displayUrl: "search.google.com/local/writereview",
+    qrSvg: "<svg viewBox=\"0 0 10 10\"></svg>"
+  });
+  // Inline event handlers are blocked by the site's CSP — the button must
+  // have an id and be wired from the external /review-card.js instead.
+  assert.ok(!html.includes("onclick"));
+  assert.ok(html.includes('id="rcPrintBtn"'));
+  assert.ok(html.includes('<script src="/review-card.js" defer></script>'));
+  // Branding appears once per printed card (2-up).
+  assert.equal(html.match(/Powered by/g).length, 2);
+  assert.ok(html.includes("replyr.pro"));
 });
