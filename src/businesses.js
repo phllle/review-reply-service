@@ -91,6 +91,10 @@ export function mergeBusinessUpsert(map, config, { now = new Date().toISOString(
     winbackSentAt: config.winbackSentAt ?? billing.winbackSentAt ?? null,
     subCancelledAt: config.subCancelledAt ?? billing.subCancelledAt ?? null,
     subAccessEndsAt: config.subAccessEndsAt ?? billing.subAccessEndsAt ?? null,
+    // Website widget token + dunning stamp — account-level like the other
+    // billing fields, so a new location row inherits them from a sibling.
+    widgetToken: config.widgetToken ?? billing.widgetToken ?? null,
+    dunningSentAt: config.dunningSentAt ?? billing.dunningSentAt ?? null,
     updatedAt: now
   };
 }
@@ -189,6 +193,14 @@ export async function getBusinessByLocationId(locationId) {
   if (db.useDb()) return await db.getBusinessByLocationIdFromDb(locationId);
   const all = await readBusinesses();
   return Object.values(all).find((b) => b && b.locationId && b.locationId === locationId) || null;
+}
+
+/** Find a business by its website-widget token (public embed lookup). */
+export async function getBusinessByWidgetToken(token) {
+  if (!token) return null;
+  if (db.useDb()) return await db.getBusinessByWidgetTokenFromDb(token);
+  const all = await readBusinesses();
+  return Object.values(all).find((b) => b && b.widgetToken && b.widgetToken === token) || null;
 }
 
 /** All location rows for one Google account, primary (lowest id) first. */
