@@ -18,7 +18,8 @@ test("buildSignupEmail includes business, owner, trial end; strips newlines from
   assert.equal(subject, "New Replyr trial: Castle Nail Bar");
   assert.match(text, /Owner:\s+owner@shop\.com/);
   assert.match(text, /Account ID: 123/);
-  assert.match(text, /place_id:PX/);
+  assert.match(text, /query_place_id=PX/);
+  assert.ok(!text.includes("maps/place/?q=place_id"));
   assert.match(text, /Trial ends: 2026-12-04/);
 });
 
