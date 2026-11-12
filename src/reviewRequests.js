@@ -58,7 +58,7 @@ function normalizeBirthday(v) {
   return null;
 }
 
-function reviewUrl(business) {
+export function reviewUrl(business) {
   const placeId = (business?.placeId || process.env.GOOGLE_PLACE_ID || "").trim();
   if (placeId) {
     return `https://search.google.com/local/writereview?placeid=${encodeURIComponent(placeId)}`;

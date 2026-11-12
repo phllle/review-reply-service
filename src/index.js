@@ -54,7 +54,7 @@ import {
 import multer from "multer";
 import Stripe from "stripe";
 import { runWeeklyDigests, verifyDigestUnsubToken } from "./weeklyDigest.js";
-import { runLifecycleEmails, cancellationPatchFromSubscription } from "./lifecycleEmails.js";
+import { runLifecycleEmails, cancellationPatchFromSubscription, handlePaymentFailed, dunningClearPatch } from "./lifecycleEmails.js";
 import { getCurrentMonthKey, getIncludedSmsForTier, normalizeProTier } from "./proPlan.js";
 import * as sentry from "./sentry.js";
 import {
@@ -71,6 +71,8 @@ import { verticalPageHtml } from "./views/verticalPages.js";
 import { publicContactEmail, publicContactMailtoHref } from "./publicContact.js";
 import { registerReviewFeed } from "./reviewFeed.js";
 import { registerReviewRequests } from "./reviewRequests.js";
+import { registerReviewWidget, ensureWidgetToken } from "./reviewWidget.js";
+import { registerReviewCard } from "./reviewCard.js";
 import { renderProPage, proScript } from "./views/proPage.js";
 import { escapeHtml, darkShellHtml } from "./views/shell.js";
 import {
@@ -308,6 +310,8 @@ app.use(express.json());
 app.use(express.static("public"));
 registerReviewFeed(app);
 registerReviewRequests(app);
+registerReviewWidget(app);
+registerReviewCard(app);
 
 const proUpload = multer({
   storage: multer.memoryStorage(),
@@ -690,9 +694,11 @@ async function stripeWebhook(req, res) {
             ...(isPro ? { proTier } : {}),
             // A (re)subscription cancels any winback state: if they later
             // cancel again, the winback email must be able to send again.
+            // A fresh subscription also re-arms the payment-failed email.
             subCancelledAt: null,
             subAccessEndsAt: null,
-            winbackSentAt: null
+            winbackSentAt: null,
+            dunningSentAt: null
           });
           req.log?.info({ accountId, customerId, isPro, proTier }, "Stripe: subscription recorded");
           if (isFirstPayment) {
@@ -739,6 +745,37 @@ async function stripeWebhook(req, res) {
             });
             req.log?.info({ accountId }, "Stripe: subscription removed");
           }
+        }
+      }
+    } else if (event.type === "invoice.payment_failed") {
+      // Dunning: one "update your card" email per failure episode (the stamp
+      // suppresses Stripe's retry repeats; invoice.paid re-arms it).
+      const invoice = event.data.object;
+      const customerId = typeof invoice.customer === "string" ? invoice.customer : invoice.customer?.id;
+      const accountId = customerId ? await getAccountIdByStripeCustomerId(customerId) : null;
+      if (accountId) {
+        const result = await handlePaymentFailed({
+          accountId,
+          amountDueCents: typeof invoice.amount_due === "number" ? invoice.amount_due : null,
+          logger: req.log
+        });
+        req.log?.info({ accountId, ...result }, "Stripe: invoice payment failed");
+      }
+    } else if (event.type === "invoice.paid") {
+      // Payment recovered: clear the dunning stamp so a future failure can
+      // email again. (The subscription_paid GA event intentionally stays on
+      // checkout.session.completed — unchanged.)
+      const invoice = event.data.object;
+      const customerId = typeof invoice.customer === "string" ? invoice.customer : invoice.customer?.id;
+      const accountId = customerId ? await getAccountIdByStripeCustomerId(customerId) : null;
+      if (accountId) {
+        const business = await getBusiness(accountId);
+        if (business?.dunningSentAt) {
+          const rows = await getBusinessesForAccount(accountId);
+          for (const row of rows) {
+            await upsertBusiness({ accountId: row.accountId, locationId: row.locationId, ...dunningClearPatch() });
+          }
+          req.log?.info({ accountId }, "Stripe: invoice paid — dunning stamp cleared");
         }
       }
     }
@@ -918,6 +955,7 @@ app.get("/connected", async (req, res, next) => {
     let isPro = false;
     let gratisAccess = false;
     let freeRepliesUsed = 0;
+    let widgetCard = "";
     if (accountId) {
       let business = await getBusiness(accountId);
       // Backfill trial for existing businesses that connected before trial existed
@@ -941,6 +979,25 @@ app.get("/connected", async (req, res, next) => {
       isPro = !!(business && business.isPro);
       freeRepliesUsed = Number(business?.freeRepliesUsed || 0);
       gratisAccess = isGratisAccount(accountId);
+      // Website widget embed code: loading this page is what lazily creates
+      // the account's widget token (persisted on every location row).
+      if (business) {
+        try {
+          const widgetToken = await ensureWidgetToken(accountId, { logger: req.log });
+          if (widgetToken) {
+            const appBase = (process.env.BASE_URL || "").trim().replace(/\/$/, "") || "https://replyr.pro";
+            const snippet = `<div data-replyr-widget></div>\n<script src="${appBase}/widget/${widgetToken}.js" async></script>`;
+            widgetCard = `<div class="card website-widget-section" data-account-id="${escapeHtml(accountId)}">
+  <div class="card-title">Website widget</div>
+  <div class="card-desc">Show your Google rating and recent reviews on your own website — they update automatically. Paste this snippet where you want them to appear:</div>
+  <textarea readonly rows="3" aria-label="Widget embed code" style="width:100%;background:var(--surface2);border:1px solid var(--border);border-radius:10px;color:var(--text);font-family:ui-monospace,SFMono-Regular,monospace;font-size:11.5px;padding:10px 12px;resize:vertical" onclick="this.select()">${escapeHtml(snippet)}</textarea>
+  <p class="card-desc" style="margin:8px 0 0;font-size:12px">Includes a small “Powered by Replyr” note. <a href="/review-card?accountId=${encodeURIComponent(accountId)}" style="color:var(--accent2)">Print QR review cards →</a></p>
+</div>`;
+          }
+        } catch (err) {
+          req.log?.warn({ err, accountId }, "Widget: could not prepare embed code");
+        }
+      }
       trialEndedNoSubscription =
         !gratisAccess &&
         !isPro &&
@@ -1097,7 +1154,7 @@ app.get("/connected", async (req, res, next) => {
     const freeReplySection = accountId
       ? `<div class="connected-body">
   <aside class="connected-sidebar" id="settings" aria-label="Account and review tools">
-    <div class="connected-stack">${trialCard}${autoReplyCard}${previewModeCard}${digestCard}${tryItCard}${contactCard}</div>
+    <div class="connected-stack">${trialCard}${autoReplyCard}${previewModeCard}${digestCard}${tryItCard}${contactCard}${widgetCard}</div>
   </aside>
   <div class="connected-pro-wrap">${reviewsCard}${proCard}</div>
 </div>`

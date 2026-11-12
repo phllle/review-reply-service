@@ -321,6 +321,112 @@ export async function sendWinbackEmail({ to, business, logger = console, env = p
   return sendViaResend({ to, subject, text, html, logger, env, send });
 }
 
+// --- Dunning (payment failed) ---------------------------------------------------
+
+export const PAYMENT_FAILED_SUBJECT = "Your Replyr payment failed — update your card to keep your replies on";
+
+/** Pure: cents → "$19.00"; null when the amount is missing/unparseable. */
+export function formatAmountDue(amountDueCents) {
+  if (amountDueCents == null || amountDueCents === "") return null;
+  const n = Number(amountDueCents);
+  if (!Number.isFinite(n) || n < 0) return null;
+  return `$${(n / 100).toFixed(2)}`;
+}
+
+/**
+ * Pure: decide whether an invoice.payment_failed should email this account.
+ * One email per failure episode: the stamp suppresses Stripe's retry-cycle
+ * repeats, and invoice.paid clears the stamp so a NEW failure emails again.
+ */
+export function shouldSendPaymentFailed(business) {
+  return !!business && !business.dunningSentAt;
+}
+
+/** Pure: stamp patch written on every location row after a successful send. */
+export function dunningStampPatch(now = new Date()) {
+  return { dunningSentAt: now.toISOString() };
+}
+
+/** Pure: patch that re-arms dunning (applied on invoice.paid / re-subscribe). */
+export function dunningClearPatch() {
+  return { dunningSentAt: null };
+}
+
+/**
+ * Pure: build the payment-failed email. CTA is the Stripe customer portal
+ * when a portal URL is configured (billingUrl), else the settings page.
+ */
+export function buildPaymentFailedEmail({ accountId, amountDueCents, billingUrl, settingsUrl } = {}) {
+  const portal = billingUrl && String(billingUrl).startsWith("http") ? String(billingUrl) : null;
+  const cta = portal || settingsUrl || settingsUrlFor(accountId);
+  const amount = formatAmountDue(amountDueCents);
+  const text = [
+    "We tried to charge your card for your Replyr subscription, but the payment didn't go through.",
+    ...(amount ? ["", `Amount due: ${amount}.`] : []),
+    "",
+    `Update your payment method here to keep your automatic review replies on: ${cta}`,
+    "",
+    "If the card isn't updated, Stripe will keep retrying for a few days — after that the subscription is cancelled and new Google reviews stop getting replies.",
+    "",
+    "— Replyr"
+  ].join("\n");
+  const html = [
+    `<p>We tried to charge your card for your Replyr subscription, but the payment didn't go through.</p>`,
+    ...(amount ? [`<p>Amount due: <strong>${escapeHtml(amount)}</strong>.</p>`] : []),
+    `<p><a href="${escapeHtml(cta)}">Update your payment method</a> to keep your automatic review replies on.</p>`,
+    `<p>If the card isn't updated, Stripe will keep retrying for a few days — after that the subscription is cancelled and new Google reviews stop getting replies.</p>`,
+    `<p>— Replyr</p>`
+  ].join("\n");
+  return { subject: PAYMENT_FAILED_SUBJECT, text, html };
+}
+
+/** Send the payment-failed email to the business's notification email. */
+export async function sendPaymentFailedEmail({ to, business, amountDueCents, billingUrl, logger = console, env = process.env, send } = {}) {
+  const portalFromEnv = (env.STRIPE_CUSTOMER_PORTAL_URL ?? "").trim();
+  const { subject, text, html } = buildPaymentFailedEmail({
+    accountId: business?.accountId,
+    amountDueCents,
+    billingUrl: billingUrl ?? (portalFromEnv || null),
+    settingsUrl: settingsUrlFor(business?.accountId, env)
+  });
+  return sendViaResend({ to, subject, text, html, logger, env, send });
+}
+
+/**
+ * Webhook entry point for invoice.payment_failed. Resolves the account's
+ * rows, skips when already emailed for this failure episode or when there
+ * is no notification email, sends, and only on success stamps
+ * dunning_sent_at on every location row. Never throws — a dunning failure
+ * must not fail the webhook.
+ *
+ * `deps` is injectable for tests.
+ */
+export async function handlePaymentFailed({ accountId, amountDueCents = null, logger = console, env = process.env, deps = {} } = {}) {
+  try {
+    if (!accountId) return { sent: false, reason: "no-account" };
+    const loadRows = deps.getBusinessesForAccount || getBusinessesForAccount;
+    const rows = await loadRows(accountId);
+    const primary = rows && rows[0];
+    if (!primary) return { sent: false, reason: "no-business" };
+    if (!shouldSendPaymentFailed(primary)) return { sent: false, reason: "already-sent" };
+    const to = (primary.notificationEmail || "").trim();
+    if (!to) return { sent: false, reason: "no-recipient" };
+    const sender = deps.sendPaymentFailedEmail || sendPaymentFailedEmail;
+    const result = await sender({ to, business: primary, amountDueCents, logger, env, send: deps.send });
+    if (!result?.sent) return result || { sent: false, reason: "send-failed" };
+    const stamp = deps.upsertBusiness || upsertBusiness;
+    const patch = dunningStampPatch(new Date());
+    for (const row of rows) {
+      await stamp({ accountId: row.accountId, locationId: row.locationId, ...patch });
+    }
+    logger?.info?.({ accountId }, "Dunning: payment-failed email sent");
+    return { sent: true };
+  } catch (err) {
+    logger?.warn?.({ err, accountId }, "Dunning: payment-failed handling failed");
+    return { sent: false, reason: "error" };
+  }
+}
+
 // --- Runner ---------------------------------------------------------------------
 
 /** True during owner-friendly hours: 9:00–17:59 in America/Los_Angeles. */
