@@ -198,6 +198,17 @@ async function initSchema() {
   } catch (err) {
     if (err.code !== "42701") throw err;
   }
+  // Lifecycle emails: one-shot send stamps so each nudge goes out exactly
+  // once, plus the subscription cancellation state recorded from Stripe
+  // webhooks (sub_cancelled_at / sub_access_ends_at drive the winback email;
+  // a fresh subscription clears all three so a later cancel can email again).
+  for (const col of ["trial_nudge_sent_at", "trial_ending_sent_at", "winback_sent_at", "sub_cancelled_at", "sub_access_ends_at"]) {
+    try {
+      await client.query(`ALTER TABLE businesses ADD COLUMN ${col} TIMESTAMPTZ`);
+    } catch (err) {
+      if (err.code !== "42701") throw err;
+    }
+  }
   // Multi-location: businesses are keyed by (account_id, location_id). Older
   // deployments used a single-column account_id PK. Migrate in place — safe for
   // existing single-location rows since each already has a NOT NULL location_id
@@ -474,7 +485,7 @@ export async function writeTokens(data) {
 // --- Businesses ---
 
 const BUSINESS_COLUMNS =
-  "id, account_id, location_id, name, contact, auto_reply_enabled, interval_minutes, updated_at, free_replies_used, trial_ends_at, subscribed_at, stripe_customer_id, is_pro, pro_tier, auto_reply_mode, notification_email, weekly_digest_enabled, last_weekly_digest_at, last_digest_rating_avg, place_id, gclid, ga_client_id, utm_source, utm_medium, utm_campaign, landing_page, signup_at, preview_until, preview_choice, first_reply_at";
+  "id, account_id, location_id, name, contact, auto_reply_enabled, interval_minutes, updated_at, free_replies_used, trial_ends_at, subscribed_at, stripe_customer_id, is_pro, pro_tier, auto_reply_mode, notification_email, weekly_digest_enabled, last_weekly_digest_at, last_digest_rating_avg, place_id, gclid, ga_client_id, utm_source, utm_medium, utm_campaign, landing_page, signup_at, preview_until, preview_choice, first_reply_at, trial_nudge_sent_at, trial_ending_sent_at, winback_sent_at, sub_cancelled_at, sub_access_ends_at";
 
 function rowToBusiness(row) {
   return {
@@ -507,7 +518,12 @@ function rowToBusiness(row) {
     signupAt: row.signup_at ? new Date(row.signup_at).toISOString() : null,
     previewUntil: row.preview_until ? new Date(row.preview_until).toISOString() : null,
     previewChoice: row.preview_choice ?? null,
-    firstReplyAt: row.first_reply_at ? new Date(row.first_reply_at).toISOString() : null
+    firstReplyAt: row.first_reply_at ? new Date(row.first_reply_at).toISOString() : null,
+    trialNudgeSentAt: row.trial_nudge_sent_at ? new Date(row.trial_nudge_sent_at).toISOString() : null,
+    trialEndingSentAt: row.trial_ending_sent_at ? new Date(row.trial_ending_sent_at).toISOString() : null,
+    winbackSentAt: row.winback_sent_at ? new Date(row.winback_sent_at).toISOString() : null,
+    subCancelledAt: row.sub_cancelled_at ? new Date(row.sub_cancelled_at).toISOString() : null,
+    subAccessEndsAt: row.sub_access_ends_at ? new Date(row.sub_access_ends_at).toISOString() : null
   };
 }
 
@@ -595,6 +611,11 @@ export async function upsertBusinessInDb(config) {
   const previewUntil = config.previewUntil !== undefined ? config.previewUntil : existing?.previewUntil ?? null;
   const previewChoice = config.previewChoice !== undefined ? config.previewChoice : existing?.previewChoice ?? null;
   const firstReplyAt = config.firstReplyAt !== undefined ? config.firstReplyAt : existing?.firstReplyAt ?? null;
+  const trialNudgeSentAt = config.trialNudgeSentAt !== undefined ? config.trialNudgeSentAt : existing?.trialNudgeSentAt ?? null;
+  const trialEndingSentAt = config.trialEndingSentAt !== undefined ? config.trialEndingSentAt : existing?.trialEndingSentAt ?? null;
+  const winbackSentAt = config.winbackSentAt !== undefined ? config.winbackSentAt : existing?.winbackSentAt ?? null;
+  const subCancelledAt = config.subCancelledAt !== undefined ? config.subCancelledAt : existing?.subCancelledAt ?? null;
+  const subAccessEndsAt = config.subAccessEndsAt !== undefined ? config.subAccessEndsAt : existing?.subAccessEndsAt ?? null;
   const row = {
     account_id: config.accountId,
     location_id: config.locationId,
@@ -624,14 +645,19 @@ export async function upsertBusinessInDb(config) {
     signup_at: signupAt,
     preview_until: previewUntil,
     preview_choice: previewChoice,
-    first_reply_at: firstReplyAt
+    first_reply_at: firstReplyAt,
+    trial_nudge_sent_at: trialNudgeSentAt,
+    trial_ending_sent_at: trialEndingSentAt,
+    winback_sent_at: winbackSentAt,
+    sub_cancelled_at: subCancelledAt,
+    sub_access_ends_at: subAccessEndsAt
   };
   await getPool().query(
-    `INSERT INTO businesses (account_id, location_id, name, contact, auto_reply_enabled, interval_minutes, updated_at, free_replies_used, trial_ends_at, subscribed_at, stripe_customer_id, is_pro, pro_tier, auto_reply_mode, notification_email, weekly_digest_enabled, last_weekly_digest_at, last_digest_rating_avg, place_id, gclid, ga_client_id, utm_source, utm_medium, utm_campaign, landing_page, signup_at, preview_until, preview_choice, first_reply_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29)
+    `INSERT INTO businesses (account_id, location_id, name, contact, auto_reply_enabled, interval_minutes, updated_at, free_replies_used, trial_ends_at, subscribed_at, stripe_customer_id, is_pro, pro_tier, auto_reply_mode, notification_email, weekly_digest_enabled, last_weekly_digest_at, last_digest_rating_avg, place_id, gclid, ga_client_id, utm_source, utm_medium, utm_campaign, landing_page, signup_at, preview_until, preview_choice, first_reply_at, trial_nudge_sent_at, trial_ending_sent_at, winback_sent_at, sub_cancelled_at, sub_access_ends_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34)
      ON CONFLICT (account_id, location_id) DO UPDATE SET
-       name = $3, contact = $4, auto_reply_enabled = $5, interval_minutes = $6, updated_at = $7, free_replies_used = $8, trial_ends_at = $9, subscribed_at = $10, stripe_customer_id = $11, is_pro = $12, pro_tier = $13, auto_reply_mode = $14, notification_email = $15, weekly_digest_enabled = $16, last_weekly_digest_at = $17, last_digest_rating_avg = $18, place_id = $19, gclid = $20, ga_client_id = $21, utm_source = $22, utm_medium = $23, utm_campaign = $24, landing_page = $25, signup_at = $26, preview_until = $27, preview_choice = $28, first_reply_at = $29`,
-    [row.account_id, row.location_id, row.name, row.contact, row.auto_reply_enabled, row.interval_minutes, row.updated_at, row.free_replies_used, row.trial_ends_at, row.subscribed_at, row.stripe_customer_id, row.is_pro, row.pro_tier, row.auto_reply_mode, row.notification_email, row.weekly_digest_enabled, row.last_weekly_digest_at, row.last_digest_rating_avg, row.place_id, row.gclid, row.ga_client_id, row.utm_source, row.utm_medium, row.utm_campaign, row.landing_page, row.signup_at, row.preview_until, row.preview_choice, row.first_reply_at]
+       name = $3, contact = $4, auto_reply_enabled = $5, interval_minutes = $6, updated_at = $7, free_replies_used = $8, trial_ends_at = $9, subscribed_at = $10, stripe_customer_id = $11, is_pro = $12, pro_tier = $13, auto_reply_mode = $14, notification_email = $15, weekly_digest_enabled = $16, last_weekly_digest_at = $17, last_digest_rating_avg = $18, place_id = $19, gclid = $20, ga_client_id = $21, utm_source = $22, utm_medium = $23, utm_campaign = $24, landing_page = $25, signup_at = $26, preview_until = $27, preview_choice = $28, first_reply_at = $29, trial_nudge_sent_at = $30, trial_ending_sent_at = $31, winback_sent_at = $32, sub_cancelled_at = $33, sub_access_ends_at = $34`,
+    [row.account_id, row.location_id, row.name, row.contact, row.auto_reply_enabled, row.interval_minutes, row.updated_at, row.free_replies_used, row.trial_ends_at, row.subscribed_at, row.stripe_customer_id, row.is_pro, row.pro_tier, row.auto_reply_mode, row.notification_email, row.weekly_digest_enabled, row.last_weekly_digest_at, row.last_digest_rating_avg, row.place_id, row.gclid, row.ga_client_id, row.utm_source, row.utm_medium, row.utm_campaign, row.landing_page, row.signup_at, row.preview_until, row.preview_choice, row.first_reply_at, row.trial_nudge_sent_at, row.trial_ending_sent_at, row.winback_sent_at, row.sub_cancelled_at, row.sub_access_ends_at]
   );
   return rowToBusiness(row);
 }
@@ -1109,4 +1135,29 @@ export async function getProSmsUsageSum(monthKey) {
     [monthKey]
   );
   return Number(res.rows[0]?.total || 0);
+}
+
+/**
+ * Review-request ("Ask for reviews") stats for one account: how many contacts
+ * have ever been sent a review request (review_requested_at stamped at send
+ * time in reviewRequests.js), and how many were stamped in the given month.
+ * monthKey is "YYYY-MM" as produced by getCurrentMonthKey() (UTC month), so
+ * the month window is [monthKey-01, monthKey-01 + 1 month) in UTC.
+ */
+export async function getReviewRequestStats(accountId, monthKey) {
+  const totalRes = await getPool().query(
+    "SELECT COUNT(*)::int AS n FROM pro_contacts WHERE account_id = $1 AND review_requested_at IS NOT NULL",
+    [accountId]
+  );
+  const monthRes = await getPool().query(
+    `SELECT COUNT(*)::int AS n FROM pro_contacts
+      WHERE account_id = $1 AND review_requested_at IS NOT NULL
+        AND review_requested_at >= ($2 || '-01')::timestamptz
+        AND review_requested_at < (($2 || '-01')::date + INTERVAL '1 month')::timestamptz`,
+    [accountId, monthKey]
+  );
+  return {
+    total: Number(totalRes.rows[0]?.n || 0),
+    thisMonth: Number(monthRes.rows[0]?.n || 0)
+  };
 }

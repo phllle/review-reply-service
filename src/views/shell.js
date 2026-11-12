@@ -132,6 +132,7 @@ export function adminNavHtml(activeTab) {
       <div class="admin-tabs" role="tablist">
         <a href="/admin" class="${cls("businesses")}" role="tab" aria-selected="${activeTab === "businesses"}">Businesses</a>
         <a href="/admin/metrics" class="${cls("metrics")}" role="tab" aria-selected="${activeTab === "metrics"}">Metrics</a>
+        <a href="/admin/coverage" class="${cls("coverage")}" role="tab" aria-selected="${activeTab === "coverage"}">Coverage</a>
       </div>
     </nav>`;
 }

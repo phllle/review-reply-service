@@ -15,9 +15,27 @@ import { getBusinessesForAccount, upsertBusiness } from "./businesses.js";
 import { fireFirstReplyPosted } from "./gaEvents.js";
 import { sendFirstReplyEmail } from "./onboardingEmails.js";
 
-/** Maps deep link for a business, same pattern as the signup notification. */
-export function googlePlaceUrl(placeId) {
-  return placeId ? `https://www.google.com/maps/place/?q=place_id:${encodeURIComponent(placeId)}` : null;
+/**
+ * Maps deep link for a business, in Google Maps URL API format: a name query
+ * plus query_place_id pins the exact listing. The previous
+ * /maps/place/?q=place_id:<id> form was treated by Maps (especially mobile
+ * web) as a literal text search and showed "No results found" even though
+ * the reply had posted fine. Fallbacks: name-only search when the place id
+ * is missing, place-id-only when the name is missing, null when both are.
+ */
+export function googlePlaceUrl(placeId, businessName) {
+  const id = String(placeId || "").trim();
+  const name = String(businessName || "").trim();
+  if (id && name) {
+    return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(name)}&query_place_id=${encodeURIComponent(id)}`;
+  }
+  if (name) {
+    return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(name)}`;
+  }
+  if (id) {
+    return `https://www.google.com/maps/search/?api=1&query_place_id=${encodeURIComponent(id)}`;
+  }
+  return null;
 }
 
 export async function handleFirstReplyPosted({
@@ -55,7 +73,7 @@ export async function handleFirstReplyPosted({
       rating,
       reviewText,
       replyText,
-      reviewUrl: googlePlaceUrl(primary.placeId),
+      reviewUrl: googlePlaceUrl(primary.placeId, primary.name),
       logger,
       env
     });

@@ -84,6 +84,13 @@ export function mergeBusinessUpsert(map, config, { now = new Date().toISOString(
     previewUntil: config.previewUntil ?? existing.previewUntil ?? null,
     previewChoice: config.previewChoice ?? existing.previewChoice ?? null,
     firstReplyAt: config.firstReplyAt ?? existing.firstReplyAt ?? null,
+    // Lifecycle emails + Stripe cancellation state — account-level like the
+    // other billing fields, so a new location row inherits them from a sibling.
+    trialNudgeSentAt: config.trialNudgeSentAt ?? billing.trialNudgeSentAt ?? null,
+    trialEndingSentAt: config.trialEndingSentAt ?? billing.trialEndingSentAt ?? null,
+    winbackSentAt: config.winbackSentAt ?? billing.winbackSentAt ?? null,
+    subCancelledAt: config.subCancelledAt ?? billing.subCancelledAt ?? null,
+    subAccessEndsAt: config.subAccessEndsAt ?? billing.subAccessEndsAt ?? null,
     updatedAt: now
   };
 }

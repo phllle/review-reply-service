@@ -414,3 +414,117 @@ export function renderAdminMetricsHtml(data) {
 </div>
 </body></html>`;
 }
+
+// Admin coverage page (/admin/coverage). One row per business: are its Google
+// reviews all answered, and are review requests going out? Businesses with
+// unreplied reviews come first (sorted server-side in coverage.js).
+export function renderAdminCoverageHtml(data) {
+  const fmtDate = (iso) => {
+    if (!iso) return "—";
+    const d = new Date(iso);
+    return Number.isNaN(d.getTime())
+      ? "—"
+      : d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+  };
+  const statusBadge = (status) => {
+    const label = { subscribed: "Subscribed", pro: "Pro", trial: "Trial", free: "Free / ended", none: "None" }[status] || status;
+    const cls = { subscribed: "status-subscribed", pro: "status-pro", trial: "status-trial", free: "status-expired", none: "status-expired" }[status] || "status-trial";
+    return `<span class="${cls}">${escapeHtml(label)}</span>`;
+  };
+  const unrepliedList = (row) => {
+    if (!row.unreplied || !row.unreplied.length) return "";
+    const items = row.unreplied
+      .map(
+        (u) =>
+          `<li>${escapeHtml(u.reviewerName)}${u.rating ? ` · ${u.rating}★` : ""} · ${escapeHtml(fmtDate(u.createTime))}${u.commentSnippet ? ` — ${escapeHtml(u.commentSnippet)}` : ""}</li>`
+      )
+      .join("");
+    return `<div class="unreplied"><div class="unreplied-title">Unreplied (${row.unreplied.length})</div><ul>${items}</ul></div>`;
+  };
+  const bodyRows = (data.rows || [])
+    .map(
+      (row) => `<tr>
+      <td><strong>${escapeHtml(row.name || "—")}</strong><div class="cell-sub">${escapeHtml(row.accountId || "")}</div>${row.error ? `<div class="cell-err">⚠ ${escapeHtml(row.error)}</div>` : ""}${unrepliedList(row)}</td>
+      <td>${statusBadge(row.status)}<div class="cell-sub">${row.status === "trial" || row.status === "free" ? `trial ends ${escapeHtml(fmtDate(row.trialEndsAt))} · ` : ""}free replies used: ${row.freeRepliesUsed}/5</div></td>
+      <td>${row.autoReplyEnabled ? "On" : "Off"}<div class="cell-sub">${escapeHtml(row.autoReplyMode || "instant")}</div></td>
+      <td class="num">${row.reviewsTotal}</td>
+      <td class="num">${row.reviewsReplied}</td>
+      <td class="num">${row.reviewsHolding}</td>
+      <td class="num${row.unreplied && row.unreplied.length ? " num-alert" : ""}">${row.unreplied ? row.unreplied.length : 0}</td>
+      <td class="num">${row.reviewRequestsTotal}</td>
+      <td class="num">${row.reviewRequestsThisMonth}</td>
+      <td class="num">${row.smsThisMonth}</td>
+    </tr>`
+    )
+    .join("");
+  const emptyHtml = `<div class="empty">No businesses yet. Have them connect via the auth link.</div>`;
+  return `<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Replyr – Admin coverage</title>
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,wght@0,300;0,400;0,600;1,300&family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
+<style>${adminBaseCss()}</style>
+<style>
+  .ts { color: var(--muted); font-size: 12px; letter-spacing: 0.04em; text-transform: uppercase; font-weight: 600; margin-bottom: 16px; }
+  .table-wrap { background: var(--surface); border: 1px solid var(--border); border-radius: 16px; overflow: auto; animation: fadeUp 0.4s ease both; }
+  table { width: 100%; border-collapse: collapse; min-width: 880px; }
+  thead th {
+    position: sticky; top: 0; z-index: 1;
+    background: var(--surface2); color: var(--muted);
+    font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase;
+    text-align: left; padding: 12px 14px; border-bottom: 1px solid var(--border);
+  }
+  thead th.num, tbody td.num { text-align: right; }
+  tbody td { padding: 11px 14px; border-bottom: 1px solid var(--border); font-size: 13px; color: var(--text); vertical-align: top; }
+  tbody tr:last-child td { border-bottom: none; }
+  tbody tr:hover { background: rgba(255,255,255,0.02); }
+  td.num-alert { color: var(--danger, #ff6b6b); font-weight: 600; }
+  .cell-sub { color: var(--muted); font-size: 12px; margin-top: 4px; }
+  .cell-err { color: #f5a55c; font-size: 12px; margin-top: 4px; }
+  .status-subscribed, .status-trial, .status-expired, .status-pro {
+    display: inline-block; padding: 3px 10px; border-radius: 999px; font-size: 11px; font-weight: 600;
+    letter-spacing: 0.04em; text-transform: uppercase;
+  }
+  .status-subscribed { background: rgba(110,231,163,0.15); color: #6ee7a3; }
+  .status-trial { background: rgba(74,158,255,0.15); color: var(--accent); }
+  .status-expired { background: rgba(255,107,107,0.15); color: var(--danger); }
+  .status-pro { background: rgba(124,106,247,0.18); color: #a099f7; }
+  .unreplied { margin-top: 10px; background: rgba(255,107,107,0.06); border: 1px solid rgba(255,107,107,0.25); border-radius: 10px; padding: 10px 12px; }
+  .unreplied-title { font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--danger, #ff6b6b); margin-bottom: 6px; }
+  .unreplied ul { margin: 0; padding-left: 18px; font-size: 12px; color: var(--text); }
+  .unreplied li { margin: 3px 0; }
+  .empty {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 16px;
+    padding: 48px 24px; text-align: center; color: var(--muted); font-size: 14px;
+  }
+  .footer { margin-top: 32px; padding-top: 20px; border-top: 1px solid var(--border); font-size: 13px; color: var(--muted); }
+  .footer a { color: var(--accent2); text-decoration: none; font-weight: 500; }
+  .footer a:hover { color: #a099f7; text-decoration: underline; }
+</style>
+</head>
+<body>
+<div class="admin-wrap">
+  ${adminNavHtml("coverage")}
+  <div class="admin-page">
+    <div class="admin-header">
+      <h1>Coverage</h1>
+      <p class="admin-subtitle">Per business: are all Google reviews answered, and are review requests going out? Businesses with unreplied reviews are listed first. Review counts are live from Google; a ⚠ row means that business's reviews couldn't be fetched.</p>
+      <div class="ts">As of ${escapeHtml(data.generatedAt)} · SMS month ${escapeHtml(data.monthKey || "")}</div>
+    </div>
+    ${
+      data.rows && data.rows.length
+        ? `<div class="table-wrap">
+      <table>
+        <thead><tr><th>Business</th><th>Status</th><th>Auto-reply</th><th class="num">Reviews</th><th class="num">Replied</th><th class="num">Holding</th><th class="num">Unreplied</th><th class="num">Requests sent</th><th class="num">Requests this mo.</th><th class="num">SMS this mo.</th></tr></thead>
+        <tbody>${bodyRows}</tbody>
+      </table>
+    </div>`
+        : emptyHtml
+    }
+    <div class="footer">JSON view: <a href="/admin/coverage.json">/admin/coverage.json</a></div>
+  </div>
+</div>
+</body></html>`;
+}

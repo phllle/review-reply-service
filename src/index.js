@@ -54,6 +54,7 @@ import {
 import multer from "multer";
 import Stripe from "stripe";
 import { runWeeklyDigests, verifyDigestUnsubToken } from "./weeklyDigest.js";
+import { runLifecycleEmails, cancellationPatchFromSubscription } from "./lifecycleEmails.js";
 import { getCurrentMonthKey, getIncludedSmsForTier, normalizeProTier } from "./proPlan.js";
 import * as sentry from "./sentry.js";
 import {
@@ -77,8 +78,10 @@ import {
   renderAdminDisabledHtml,
   renderAdminPage,
   adminScript,
-  renderAdminMetricsHtml
+  renderAdminMetricsHtml,
+  renderAdminCoverageHtml
 } from "./views/adminPage.js";
+import { buildCoverage } from "./coverage.js";
 import {
   renderContactPage,
   renderCompliancePage,
@@ -193,6 +196,14 @@ async function runCampaignScheduler() {
     } catch (err) {
       logger.error({ err }, "Weekly digest run failed");
       sentry.captureException(err, { kind: "weekly-digest" });
+    }
+    // Lifecycle emails (trial nudge / trial-ending / winback) — self-gates to
+    // 9am–6pm PT and one-shot *_sent_at stamps, so the hourly tick is safe.
+    try {
+      await runLifecycleEmails(logger);
+    } catch (err) {
+      logger.error({ err }, "Lifecycle emails run failed");
+      sentry.captureException(err, { kind: "lifecycle-emails" });
     }
   } catch (err) {
     logger.error({ err }, "Campaign scheduler failed");
@@ -634,7 +645,7 @@ async function stripeWebhook(req, res) {
     return proTierFromSub(subscription, priceIds);
   }
 
-  async function applySubscriptionState(accountId, subscribedAt, isPro, proTier) {
+  async function applySubscriptionState(accountId, subscribedAt, isPro, proTier, extraPatch = {}) {
     if (!accountId) return;
     const business = await getBusiness(accountId);
     if (business) {
@@ -642,7 +653,8 @@ async function stripeWebhook(req, res) {
         ...business,
         subscribedAt: subscribedAt || null,
         isPro: !!isPro,
-        ...(isPro ? { proTier: proTier || business.proTier || "starter" } : {})
+        ...(isPro ? { proTier: proTier || business.proTier || "starter" } : {}),
+        ...extraPatch
       });
     }
   }
@@ -675,7 +687,12 @@ async function stripeWebhook(req, res) {
             subscribedAt: new Date().toISOString(),
             stripeCustomerId: customerId,
             isPro,
-            ...(isPro ? { proTier } : {})
+            ...(isPro ? { proTier } : {}),
+            // A (re)subscription cancels any winback state: if they later
+            // cancel again, the winback email must be able to send again.
+            subCancelledAt: null,
+            subAccessEndsAt: null,
+            winbackSentAt: null
           });
           req.log?.info({ accountId, customerId, isPro, proTier }, "Stripe: subscription recorded");
           if (isFirstPayment) {
@@ -693,7 +710,15 @@ async function stripeWebhook(req, res) {
       const isPro = subscriptionHasProPrice(subscription);
       const proTier = isPro ? getProTierFromSubscription(subscription) : "starter";
       const subscribedAt = subscription.status === "active" ? new Date().toISOString() : null;
-      await applySubscriptionState(accountId, subscribedAt, isPro, proTier);
+      // Track cancellation for the winback email: cancel_at_period_end records
+      // when they cancelled + when access ends; un-cancelling while active
+      // clears the state (and the winback stamp) again.
+      let cancelPatch = null;
+      if (accountId) {
+        const business = await getBusiness(accountId);
+        cancelPatch = cancellationPatchFromSubscription({ subscription, business });
+      }
+      await applySubscriptionState(accountId, subscribedAt, isPro, proTier, cancelPatch || {});
       if (accountId) req.log?.info({ accountId, isPro, proTier }, "Stripe: subscription updated");
     } else if (event.type === "customer.subscription.deleted") {
       const subscription = event.data.object;
@@ -703,7 +728,15 @@ async function stripeWebhook(req, res) {
         if (accountId) {
           const business = await getBusiness(accountId);
           if (business) {
-            await upsertBusiness({ ...business, subscribedAt: null, isPro: false });
+            await upsertBusiness({
+              ...business,
+              subscribedAt: null,
+              isPro: false,
+              // Access ends now. Keep the earliest cancellation stamp if the
+              // cancel-at-period-end update already recorded one.
+              subCancelledAt: business.subCancelledAt || new Date().toISOString(),
+              subAccessEndsAt: new Date().toISOString()
+            });
             req.log?.info({ accountId }, "Stripe: subscription removed");
           }
         }
@@ -3140,6 +3173,44 @@ app.get("/admin/metrics", async (req, res, next) => {
     res.send(renderAdminMetricsHtml(data));
   } catch (err) {
     req.log?.error(err, "Admin metrics page failed");
+    next(err);
+  }
+});
+
+// Per-business coverage: are all reviews answered, are review requests going
+// out? Per-business Google failures land in that row's `error` field (see
+// coverage.js), so this only 500s on a failure to load the business list.
+app.get("/admin/coverage.json", async (req, res, next) => {
+  try {
+    if (!(process.env.ADMIN_SECRET || "").trim()) {
+      return res.status(503).json({ error: "Admin disabled. Set ADMIN_SECRET in the server environment." });
+    }
+    if (!isValidAdminRequest(req)) {
+      return res.status(401).json({ error: "Unauthorized. Sign in at /admin or send the X-Admin-Secret header." });
+    }
+    const data = await buildCoverage({ logger: req.log });
+    res.json(data);
+  } catch (err) {
+    req.log?.error(err, "Admin coverage JSON failed");
+    next(err);
+  }
+});
+
+app.get("/admin/coverage", async (req, res, next) => {
+  try {
+    if (!(process.env.ADMIN_SECRET || "").trim()) {
+      res.status(503).set("Content-Type", "text/html; charset=utf-8");
+      return res.send(renderAdminDisabledHtml());
+    }
+    if (!isValidAdminRequest(req)) {
+      res.status(401).set("Content-Type", "text/html; charset=utf-8");
+      return res.send(renderAdminLoginHtml());
+    }
+    const data = await buildCoverage({ logger: req.log });
+    res.set("Content-Type", "text/html; charset=utf-8");
+    res.send(renderAdminCoverageHtml(data));
+  } catch (err) {
+    req.log?.error(err, "Admin coverage page failed");
     next(err);
   }
 });

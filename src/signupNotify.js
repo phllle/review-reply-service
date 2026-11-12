@@ -35,7 +35,9 @@ export function buildSignupEmail(business, { ownerEmail = null, now = new Date()
     `Location:   ${oneLine(business?.locationId) || "—"}`
   ];
   if (business?.placeId) {
-    lines.push(`Google:     https://www.google.com/maps/place/?q=place_id:${encodeURIComponent(business.placeId)}`);
+    // Maps URL API format (query + query_place_id). The old
+    // /maps/place/?q=place_id: form read as a literal text search in Maps.
+    lines.push(`Google:     https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(name)}&query_place_id=${encodeURIComponent(business.placeId)}`);
   }
   lines.push(
     `Trial ends: ${trialEnds && !isNaN(trialEnds.getTime()) ? trialEnds.toISOString().slice(0, 10) : "—"}`,
