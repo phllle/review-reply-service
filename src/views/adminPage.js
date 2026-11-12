@@ -6,6 +6,7 @@
 
 import { escapeHtml, darkShellHtml, adminBaseCss, adminNavHtml } from "./shell.js";
 import { formatCentsAsUsd } from "../metrics.js";
+import { coverageErrorLabel } from "../coverage.js";
 
 // Admin sign-in page (POST-only secret; sets an HttpOnly cookie). Renders on any
 // unauthorized admin HTML route. The secret never appears in a URL or in JS.
@@ -444,7 +445,7 @@ export function renderAdminCoverageHtml(data) {
   const bodyRows = (data.rows || [])
     .map(
       (row) => `<tr>
-      <td><strong>${escapeHtml(row.name || "—")}</strong><div class="cell-sub">${escapeHtml(row.accountId || "")}</div>${row.error ? `<div class="cell-err">⚠ ${escapeHtml(row.error)}</div>` : ""}${unrepliedList(row)}</td>
+      <td><strong>${escapeHtml(row.name || "—")}</strong><div class="cell-sub">${escapeHtml(row.accountId || "")}</div>${row.error ? `<div class="cell-err">⚠ ${escapeHtml(coverageErrorLabel(row.error) || row.error)}</div>` : ""}${unrepliedList(row)}</td>
       <td>${statusBadge(row.status)}<div class="cell-sub">${row.status === "trial" || row.status === "free" ? `trial ends ${escapeHtml(fmtDate(row.trialEndsAt))} · ` : ""}free replies used: ${row.freeRepliesUsed}/5</div></td>
       <td>${row.autoReplyEnabled ? "On" : "Off"}<div class="cell-sub">${escapeHtml(row.autoReplyMode || "instant")}</div></td>
       <td class="num">${row.reviewsTotal}</td>

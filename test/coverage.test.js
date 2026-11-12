@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { buildCoverageRow, buildCoverage, sortCoverageRows, coverageStatus } from "../src/coverage.js";
+import { buildCoverageRow, buildCoverage, sortCoverageRows, coverageStatus, coverageErrorLabel } from "../src/coverage.js";
 
 const NOW = new Date("2026-11-11T18:00:00Z");
 
@@ -166,4 +166,26 @@ test("buildCoverage: DB mode pulls pending count, request stats and SMS usage", 
   assert.equal(row.reviewRequestsThisMonth, 5);
   assert.equal(row.smsThisMonth, 88);
   assert.equal(row.status, "pro");
+});
+
+test("coverageErrorLabel: known Google failures become human-readable", () => {
+  assert.equal(coverageErrorLabel(null), null);
+  assert.equal(coverageErrorLabel(""), null);
+  assert.match(coverageErrorLabel("invalid_grant"), /connection expired/);
+  assert.match(
+    coverageErrorLabel('Google API error 404: { "error": { "code": 404, "message": "Requested entity was not found.", "status": "NOT_FOUND" } }'),
+    /couldn't find this location/
+  );
+  assert.match(
+    coverageErrorLabel('Google API error 503: { "error": { "code": 503, "message": "The service is currently unavailable.", "status": "UNAVAILABLE" } }'),
+    /temporarily unavailable/
+  );
+  assert.match(coverageErrorLabel("403 PERMISSION_DENIED"), /denied access/);
+});
+
+test("coverageErrorLabel: unknown errors pass through trimmed to one line", () => {
+  assert.equal(coverageErrorLabel("weird\n  multi   line failure"), "weird multi line failure");
+  const long = coverageErrorLabel("x".repeat(300));
+  assert.equal(long.length, 140);
+  assert.ok(long.endsWith("…"));
 });

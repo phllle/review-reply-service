@@ -43,6 +43,7 @@ function cardHtml({ businessName, displayUrl, qrSvg }) {
     <div class="rc-qr">${qrSvg}</div>
     <div class="rc-url">${escapeHtml(displayUrl)}</div>
     <div class="rc-thanks">Thank you! 💬</div>
+    <div class="rc-powered">Powered by <strong>Replyr</strong> · replyr.pro</div>
   </section>`;
 }
 
@@ -78,6 +79,8 @@ export function buildReviewCardHtml({ businessName, displayUrl, qrSvg }) {
   .rc-qr svg { width: 100%; height: auto; display: block; }
   .rc-url { font-size: 12.5px; color: #888; font-family: ui-monospace, SFMono-Regular, monospace; margin-bottom: 14px; }
   .rc-thanks { margin-top: auto; font-size: 14px; font-weight: 600; color: #17171a; }
+  .rc-powered { margin-top: 10px; font-size: 11px; color: #aaa; letter-spacing: 0.02em; }
+  .rc-powered strong { color: #8a8a8a; }
   @page { margin: 0.4in; }
   @media print {
     body { background: #fff; padding: 0; }
@@ -92,12 +95,13 @@ export function buildReviewCardHtml({ businessName, displayUrl, qrSvg }) {
   <div class="rc-brand"><span class="rc-brand-icon" aria-hidden="true">💬</span> Replyr</div>
   <h1>Your counter review cards</h1>
   <p>Print this sheet and cut along the card edges — you get two cards per page.<br>Put one by the register and one by the door. The code takes customers straight to your Google review form.</p>
-  <button type="button" class="rc-print-btn" onclick="window.print()">Print cards</button>
+  <button type="button" class="rc-print-btn" id="rcPrintBtn">Print cards</button>
 </div>
 <main class="rc-sheet">
 ${card}
 ${card}
 </main>
+<script src="/review-card.js" defer></script>
 </body>
 </html>`;
 }
